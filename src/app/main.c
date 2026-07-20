@@ -8,9 +8,7 @@
  */
 #include <adwaita.h>
 
-#ifndef LOGFL_VERSION
-#define LOGFL_VERSION "0.0.0"
-#endif
+#include "engine.h"
 
 static void
 on_activate (AdwApplication *app, gpointer user_data)
@@ -24,10 +22,18 @@ on_activate (AdwApplication *app, gpointer user_data)
   GtkWidget *tbv = adw_toolbar_view_new ();
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), adw_header_bar_new ());
 
+  GError *err = NULL;
+  gboolean engine_ok = logfl_engine_selfcheck (&err);
+  g_autofree char *desc = g_strdup_printf (
+      "Native ham radio logbook — M0 scaffold, nothing logged yet.\n"
+      "Engine %s · SQLite %s · selfcheck %s",
+      logfl_engine_version (), logfl_engine_sqlite_version (),
+      engine_ok ? "OK" : err->message);
+  g_clear_error (&err);
+
   GtkWidget *status = adw_status_page_new ();
   adw_status_page_set_title (ADW_STATUS_PAGE (status), "Log for Linux");
-  adw_status_page_set_description (ADW_STATUS_PAGE (status),
-      "Native ham radio logbook — project skeleton, nothing logged yet.");
+  adw_status_page_set_description (ADW_STATUS_PAGE (status), desc);
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (tbv), status);
 
   adw_application_window_set_content (ADW_APPLICATION_WINDOW (win), tbv);

@@ -15,14 +15,42 @@ add_project_arguments('-DLOGFL_VERSION="@0@"'.format(meson.project_version()),
 # --- Dependencies -----------------------------------------------------------
 # Same split as sdr-for-linux / skimmer-for-linux: the logbook engine is
 # GLib-only (headless, testable), the app adds GTK4/libadwaita on top.
-glib_dep = dependency('glib-2.0')
-gio_dep  = dependency('gio-2.0')
-gtk_dep  = dependency('gtk4')
-adw_dep  = dependency('libadwaita-1')
+glib_dep   = dependency('glib-2.0')
+gio_dep    = dependency('gio-2.0')             # M4/M5: TCI + WSJT-X sockets
+gtk_dep    = dependency('gtk4')                # app front-end
+adw_dep    = dependency('libadwaita-1')        # app control surface
+sqlite_dep = dependency('sqlite3')             # M1: canonical log store
+
+engine_inc = include_directories('src/engine')
+
+# --- Engine (headless, GLib-only) -------------------------------------------
+# Grows milestone by milestone (docs/SCOPE.md). M0: identity + sqlite selfcheck.
+engine_sources = [
+  'src/engine/engine.c',       # M0: identity, sqlite selfcheck
+]
+engine_deps = [glib_dep, gio_dep, sqlite_dep]
+
+engine_lib = static_library('logfl-engine',
+  engine_sources,
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+)
+
+# --- Gates (offline tests, family house style) -------------------------------
+# M0: the engine builds headless and the sqlite dependency works end to end.
+log_engine_test = executable('log-engine-test',
+  ['src/engine_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('engine', log_engine_test, timeout : 30)
 
 # --- App --------------------------------------------------------------------
 executable('log-for-linux',
   'src/app/main.c',
+  include_directories : engine_inc,
   dependencies : [glib_dep, gio_dep, gtk_dep, adw_dep],
+  link_with : engine_lib,
   install : true,
 )
