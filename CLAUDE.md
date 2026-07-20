@@ -10,5 +10,5 @@ Native ham radio logbook for Linux (OK1BR). Third app of the family with
 - Build: `meson setup builddir && meson compile -C builddir`.
 - On Arch always build from source; install goes to `~/.local`, not `/usr`.
 
-Scope/design: `docs/SCOPE.md` (to be written — nothing is decided yet beyond
-the stack).
+Scope/design: `docs/SCOPE.md` (written 2026-07-20 — read it first; it holds
+the decided store/integrations/milestones).
