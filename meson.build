@@ -27,6 +27,7 @@ engine_inc = include_directories('src/engine')
 # Grows milestone by milestone (docs/SCOPE.md). M0: identity + sqlite selfcheck.
 engine_sources = [
   'src/engine/engine.c',       # M0: identity, sqlite selfcheck
+  'src/engine/log_store.c',    # M1: canonical QSO store (schema, CRUD, queries)
 ]
 engine_deps = [glib_dep, gio_dep, sqlite_dep]
 
@@ -45,6 +46,15 @@ log_engine_test = executable('log-engine-test',
   link_with : engine_lib,
 )
 test('engine', log_engine_test, timeout : 30)
+
+# M1: log store — migrations, CRUD round-trip, dup/worked-B4, 50k volume.
+log_store_test = executable('log-store-test',
+  ['src/store_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('store', log_store_test, timeout : 60)
 
 # --- App --------------------------------------------------------------------
 executable('log-for-linux',

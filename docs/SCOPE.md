@@ -76,12 +76,24 @@ importing someone's log and exporting it again must never silently drop data.
 
 ## Milestones
 
-- **M0 — scaffold.** Engine/app split, sqlite3 dependency, test harness.
+- **M0 — scaffold. IMPLEMENTED 2026-07-20.** Engine/app split, sqlite3
+  dependency, test harness.
   Gate: `meson test` runs a trivial engine test; the empty window launches.
-- **M1 — log store.** Schema v1 + migrations, CRUD, worked-B4 query, dup check
-  (same call+band+mode within a time window), stats counters.
+  Done as `src/engine/engine.c` (identity + sqlite end-to-end selfcheck),
+  gate `log-engine-test`; the app links the engine and shows its versions.
+- **M1 — log store. IMPLEMENTED 2026-07-20 (offline gate green).** Schema v1 +
+  migrations, CRUD, worked-B4 query, dup check (same call+band+mode within a
+  time window), stats counters.
   Gate: `log-store-test` — headless, covers schema migration from an empty and
   a v1 file, CRUD, dup/worked-B4 edge cases, and volume (50k synthetic QSOs).
+  Done as `src/engine/log_store.c`: WAL, `PRAGMA user_version` migrations
+  (refuses newer-than-app files), normalized call/band/mode (upper/lower/
+  upper), NULL-for-unset columns, `extras` column reserved for the M2
+  lossless round-trip, explicit tx API for bulk import, list with
+  text/band/mode filters + paging. Measured (in-memory): 50k inserts in
+  ~0.2 s inside one tx; worked-B4 + dup + list-20 in 0.1 ms. The app opens
+  the real store (`~/.local/share/log-for-linux/log.db`) and shows the
+  counters on the status page until M3 brings the UI.
 - **M2 — ADIF import/export.** ADIF 3.1.x parser + writer over the store,
   unknown-field preservation, import dedup report.
   Gate: `log-adif-test` — round-trip byte-fidelity on modeled and unknown

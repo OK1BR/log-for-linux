@@ -9,6 +9,7 @@
 #include <adwaita.h>
 
 #include "engine.h"
+#include "log_store.h"
 
 static void
 on_activate (AdwApplication *app, gpointer user_data)
@@ -24,12 +25,38 @@ on_activate (AdwApplication *app, gpointer user_data)
 
   GError *err = NULL;
   gboolean engine_ok = logfl_engine_selfcheck (&err);
-  g_autofree char *desc = g_strdup_printf (
-      "Native ham radio logbook — M0 scaffold, nothing logged yet.\n"
+  g_autofree char *engine_line = g_strdup_printf (
       "Engine %s · SQLite %s · selfcheck %s",
       logfl_engine_version (), logfl_engine_sqlite_version (),
       engine_ok ? "OK" : err->message);
   g_clear_error (&err);
+
+  /* M1: the real store. The UI proper lands in M3 — for now open it, show
+   * the counters and close again. */
+  g_autofree char *db_dir =
+      g_build_filename (g_get_user_data_dir (), "log-for-linux", NULL);
+  g_mkdir_with_parents (db_dir, 0700);
+  g_autofree char *db_path = g_build_filename (db_dir, "log.db", NULL);
+  g_autofree char *store_line = NULL;
+  LogflStore *store = logfl_store_open (db_path, &err);
+  if (store)
+    {
+      LogflStoreStats st;
+      if (logfl_store_stats (store, &st, &err))
+        store_line = g_strdup_printf (
+            "Log: %u QSO · %u calls (schema v%d, %s)",
+            st.n_qso, st.n_calls, LOGFL_STORE_SCHEMA_VERSION, db_path);
+      logfl_store_close (store);
+    }
+  if (!store_line)
+    {
+      store_line = g_strdup_printf ("Log store FAILED: %s", err->message);
+      g_clear_error (&err);
+    }
+
+  g_autofree char *desc = g_strdup_printf (
+      "Native ham radio logbook — M1 (log store), UI lands in M3.\n%s\n%s",
+      engine_line, store_line);
 
   GtkWidget *status = adw_status_page_new ();
   adw_status_page_set_title (ADW_STATUS_PAGE (status), "Log for Linux");
