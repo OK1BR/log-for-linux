@@ -55,7 +55,7 @@ on_activate (AdwApplication *app, gpointer user_data)
     }
 
   g_autofree char *desc = g_strdup_printf (
-      "Native ham radio logbook — M1 (log store), UI lands in M3.\n%s\n%s",
+      "Native ham radio logbook — M2 (ADIF import/export), UI lands in M3.\n%s\n%s",
       engine_line, store_line);
 
   GtkWidget *status = adw_status_page_new ();

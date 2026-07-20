@@ -28,6 +28,7 @@ engine_inc = include_directories('src/engine')
 engine_sources = [
   'src/engine/engine.c',       # M0: identity, sqlite selfcheck
   'src/engine/log_store.c',    # M1: canonical QSO store (schema, CRUD, queries)
+  'src/engine/adif.c',         # M2: ADIF import/export, lossless round-trip
 ]
 engine_deps = [glib_dep, gio_dep, sqlite_dep]
 
@@ -55,6 +56,15 @@ log_store_test = executable('log-store-test',
   link_with : engine_lib,
 )
 test('store', log_store_test, timeout : 60)
+
+# M2: ADIF — quirks corpus, unknown-field preservation, byte-stable round trip.
+log_adif_test = executable('log-adif-test',
+  ['src/adif_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('adif', log_adif_test, timeout : 60)
 
 # --- App --------------------------------------------------------------------
 executable('log-for-linux',

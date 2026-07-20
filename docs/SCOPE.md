@@ -94,11 +94,24 @@ importing someone's log and exporting it again must never silently drop data.
   ~0.2 s inside one tx; worked-B4 + dup + list-20 in 0.1 ms. The app opens
   the real store (`~/.local/share/log-for-linux/log.db`) and shows the
   counters on the status page until M3 brings the UI.
-- **M2 — ADIF import/export.** ADIF 3.1.x parser + writer over the store,
-  unknown-field preservation, import dedup report.
+- **M2 — ADIF import/export. IMPLEMENTED 2026-07-20 (offline gate green).**
+  ADIF 3.1.x parser + writer over the store, unknown-field preservation,
+  import dedup report.
   Gate: `log-adif-test` — round-trip byte-fidelity on modeled and unknown
   fields, plus a quirks corpus (real-world exports: case, line endings,
   missing `<EOH>`, odd whitespace).
+  Done as `src/engine/adif.c`. Parser: byte-exact length-prefixed tag walk,
+  tolerant of lowercase tags, CRLF, `:type` suffixes, inter-field garbage,
+  a missing `<EOH>` (header iff the first non-ws char isn't `<`), 4-digit
+  TIME_ON and a final record without `<EOR>`; a truncated declared length
+  marks the record bad rather than eating the next one. Unmodeled fields →
+  `extras` verbatim; BAND falls back to a freq→band table (2190m–23cm);
+  bad records are counted, never abort; import is one tx with dup skipping
+  (window 0 = exact-ts only). Writer: deterministic header (no timestamp —
+  same log ⇒ byte-identical file), fixed field order, locale-safe trimmed
+  numbers, oldest-first. Gate covers the quirks corpus, UTF-8 names,
+  multiline comments, intra-file + re-import dedup accounting and the
+  export(import(x)) byte-stability check.
 - **M3 — UI v1: the usable logbook.** Entry row (call/RST/band/mode/…,
   UTC clock), QSO table (GtkColumnView, newest first), search/filter,
   ADIF import/export in the UI, worked-B4 indication while typing.
