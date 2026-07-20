@@ -112,11 +112,22 @@ importing someone's log and exporting it again must never silently drop data.
   numbers, oldest-first. Gate covers the quirks corpus, UTF-8 names,
   multiline comments, intra-file + re-import dedup accounting and the
   export(import(x)) byte-stability check.
-- **M3 — UI v1: the usable logbook.** Entry row (call/RST/band/mode/…,
+- **M3 — UI v1: the usable logbook. CODE LANDED 2026-07-20; the manual
+  checklist gate awaits Richard.** Entry row (call/RST/band/mode/…,
   UTC clock), QSO table (GtkColumnView, newest first), search/filter,
   ADIF import/export in the UI, worked-B4 indication while typing.
   Gate: manual checklist — this milestone is deliberately UI; everything under
   it is already gated headless. **This is v1.**
+  Done as `src/app/win.c` (+ `qso_row.c` GObject row wrapper): entry row
+  with UTC clock, live worked-B4 hint (green "New call" / yellow B4 counts
+  per band/band+mode with last-worked date), RST defaults per mode
+  (599 ↔ 59, never stomping a hand-edited report), freq → band dropdown
+  auto-sync via the M2 band table, Enter anywhere logs; a 5-min same
+  call+band+mode duplicate asks first. Table is a virtualized
+  GtkColumnView over the store (newest first), search re-queries the
+  engine (call/name/QTH/comment); delete goes through a destructive
+  confirmation; ADIF import/export via GtkFileDialog with a result toast
+  (imported/dups/bad); QSO+calls counters live in the header subtitle.
 - **M4 — TCI integration.** Connect to `sdr-for-linux`, entry row pre-fills
   freq/mode from the live VFO, double-click on a logged QSO → QSY.
   Gate: `log-tci-test` — mock TCI server (skimmer house pattern); live check

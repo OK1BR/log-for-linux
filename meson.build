@@ -68,7 +68,11 @@ test('adif', log_adif_test, timeout : 60)
 
 # --- App --------------------------------------------------------------------
 executable('log-for-linux',
-  'src/app/main.c',
+  [
+    'src/app/main.c',
+    'src/app/win.c',        # M3: main window — entry row, table, ADIF UI
+    'src/app/qso_row.c',    # M3: GObject row wrapper for GtkColumnView
+  ],
   include_directories : engine_inc,
   dependencies : [glib_dep, gio_dep, gtk_dep, adw_dep],
   link_with : engine_lib,
