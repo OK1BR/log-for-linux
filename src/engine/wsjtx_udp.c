@@ -11,7 +11,6 @@
 
 #include <gio/gio.h>
 #include <string.h>
-#include <sys/socket.h>
 
 G_DEFINE_QUARK (logfl-wsjtx-error-quark, logfl_wsjtx_error)
 
@@ -797,7 +796,6 @@ logfl_wsjtx_server_start (LogflWsjtxServer *s, GError **error)
       return FALSE;
     }
   g_socket_set_blocking (sock, FALSE);
-  g_socket_set_option (sock, SOL_SOCKET, SO_REUSEADDR, 1, NULL);
 
   GInetAddress *ia = g_inet_address_new_from_string (s->host);
   if (!ia)
@@ -809,7 +807,9 @@ logfl_wsjtx_server_start (LogflWsjtxServer *s, GError **error)
     }
   GSocketAddress *addr = g_inet_socket_address_new (ia, s->port);
   g_object_unref (ia);
-  if (!g_socket_bind (sock, addr, TRUE, &err))
+  /* No reuse: with allow_reuse GLib sets SO_REUSEPORT on UDP, so a second
+   * bind silently splits datagrams with whoever holds the port. Fail loud. */
+  if (!g_socket_bind (sock, addr, FALSE, &err))
     {
       g_set_error (error, LOGFL_WSJTX_ERROR, LOGFL_WSJTX_ERROR_BIND,
                    "bind %s:%u: %s", s->host, s->port,

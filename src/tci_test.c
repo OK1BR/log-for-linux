@@ -1,8 +1,8 @@
 /*
  * log-tci-test — offline gate for the TCI client (M4). No radio, no GUI.
  *
- * Mock TCI server (libwebsockets, sdr-for-linux wire dialect) on
- * 127.0.0.1:40134 drives logfl_tci_client:
+ * Mock TCI server (libwebsockets, sdr-for-linux wire dialect) on an
+ * ephemeral 127.0.0.1 port drives logfl_tci_client:
  *   - handshake: batched init ending ready; → start() returns with
  *     protocol/device/vfo/mode filled,
  *   - live vfo: / modulation: broadcasts fire the state callback,
@@ -16,8 +16,6 @@
 #include <string.h>
 
 #include "tci_client.h"
-
-#define PORT 40134
 
 /* ---- mock TCI server --------------------------------------------------- */
 
@@ -224,17 +222,21 @@ test_handshake_and_live (void)
   lws_set_log_level (LLL_ERR, NULL);
   struct lws_context_creation_info info;
   memset (&info, 0, sizeof info);
-  info.port = PORT;
+  info.port = 0;               /* ephemeral — a fixed port EADDRINUSEs on
+                                * re-runs while TIME_WAIT lingers */
   info.protocols = s_protocols;
   info.gid = (gid_t) -1;
   info.uid = (uid_t) -1;
   info.options = LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;
   s_ctx = lws_create_context (&info);
   g_assert_nonnull (s_ctx);
+  struct lws_vhost *vh = lws_get_vhost_by_name (s_ctx, "default");
+  g_assert_nonnull (vh);
+  int port = lws_get_vhost_listen_port (vh);
+  g_assert_cmpint (port, >, 0);
   GThread *srv_thr = g_thread_new ("mock-tci", server_thread, NULL);
-  g_usleep (50 * 1000);        /* let the listen socket bind */
 
-  LogflTciClient *cli = logfl_tci_client_new ("127.0.0.1", PORT);
+  LogflTciClient *cli = logfl_tci_client_new ("127.0.0.1", (guint16) port);
   logfl_tci_client_set_state_cb (cli, on_state, NULL);
   logfl_tci_client_set_closed_cb (cli, on_closed, NULL);
 
@@ -253,9 +255,11 @@ test_handshake_and_live (void)
   g_assert_cmpfloat (st.vfo_hz, ==, 7023456.0);
   g_assert_cmpstr (st.mode, ==, "cw");
 
-  /* Live VFO push. */
+  /* Live VFO push. lws_service() blocks until an event, so wake the server
+   * loop explicitly — without it the flag sits until some internal timer. */
   gint before = g_atomic_int_get (&c_states);
   g_atomic_int_set (&s_push_vfo, 1);
+  lws_cancel_service (s_ctx);
   g_assert_true (wait_states (before + 1, 2000));
   g_mutex_lock (&c_lock);
   g_assert_cmpfloat (c_last_vfo, ==, 14074000.0);
@@ -264,6 +268,7 @@ test_handshake_and_live (void)
   /* Live mode push. */
   before = g_atomic_int_get (&c_states);
   g_atomic_int_set (&s_push_mode, 1);
+  lws_cancel_service (s_ctx);
   g_assert_true (wait_states (before + 1, 2000));
   g_mutex_lock (&c_lock);
   g_assert_cmpstr (c_last_mode, ==, "usb");

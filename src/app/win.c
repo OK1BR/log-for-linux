@@ -220,7 +220,7 @@ select_mode_string (LogflWindow *self, const char *mode)
 }
 
 typedef struct {
-  LogflWindow  *self;
+  LogflWindow  *self;          /* strong ref — idle may outlive the window */
   LogflTciState st;
 } TciStateIdle;
 
@@ -234,6 +234,7 @@ tci_apply_state (gpointer user_data)
   /* Drop if the window is already tearing down. */
   if (self->tci_label == NULL)
     {
+      g_object_unref (self);
       g_free (d);
       return G_SOURCE_REMOVE;
     }
@@ -264,6 +265,7 @@ tci_apply_state (gpointer user_data)
   g_free (status);
   g_free (mhz_txt);
 
+  g_object_unref (self);
   g_free (d);
   return G_SOURCE_REMOVE;
 }
@@ -274,7 +276,7 @@ on_tci_state (const LogflTciState *st, gpointer user_data)
 {
   LogflWindow *self = user_data;
   TciStateIdle *d = g_new (TciStateIdle, 1);
-  d->self = self;
+  d->self = g_object_ref (self);
   d->st = *st;
   g_idle_add (tci_apply_state, d);
 }
@@ -289,9 +291,12 @@ typedef struct {
 static gboolean
 tci_mark_offline (gpointer user_data)
 {
-  LogflWindow *self = user_data;
+  LogflWindow *self = user_data;   /* strong ref from on_tci_closed */
   if (self->tci_label == NULL)
-    return G_SOURCE_REMOVE;
+    {
+      g_object_unref (self);
+      return G_SOURCE_REMOVE;
+    }
 
   if (self->tci)
     {
@@ -302,13 +307,14 @@ tci_mark_offline (gpointer user_data)
     }
   tci_set_status (self, "TCI offline");
   tci_schedule_connect (self);
+  g_object_unref (self);
   return G_SOURCE_REMOVE;
 }
 
 static void
 on_tci_closed (gpointer user_data)
 {
-  g_idle_add (tci_mark_offline, user_data);
+  g_idle_add (tci_mark_offline, g_object_ref (user_data));
 }
 
 static gboolean
@@ -1046,6 +1052,10 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
   (void) keycode;
   LogflWindow *self = user_data;
   if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))
+    return FALSE;
+  /* A dialog is up (prefs, macro edit, confirm…): let it have the keys —
+   * F1 must not key CW from a dialog entry and Esc must close the dialog. */
+  if (adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (self)))
     return FALSE;
   if (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F8)
     {
@@ -2106,17 +2116,20 @@ cell_begin_edit (GtkWidget *box)
   gtk_editable_select_region (GTK_EDITABLE (entry), 0, -1);
 }
 
-/* Idle: commit when focus left the entry (not on Enter — already handled). */
+/* Idle: commit when focus left the entry (not on Enter — already handled).
+ * Holds a ref on box; skip once the widget is off the tree (window closing —
+ * the stored "logfl-win" pointer must not be dereferenced then). */
 static gboolean
 cell_end_edit_idle (gpointer data)
 {
   GtkWidget *box = data;
-  if (!cell_is_editing (box))
-    return G_SOURCE_REMOVE;
-  GtkWidget *entry = cell_entry (box);
-  if (entry && gtk_widget_has_focus (entry))
-    return G_SOURCE_REMOVE;
-  cell_end_edit (box, TRUE);
+  if (gtk_widget_get_root (box) != NULL && cell_is_editing (box))
+    {
+      GtkWidget *entry = cell_entry (box);
+      if (!(entry && gtk_widget_has_focus (entry)))
+        cell_end_edit (box, TRUE);
+    }
+  g_object_unref (box);
   return G_SOURCE_REMOVE;
 }
 
@@ -2135,7 +2148,7 @@ on_cell_entry_focus_leave (GtkEventControllerFocus *ctl, gpointer user_data)
   if (!cell_is_editing (box))
     return;
   /* Defer so activate/Escape handlers run first. */
-  g_idle_add (cell_end_edit_idle, box);
+  g_idle_add (cell_end_edit_idle, g_object_ref (box));
 }
 
 static gboolean
