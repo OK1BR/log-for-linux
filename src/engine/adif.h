@@ -47,6 +47,10 @@ gboolean logfl_adif_export_file (LogflStore *s, const char *path,
  * amateur allocation the table knows. */
 const char *logfl_adif_band_for_freq (double mhz);
 
+/* Mid-point of the band allocation in MHz, or 0 if the name is unknown.
+ * Fallback only — prefer the live VFO / typed MHz when logging. */
+double logfl_adif_freq_for_band (const char *band);
+
 G_END_DECLS
 
 #endif /* LOGFL_ADIF_H */

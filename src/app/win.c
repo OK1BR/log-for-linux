@@ -527,6 +527,36 @@ on_freq_changed (LogflWindow *self)
       }
 }
 
+/* When the operator picks a band with an empty MHz field, seed a mid-band
+ * frequency so logging does not store NULL (exact VFO still comes from TCI
+ * or a typed value). */
+static void
+on_band_changed (LogflWindow *self)
+{
+  if (self->syncing_freq || self->syncing_tci)
+    {
+      update_wb4 (self);
+      return;
+    }
+  const char *cur = entry_text (self->freq);
+  if (cur && *cur)
+    {
+      update_wb4 (self);
+      return;
+    }
+  const char *band = dd_selected (self->band_dd, bands);
+  double mhz = logfl_adif_freq_for_band (band);
+  if (mhz > 0)
+    {
+      char *txt = fmt_freq (mhz);
+      self->syncing_freq = TRUE;
+      gtk_editable_set_text (GTK_EDITABLE (self->freq), txt);
+      self->syncing_freq = FALSE;
+      g_free (txt);
+    }
+  update_wb4 (self);
+}
+
 static void
 clear_entry_row (LogflWindow *self)
 {
@@ -598,10 +628,21 @@ log_qso (LogflWindow *self)
   q->band = g_strdup (dd_selected (self->band_dd, bands));
   q->mode = g_strdup (dd_selected (self->mode_dd, modes));
   q->ts = g_get_real_time () / G_USEC_PER_SEC;
+  /* Frequency (MHz): typed field first; if empty, live TCI VFO; last resort
+   * band mid-point so ADIF/SQL never lose the band-only case as NULL. */
   char *ftxt = g_strdup (entry_text (self->freq));
   g_strdelimit (ftxt, ",", '.');
   q->freq = g_ascii_strtod (ftxt, NULL);
   g_free (ftxt);
+  if (q->freq <= 0 && self->tci && logfl_tci_client_is_ready (self->tci))
+    {
+      LogflTciState st;
+      logfl_tci_client_get_state (self->tci, &st);
+      if (st.vfo_hz > 0)
+        q->freq = st.vfo_hz / 1e6;
+    }
+  if (q->freq <= 0 && q->band)
+    q->freq = logfl_adif_freq_for_band (q->band);
   q->rst_sent = g_strdup (entry_text (self->rst_s));
   q->rst_rcvd = g_strdup (entry_text (self->rst_r));
   q->name = g_strdup (entry_text (self->name));
@@ -1224,7 +1265,18 @@ logfl_window_init (LogflWindow *self)
   self->band_dd = gtk_drop_down_new_from_strings (bands);
   gtk_drop_down_set_selected (GTK_DROP_DOWN (self->band_dd), 5); /* 40m */
   g_signal_connect_swapped (self->band_dd, "notify::selected",
-                            G_CALLBACK (update_wb4), self);
+                            G_CALLBACK (on_band_changed), self);
+  /* Default band has an empty MHz field on first paint — seed mid-band so a
+   * quick Log QSO still writes freq into SQL (TCI overwrites with VFO). */
+  {
+    double mhz = logfl_adif_freq_for_band ("40m");
+    if (mhz > 0)
+      {
+        char *txt = fmt_freq (mhz);
+        gtk_editable_set_text (GTK_EDITABLE (self->freq), txt);
+        g_free (txt);
+      }
+  }
   self->mode_dd = gtk_drop_down_new_from_strings (modes);
   g_signal_connect_swapped (self->mode_dd, "notify::selected",
                             G_CALLBACK (on_mode_changed), self);

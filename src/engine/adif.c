@@ -33,6 +33,17 @@ logfl_adif_band_for_freq (double mhz)
   return NULL;
 }
 
+double
+logfl_adif_freq_for_band (const char *band)
+{
+  if (!band || !*band)
+    return 0;
+  for (gsize i = 0; i < G_N_ELEMENTS (band_table); i++)
+    if (g_ascii_strcasecmp (band_table[i].band, band) == 0)
+      return (band_table[i].lo + band_table[i].hi) / 2.0;
+  return 0;
+}
+
 /* --- parser ------------------------------------------------------------- */
 
 /* One length-prefixed tag: <NAME:len[:type]>value, or the bare <EOR>/<EOH>

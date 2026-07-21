@@ -164,7 +164,15 @@ importing someone's log and exporting it again must never silently drop data.
   already-saved QSO.** Decided 2026-07-21 (Richard): v1 can only add/delete;
   correcting a logged QSO must be first-class (load row into the entry row or
   a dialog, `logfl_store_update`, keep extras/QSL fields intact). Do not start
-  M5+ assuming the log is append-only from the UI.
+  M5+ assuming the log is append-only from the UI. Also needed to correct
+  early QSOs that were saved with `freq` NULL (band only) before the MHz
+  prefill/TCI fallback landed.
+- **Freq must be exact in SQL (caught 2026-07-21).** Schema always had
+  `freq REAL`; the UI used to leave the MHz entry empty (placeholder only),
+  so `bind_qso` stored NULL and only `band` survived. Fix direction: typed
+  MHz → live TCI VFO at log time → band mid-point fallback; band change
+  seeds MHz when empty; TCI still overwrites with the real VFO. Existing
+  NULL rows need edit-QSO or a one-shot repair later.
 - **Later** — DXCC/awards tracking (cty.dat entity resolver, worked/confirmed
   matrices per band/mode), contest mode (serials, Cabrillo export), and — only
   if ever revisited — the skimmer cluster client.
