@@ -156,6 +156,11 @@ importing someone's log and exporting it again must never silently drop data.
   (`lotwreport.adi`) and mark QSLs; eQSL upload + inbox; Club Log upload.
   Per-QSO sent/confirmed state per service, retry-safe (idempotent re-upload).
   Gate: `log-qsl-test` over mocked endpoints; live check with a small batch.
+- **Next UI (before or alongside the next feature milestone)** — **edit an
+  already-saved QSO.** Decided 2026-07-21 (Richard): v1 can only add/delete;
+  correcting a logged QSO must be first-class (load row into the entry row or
+  a dialog, `logfl_store_update`, keep extras/QSL fields intact). Do not start
+  M5+ assuming the log is append-only from the UI.
 - **Later** — DXCC/awards tracking (cty.dat entity resolver, worked/confirmed
   matrices per band/mode), contest mode (serials, Cabrillo export), and — only
   if ever revisited — the skimmer cluster client.
