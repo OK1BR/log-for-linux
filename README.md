@@ -29,7 +29,9 @@ meson compile -C builddir
 meson install -C builddir
 ```
 
-SQLite log: `~/.local/share/log-for-linux/log.db` (WAL). ADIF is interchange
-only (import/export from the window menu).
+SQLite log: `~/.local/share/log-for-linux/log.db` (WAL). Preferences:
+`~/.config/log-for-linux/settings.ini` (TCI host/port, station callsign) —
+menu → Preferences (`AdwPreferencesDialog`, same pattern as skimmer/sdr).
+ADIF is interchange only (import/export from the window menu).
 
 C11 · GTK4 · libadwaita · SQLite · meson · GPL-3.0-or-later

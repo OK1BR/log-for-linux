@@ -81,8 +81,9 @@ test('tci', log_tci_test, timeout : 30)
 executable('log-for-linux',
   [
     'src/app/main.c',
-    'src/app/win.c',        # M3 UI + M4 TCI prefill / QSY
+    'src/app/win.c',        # M3 UI + M4 TCI prefill / QSY + prefs
     'src/app/qso_row.c',    # M3: GObject row wrapper for GtkColumnView
+    'src/app/settings.c',   # GKeyFile prefs (TCI host/port, station call)
   ],
   include_directories : engine_inc,
   dependencies : [glib_dep, gio_dep, gtk_dep, adw_dep, lws_dep],

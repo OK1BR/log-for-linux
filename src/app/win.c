@@ -12,6 +12,7 @@
 #include "engine.h"
 #include "log_store.h"
 #include "qso_row.h"
+#include "settings.h"
 #include "tci_client.h"
 
 #define TCI_RETRY_S 5
@@ -23,8 +24,6 @@
 #define ADIF_IMPORT_DUP_WINDOW_S 0
 /* Debounce search so each keystroke does not re-query the whole store. */
 #define SEARCH_DEBOUNCE_MS 250
-/* Until prefs land (later milestone): own callsign stamped on new QSOs. */
-#define DEFAULT_STATION_CALLSIGN "OK1BR"
 
 /* Must cover every name returned by logfl_adif_band_for_freq(). */
 static const char *bands[] = {
@@ -44,6 +43,7 @@ struct _LogflWindow {
   LogflStore *store;
   char *db_path;
   char *store_open_error;      /* non-NULL when open failed; shown once */
+  LogflSettings settings;      /* ~/.config/log-for-linux/settings.ini   */
 
   GListStore *rows;
   GtkSingleSelection *selection;
@@ -62,6 +62,7 @@ struct _LogflWindow {
   gboolean syncing_freq;       /* guard against freq↔band feedback */
   gboolean syncing_tci;        /* guard: applying radio state to entry */
   gboolean tci_connecting;     /* connect thread in flight */
+  guint tci_epoch;             /* bumps on reconnect; stale jobs drop */
   LogflTciClient *tci;
   LogflQso *pending;           /* QSO awaiting dup confirmation */
   gint64 pending_delete_id;
@@ -172,6 +173,7 @@ on_search_changed (LogflWindow *self)
 /* --- TCI (M4) ----------------------------------------------------------- */
 
 static void tci_schedule_connect (LogflWindow *self);
+static gboolean tci_connect_kick (gpointer user_data);
 static void update_wb4 (LogflWindow *self);
 
 static void
@@ -257,6 +259,7 @@ on_tci_state (const LogflTciState *st, gpointer user_data)
 typedef struct {
   LogflWindow    *self;   /* strong ref held for the job */
   LogflTciClient *cli;    /* owned by job until success installs it */
+  guint           epoch;  /* must match self->tci_epoch to install */
   gboolean        ok;
 } TciConnectResult;
 
@@ -301,6 +304,23 @@ tci_connect_done (gpointer user_data)
           logfl_tci_client_set_closed_cb (r->cli, NULL, NULL);
           logfl_tci_client_free (r->cli);
         }
+      g_object_unref (self);
+      g_free (r);
+      return G_SOURCE_REMOVE;
+    }
+
+  /* Stale job (prefs changed host/port mid-connect): drop and retry. */
+  if (r->epoch != self->tci_epoch)
+    {
+      if (r->cli)
+        {
+          logfl_tci_client_set_state_cb (r->cli, NULL, NULL);
+          logfl_tci_client_set_closed_cb (r->cli, NULL, NULL);
+          logfl_tci_client_free (r->cli);
+          r->cli = NULL;
+        }
+      if (!self->tci)
+        tci_connect_kick (self);
       g_object_unref (self);
       g_free (r);
       return G_SOURCE_REMOVE;
@@ -355,14 +375,20 @@ tci_connect_kick (gpointer user_data)
   if (self->tci && logfl_tci_client_is_ready (self->tci))
     return G_SOURCE_REMOVE;
 
-  LogflTciClient *cli =
-      logfl_tci_client_new (LOGFL_TCI_DEFAULT_HOST, LOGFL_TCI_DEFAULT_PORT);
+  const char *host = self->settings.tci_host && *self->settings.tci_host
+                         ? self->settings.tci_host
+                         : LOGFL_TCI_DEFAULT_HOST;
+  guint16 port = self->settings.tci_port
+                     ? self->settings.tci_port
+                     : LOGFL_TCI_DEFAULT_PORT;
+  LogflTciClient *cli = logfl_tci_client_new (host, port);
   logfl_tci_client_set_state_cb (cli, on_tci_state, self);
   logfl_tci_client_set_closed_cb (cli, on_tci_closed, self);
 
   TciConnectResult *r = g_new0 (TciConnectResult, 1);
   r->self = g_object_ref (self);
   r->cli = cli;
+  r->epoch = self->tci_epoch;
   self->tci_connecting = TRUE;
   tci_set_status (self, "TCI connecting…");
   g_thread_unref (g_thread_new ("logfl-tci-conn", tci_connect_thread, r));
@@ -580,7 +606,10 @@ log_qso (LogflWindow *self)
   q->rst_rcvd = g_strdup (entry_text (self->rst_r));
   q->name = g_strdup (entry_text (self->name));
   q->comment = g_strdup (entry_text (self->comment));
-  q->station_callsign = g_strdup (DEFAULT_STATION_CALLSIGN);
+  q->station_callsign = g_strdup (
+      self->settings.station_callsign && *self->settings.station_callsign
+          ? self->settings.station_callsign
+          : "OK1BR");
 
   gboolean dup = FALSE;
   logfl_store_dup_check (self->store, q->call, q->band, q->mode, q->ts,
@@ -796,6 +825,133 @@ act_export (GSimpleAction *action, GVariant *param, gpointer user_data)
   g_object_unref (dlg);
 }
 
+/* --- preferences (skimmer/sdr house style) ------------------------------ */
+
+static void
+tci_disconnect (LogflWindow *self)
+{
+  g_clear_handle_id (&self->tci_retry_id, g_source_remove);
+  if (self->tci)
+    {
+      logfl_tci_client_set_state_cb (self->tci, NULL, NULL);
+      logfl_tci_client_set_closed_cb (self->tci, NULL, NULL);
+      logfl_tci_client_free (self->tci);
+      self->tci = NULL;
+    }
+  tci_set_status (self, "TCI offline");
+}
+
+static void
+tci_reconnect_now (LogflWindow *self)
+{
+  /* Invalidate any in-flight connect job; it will free itself and re-kick. */
+  self->tci_epoch++;
+  tci_disconnect (self);
+  if (!self->tci_connecting && self->tci_label)
+    tci_connect_kick (self);
+}
+
+static void
+prefs_closed (AdwDialog *dlg, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  GtkWidget *host_row = g_object_get_data (G_OBJECT (dlg), "tci-host");
+  GtkWidget *port_row = g_object_get_data (G_OBJECT (dlg), "tci-port");
+  GtkWidget *call_row = g_object_get_data (G_OBJECT (dlg), "station-call");
+
+  const char *h = gtk_editable_get_text (GTK_EDITABLE (host_row));
+  char *host = g_strstrip (g_strdup ((h && *h) ? h : LOGFL_TCI_DEFAULT_HOST));
+  int port = (int) adw_spin_row_get_value (ADW_SPIN_ROW (port_row));
+  if (port < 1 || port > 65535)
+    port = LOGFL_TCI_DEFAULT_PORT;
+  const char *c = gtk_editable_get_text (GTK_EDITABLE (call_row));
+  char *call = g_strstrip (g_strdup (c ? c : ""));
+
+  gboolean tci_changed =
+      g_strcmp0 (host, self->settings.tci_host) != 0 ||
+      (guint16) port != self->settings.tci_port;
+  gboolean call_changed =
+      g_strcmp0 (call, self->settings.station_callsign) != 0;
+
+  if (tci_changed || call_changed)
+    {
+      g_free (self->settings.tci_host);
+      self->settings.tci_host = host;
+      self->settings.tci_port = (guint16) port;
+      g_free (self->settings.station_callsign);
+      self->settings.station_callsign = call;
+      logfl_settings_save (&self->settings);
+      if (tci_changed)
+        tci_reconnect_now (self);
+    }
+  else
+    {
+      g_free (host);
+      g_free (call);
+    }
+}
+
+static void
+act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+  (void) action;
+  (void) param;
+  LogflWindow *self = user_data;
+
+  AdwDialog *dlg = adw_preferences_dialog_new ();
+  adw_dialog_set_title (dlg, "Preferences");
+
+  GtkWidget *page = adw_preferences_page_new ();
+
+  /* TCI — same group naming as skimmer-for-linux. */
+  GtkWidget *tgrp = adw_preferences_group_new ();
+  adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (tgrp), "TCI server");
+  adw_preferences_group_set_description (
+      ADW_PREFERENCES_GROUP (tgrp),
+      "sdr-for-linux WebSocket endpoint — connection is automatic; "
+      "changing host or port reconnects immediately");
+
+  GtkWidget *host_row = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (host_row), "Host");
+  gtk_editable_set_text (
+      GTK_EDITABLE (host_row),
+      self->settings.tci_host ? self->settings.tci_host
+                              : LOGFL_TCI_DEFAULT_HOST);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (tgrp), host_row);
+
+  GtkWidget *port_row = adw_spin_row_new_with_range (1, 65535, 1);
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (port_row), "Port");
+  adw_spin_row_set_value (
+      ADW_SPIN_ROW (port_row),
+      self->settings.tci_port ? self->settings.tci_port
+                              : LOGFL_TCI_DEFAULT_PORT);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (tgrp), port_row);
+  adw_preferences_page_add (ADW_PREFERENCES_PAGE (page),
+                            ADW_PREFERENCES_GROUP (tgrp));
+
+  GtkWidget *sgrp = adw_preferences_group_new ();
+  adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (sgrp), "Station");
+  adw_preferences_group_set_description (
+      ADW_PREFERENCES_GROUP (sgrp),
+      "Stamped on new QSOs as STATION_CALLSIGN (ADIF)");
+  GtkWidget *call_row = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (call_row), "Callsign");
+  gtk_editable_set_text (
+      GTK_EDITABLE (call_row),
+      self->settings.station_callsign ? self->settings.station_callsign : "");
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (sgrp), call_row);
+  adw_preferences_page_add (ADW_PREFERENCES_PAGE (page),
+                            ADW_PREFERENCES_GROUP (sgrp));
+
+  adw_preferences_dialog_add (ADW_PREFERENCES_DIALOG (dlg),
+                              ADW_PREFERENCES_PAGE (page));
+  g_object_set_data (G_OBJECT (dlg), "tci-host", host_row);
+  g_object_set_data (G_OBJECT (dlg), "tci-port", port_row);
+  g_object_set_data (G_OBJECT (dlg), "station-call", call_row);
+  g_signal_connect (dlg, "closed", G_CALLBACK (prefs_closed), self);
+  adw_dialog_present (dlg, GTK_WIDGET (self));
+}
+
 static void
 act_about (GSimpleAction *action, GVariant *param, gpointer user_data)
 {
@@ -813,8 +969,14 @@ act_about (GSimpleAction *action, GVariant *param, gpointer user_data)
                                      GTK_LICENSE_GPL_3_0);
   adw_about_dialog_set_website (ADW_ABOUT_DIALOG (dlg),
                                 "https://github.com/OK1BR/log-for-linux");
-  char *dbg = g_strdup_printf ("SQLite %s\nLog: %s",
-                               logfl_engine_sqlite_version (), self->db_path);
+  char *dbg = g_strdup_printf (
+      "SQLite %s\nLog: %s\nTCI: %s:%u\nSettings: %s/log-for-linux/settings.ini",
+      logfl_engine_sqlite_version (), self->db_path,
+      self->settings.tci_host ? self->settings.tci_host
+                              : LOGFL_TCI_DEFAULT_HOST,
+      self->settings.tci_port ? self->settings.tci_port
+                              : LOGFL_TCI_DEFAULT_PORT,
+      g_get_user_config_dir ());
   adw_about_dialog_set_debug_info (ADW_ABOUT_DIALOG (dlg), dbg);
   g_free (dbg);
   adw_dialog_present (dlg, GTK_WIDGET (self));
@@ -973,6 +1135,7 @@ logfl_window_dispose (GObject *obj)
   g_clear_object (&self->rows);
   g_clear_pointer (&self->store, logfl_store_close);
   g_clear_pointer (&self->db_path, g_free);
+  logfl_settings_clear (&self->settings);
   G_OBJECT_CLASS (logfl_window_parent_class)->dispose (obj);
 }
 
@@ -985,6 +1148,7 @@ logfl_window_class_init (LogflWindowClass *klass)
 static const GActionEntry win_actions[] = {
   { .name = "import", .activate = act_import },
   { .name = "export", .activate = act_export },
+  { .name = "preferences", .activate = act_preferences },
   { .name = "about", .activate = act_about },
 };
 
@@ -995,6 +1159,8 @@ logfl_window_init (LogflWindow *self)
   gtk_window_set_default_size (GTK_WINDOW (self), 1150, 700);
   g_action_map_add_action_entries (G_ACTION_MAP (self), win_actions,
                                    G_N_ELEMENTS (win_actions), self);
+
+  logfl_settings_load (&self->settings);
 
   /* Store. */
   GError *err = NULL;
@@ -1037,6 +1203,7 @@ logfl_window_init (LogflWindow *self)
   GMenu *menu = g_menu_new ();
   g_menu_append (menu, "_Import ADIF…", "win.import");
   g_menu_append (menu, "_Export ADIF…", "win.export");
+  g_menu_append (menu, "_Preferences", "win.preferences");
   g_menu_append (menu, "_About Log for Linux", "win.about");
   GtkWidget *menu_btn = gtk_menu_button_new ();
   gtk_menu_button_set_icon_name (GTK_MENU_BUTTON (menu_btn),
