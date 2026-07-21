@@ -1,7 +1,7 @@
-/* win.c — main logbook window: entry row + worked-B4, footer with UTC and
- * active TCI status; separate QSO-list window (table, search, edit, delete,
- * QSY). ADIF import/export and preferences live on the main window menu
- * (M3/M4). Edit loads a row into the entry strip and uses logfl_store_update.
+/* win.c — main logbook window: entry row, macro strip, QSO table (search /
+ * edit / delete / double-click QSY), footer with UTC and TCI status.
+ * ADIF import/export and preferences live on the window menu (M3/M4).
+ * Edit loads a row into the entry strip and uses logfl_store_update.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */
@@ -52,15 +52,13 @@ struct _LogflWindow {
 
   AdwWindowTitle *title;
   AdwToastOverlay *toasts;
-  GtkWidget *log_win;          /* separate QSO table window (hide-on-close) */
-  AdwWindowTitle *log_title;
   GtkWidget *search;
   GtkWidget *call, *rst_s, *rst_r, *freq, *name, *comment;
   GtkWidget *band_dd, *mode_dd;
   GtkWidget *wb4_label, *clock_label, *tci_label;
   GtkWidget *delete_btn;
-  GtkWidget *edit_btn;         /* log window: load selected into entry */
-  GtkWidget *log_btn;          /* "Log QSO" / "Save QSO" on main window */
+  GtkWidget *edit_btn;         /* load selected QSO into entry row */
+  GtkWidget *log_btn;          /* "Log QSO" / "Save QSO" */
   GtkWidget *cancel_edit_btn;  /* visible only while editing */
   GtkWidget *macro_btns[LOGFL_MACRO_N_KEYS];
   GtkWidget *bank_btn;         /* header: single Run/S&P icon (cycles) */
@@ -138,8 +136,6 @@ reload (LogflWindow *self)
       if (self->rows)
         g_list_store_remove_all (self->rows);
       adw_window_title_set_subtitle (self->title, "log store unavailable");
-      if (self->log_title)
-        adw_window_title_set_subtitle (self->log_title, "log store unavailable");
       return;
     }
 
@@ -171,8 +167,6 @@ reload (LogflWindow *self)
     {
       char *sub = g_strdup_printf ("%u QSO · %u calls", st.n_qso, st.n_calls);
       adw_window_title_set_subtitle (self->title, sub);
-      if (self->log_title)
-        adw_window_title_set_subtitle (self->log_title, sub);
       g_free (sub);
     }
 }
@@ -1862,22 +1856,6 @@ show_store_open_error (gpointer user_data)
 }
 
 static void
-show_log_window (LogflWindow *self)
-{
-  if (!self->log_win)
-    return;
-  gtk_window_present (GTK_WINDOW (self->log_win));
-}
-
-static void
-act_show_log (GSimpleAction *action, GVariant *param, gpointer user_data)
-{
-  (void) action;
-  (void) param;
-  show_log_window (user_data);
-}
-
-static void
 logfl_window_dispose (GObject *obj)
 {
   LogflWindow *self = LOGFL_WINDOW (obj);
@@ -1897,16 +1875,9 @@ logfl_window_dispose (GObject *obj)
   g_clear_pointer (&self->pending, logfl_qso_free);
   g_clear_pointer (&self->editing, logfl_qso_free);
   g_clear_pointer (&self->store_open_error, g_free);
-  /* Destroy the QSO list window before dropping the list model it uses. */
-  if (self->log_win)
-    {
-      gtk_window_destroy (GTK_WINDOW (self->log_win));
-      self->log_win = NULL;
-      self->log_title = NULL;
-      self->search = NULL;
-      self->delete_btn = NULL;
-      self->edit_btn = NULL;
-    }
+  self->search = NULL;
+  self->delete_btn = NULL;
+  self->edit_btn = NULL;
   /* Drop our refs; the column view may still hold one on selection until
    * the widget tree is torn down. */
   g_clear_object (&self->selection);
@@ -1927,14 +1898,12 @@ static const GActionEntry win_actions[] = {
   { .name = "import", .activate = act_import },
   { .name = "export", .activate = act_export },
   { .name = "preferences", .activate = act_preferences },
-  { .name = "show-log", .activate = act_show_log },
   { .name = "about", .activate = act_about },
 };
 
-/* Secondary window: QSO table + search + delete. Hide-on-close; reopened
- * from the main header list icon (before the hamburger). */
-static void
-build_log_window (LogflWindow *self)
+/* QSO table + search/edit/delete bar — sits under the macro strip. */
+static GtkWidget *
+build_qso_table (LogflWindow *self)
 {
   self->rows = g_list_store_new (LOGFL_TYPE_QSO_ROW);
   self->selection =
@@ -1957,64 +1926,47 @@ build_log_window (LogflWindow *self)
   gtk_widget_set_vexpand (scroller, TRUE);
   gtk_widget_set_hexpand (scroller, TRUE);
   gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), view);
-
-  GtkWidget *header = adw_header_bar_new ();
-  self->log_title =
-      ADW_WINDOW_TITLE (adw_window_title_new ("QSO log", NULL));
-  adw_header_bar_set_title_widget (ADW_HEADER_BAR (header),
-                                   GTK_WIDGET (self->log_title));
+  gtk_scrolled_window_set_min_content_height (GTK_SCROLLED_WINDOW (scroller),
+                                              180);
 
   self->search = gtk_search_entry_new ();
   gtk_search_entry_set_placeholder_text (GTK_SEARCH_ENTRY (self->search),
                                          "Search call, name, QTH…");
-  gtk_widget_set_size_request (self->search, 240, -1);
+  gtk_widget_set_hexpand (self->search, TRUE);
   g_signal_connect_swapped (self->search, "search-changed",
                             G_CALLBACK (on_search_changed), self);
-  adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->search);
-
-  self->delete_btn = gtk_button_new_from_icon_name ("user-trash-symbolic");
-  gtk_widget_set_tooltip_text (self->delete_btn, "Delete selected QSO");
-  g_signal_connect (self->delete_btn, "clicked",
-                    G_CALLBACK (on_delete_clicked), self);
-  adw_header_bar_pack_end (ADW_HEADER_BAR (header), self->delete_btn);
 
   self->edit_btn =
       gtk_button_new_from_icon_name ("document-edit-symbolic");
   gtk_widget_set_tooltip_text (self->edit_btn,
                                "Edit selected QSO in the entry row "
-                               "(double-click still QSYs)");
+                               "(double-click QSYs)");
   g_signal_connect (self->edit_btn, "clicked",
                     G_CALLBACK (on_edit_clicked), self);
-  adw_header_bar_pack_end (ADW_HEADER_BAR (header), self->edit_btn);
 
-  GtkWidget *tbv = adw_toolbar_view_new ();
-  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), header);
-  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (tbv), scroller);
+  self->delete_btn = gtk_button_new_from_icon_name ("user-trash-symbolic");
+  gtk_widget_set_tooltip_text (self->delete_btn, "Delete selected QSO");
+  g_signal_connect (self->delete_btn, "clicked",
+                    G_CALLBACK (on_delete_clicked), self);
 
-  /* Transient to the main window so it stays associated; not modal. */
-  self->log_win = gtk_window_new ();
-  gtk_window_set_title (GTK_WINDOW (self->log_win), "QSO log");
-  gtk_window_set_default_size (GTK_WINDOW (self->log_win), 1100, 600);
-  gtk_window_set_hide_on_close (GTK_WINDOW (self->log_win), TRUE);
-  gtk_window_set_transient_for (GTK_WINDOW (self->log_win),
-                                GTK_WINDOW (self));
-  gtk_window_set_destroy_with_parent (GTK_WINDOW (self->log_win), TRUE);
-  gtk_window_set_child (GTK_WINDOW (self->log_win), tbv);
-  /* Application association keeps the process alive while only this window
-   * is visible; main is the primary window. */
-  {
-    GtkApplication *app = gtk_window_get_application (GTK_WINDOW (self));
-    if (app)
-      gtk_application_add_window (app, GTK_WINDOW (self->log_win));
-  }
+  GtkWidget *tools = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_box_append (GTK_BOX (tools), self->search);
+  gtk_box_append (GTK_BOX (tools), self->edit_btn);
+  gtk_box_append (GTK_BOX (tools), self->delete_btn);
+
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  gtk_widget_set_vexpand (box, TRUE);
+  gtk_box_append (GTK_BOX (box), tools);
+  gtk_box_append (GTK_BOX (box), scroller);
+  return box;
 }
 
 static void
 logfl_window_init (LogflWindow *self)
 {
   gtk_window_set_title (GTK_WINDOW (self), "Log for Linux");
-  /* Entry-focused main window — the table lives in a separate window. */
-  gtk_window_set_default_size (GTK_WINDOW (self), 1100, 300);
+  /* Entry + macros + QSO table in one window. */
+  gtk_window_set_default_size (GTK_WINDOW (self), 1100, 700);
   g_action_map_add_action_entries (G_ACTION_MAP (self), win_actions,
                                    G_N_ELEMENTS (win_actions), self);
 
@@ -2037,8 +1989,7 @@ logfl_window_init (LogflWindow *self)
       g_idle_add (show_store_open_error, self);
     }
 
-  /* Header bar: title; end = log icon · Run/S&P · hamburger (pack_end is
-   * right-to-left, so menu first). */
+  /* Header: title · Run/S&P icon · hamburger (pack_end is right-to-left). */
   GtkWidget *header = adw_header_bar_new ();
   self->title = ADW_WINDOW_TITLE (adw_window_title_new ("Log for Linux",
                                                         NULL));
@@ -2048,7 +1999,6 @@ logfl_window_init (LogflWindow *self)
   GMenu *menu = g_menu_new ();
   g_menu_append (menu, "_Import ADIF…", "win.import");
   g_menu_append (menu, "_Export ADIF…", "win.export");
-  g_menu_append (menu, "_QSO log", "win.show-log");
   g_menu_append (menu, "_Preferences", "win.preferences");
   g_menu_append (menu, "_About Log for Linux", "win.about");
   GtkWidget *menu_btn = gtk_menu_button_new ();
@@ -2058,17 +2008,8 @@ logfl_window_init (LogflWindow *self)
                                   G_MENU_MODEL (menu));
   g_object_unref (menu);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), menu_btn);
-
-  /* Between list icon and menu — one icon cycles Run / S&P banks. */
   adw_header_bar_pack_end (ADW_HEADER_BAR (header),
                            build_bank_header_btn (self));
-
-  GtkWidget *log_open_btn =
-      gtk_button_new_from_icon_name ("view-list-symbolic");
-  gtk_widget_set_tooltip_text (log_open_btn, "Open QSO log");
-  gtk_actionable_set_action_name (GTK_ACTIONABLE (log_open_btn),
-                                  "win.show-log");
-  adw_header_bar_pack_end (ADW_HEADER_BAR (header), log_open_btn);
 
   /* Entry row. */
   self->call = mk_entry (self, 10, "OK1…");
@@ -2135,24 +2076,26 @@ logfl_window_init (LogflWindow *self)
   gtk_widget_add_css_class (self->wb4_label, "dim-label");
 
   GtkWidget *macro_bar = build_macro_bar (self);
+  GtkWidget *qso_table = build_qso_table (self);
 
-  GtkWidget *entry_bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-  gtk_widget_set_margin_top (entry_bar, 10);
-  gtk_widget_set_margin_bottom (entry_bar, 10);
-  gtk_widget_set_margin_start (entry_bar, 12);
-  gtk_widget_set_margin_end (entry_bar, 12);
-  gtk_box_append (GTK_BOX (entry_bar), fields);
-  gtk_box_append (GTK_BOX (entry_bar), macro_bar);
-  gtk_box_append (GTK_BOX (entry_bar), self->wb4_label);
+  GtkWidget *body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_widget_set_margin_top (body, 10);
+  gtk_widget_set_margin_bottom (body, 6);
+  gtk_widget_set_margin_start (body, 12);
+  gtk_widget_set_margin_end (body, 12);
+  gtk_box_append (GTK_BOX (body), fields);
+  gtk_box_append (GTK_BOX (body), macro_bar);
+  gtk_box_append (GTK_BOX (body), self->wb4_label);
+  gtk_box_append (GTK_BOX (body), qso_table);
 
-  /* F1–F8 / Esc (STOP) from the entry window (contest-logger style). */
+  /* F1–F8 / Esc (STOP) — contest-logger style, even while focus is in call. */
   GtkEventController *keys = gtk_event_controller_key_new ();
   gtk_event_controller_set_propagation_phase (keys, GTK_PHASE_CAPTURE);
   g_signal_connect (keys, "key-pressed", G_CALLBACK (on_main_key), self);
   gtk_widget_add_controller (GTK_WIDGET (self), keys);
 
   self->toasts = ADW_TOAST_OVERLAY (adw_toast_overlay_new ());
-  adw_toast_overlay_set_child (self->toasts, entry_bar);
+  adw_toast_overlay_set_child (self->toasts, body);
 
   /* Footer: UTC clock/date (left) · active TCI status (right). */
   self->clock_label = gtk_label_new ("");
@@ -2179,8 +2122,6 @@ logfl_window_init (LogflWindow *self)
                                 GTK_WIDGET (self->toasts));
   adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (tbv), footer);
   adw_application_window_set_content (ADW_APPLICATION_WINDOW (self), tbv);
-
-  build_log_window (self);
 
   self->clock_id = g_timeout_add_seconds (1, clock_tick, self);
   clock_tick (self);

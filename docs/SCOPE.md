@@ -126,10 +126,9 @@ importing someone's log and exporting it again must never silently drop data.
   report), freq → band dropdown auto-sync via the M2 band table (dropdown
   lists every ADIF band the engine knows), Enter anywhere logs; a 5-min
   same call+band+mode duplicate asks first (default Cancel). Table is a
-  QSO table lives in a **separate hide-on-close window** (header icon
-  `view-list-symbolic` before the hamburger; also menu “QSO log”) —
+  QSO table lives **in the main window under the macro strip** —
   virtualized GtkColumnView (newest first), search with 250 ms debounce,
-  destructive-confirm delete; main window is the entry row + TCI/status.
+  edit + destructive-confirm delete; footer holds UTC + TCI status.
   ADIF import/export via GtkFileDialog + GFile I/O with a result toast;
   import dedup is exact-timestamp only; QSO+calls counters in both window
   subtitles. Store open failure surfaces a dialog instead of aborting.
