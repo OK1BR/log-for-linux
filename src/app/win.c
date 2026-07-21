@@ -12,11 +12,22 @@
 #include "log_store.h"
 #include "qso_row.h"
 
+/* Live entry: same call+band+mode within this window asks before logging. */
 #define DUP_WINDOW_S 300
+/* ADIF import: only an identical timestamp is a dup (matches log-adif-test
+ * and avoids collapsing intentional re-QSOs hours apart in a bulk file). */
+#define ADIF_IMPORT_DUP_WINDOW_S 0
+/* Debounce search so each keystroke does not re-query the whole store. */
+#define SEARCH_DEBOUNCE_MS 250
+/* Until prefs land (later milestone): own callsign stamped on new QSOs. */
+#define DEFAULT_STATION_CALLSIGN "OK1BR"
 
-static const char *bands[] = { "160m", "80m", "60m", "40m", "30m", "20m",
-                               "17m", "15m", "12m", "10m", "6m", "2m",
-                               "70cm", NULL };
+/* Must cover every name returned by logfl_adif_band_for_freq(). */
+static const char *bands[] = {
+  "2190m", "630m", "160m", "80m", "60m", "40m", "30m", "20m", "17m",
+  "15m", "12m", "10m", "6m", "4m", "2m", "1.25m", "70cm", "33cm", "23cm",
+  NULL
+};
 static const char *modes[] = { "CW", "SSB", "FT8", "FT4", "RTTY", "PSK31",
                                "FM", "AM", NULL };
 
@@ -28,6 +39,7 @@ struct _LogflWindow {
 
   LogflStore *store;
   char *db_path;
+  char *store_open_error;      /* non-NULL when open failed; shown once */
 
   GListStore *rows;
   GtkSingleSelection *selection;
@@ -41,6 +53,7 @@ struct _LogflWindow {
   GtkWidget *delete_btn;
 
   guint clock_id;
+  guint search_id;             /* debounce timeout for search-changed */
   gboolean syncing_freq;       /* guard against freq↔band feedback */
   LogflQso *pending;           /* QSO awaiting dup confirmation */
   gint64 pending_delete_id;
@@ -95,6 +108,13 @@ entry_text (GtkWidget *e)
 static void
 reload (LogflWindow *self)
 {
+  if (!self->store)
+    {
+      g_list_store_remove_all (self->rows);
+      adw_window_title_set_subtitle (self->title, "log store unavailable");
+      return;
+    }
+
   GError *err = NULL;
   const char *text = entry_text (self->search);
   LogflStoreQuery q = { .text = *text ? text : NULL };
@@ -124,6 +144,23 @@ reload (LogflWindow *self)
     }
 }
 
+static gboolean
+search_debounce_fire (gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  self->search_id = 0;
+  reload (self);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+on_search_changed (LogflWindow *self)
+{
+  g_clear_handle_id (&self->search_id, g_source_remove);
+  self->search_id = g_timeout_add (SEARCH_DEBOUNCE_MS, search_debounce_fire,
+                                   self);
+}
+
 /* --- entry row logic ---------------------------------------------------- */
 
 static void
@@ -134,7 +171,7 @@ update_wb4 (LogflWindow *self)
 
   gtk_widget_remove_css_class (l, "success");
   gtk_widget_remove_css_class (l, "warning");
-  if (strlen (call) < 2)
+  if (!self->store || strlen (call) < 2)
     {
       gtk_label_set_text (GTK_LABEL (l), "");
       return;
@@ -163,19 +200,34 @@ update_wb4 (LogflWindow *self)
   g_date_time_unref (dt);
 }
 
+static const char *
+rst_default_for_mode (const char *mode)
+{
+  if (g_strcmp0 (mode, "SSB") == 0 || g_strcmp0 (mode, "FM") == 0 ||
+      g_strcmp0 (mode, "AM") == 0)
+    return "59";
+  /* Digital modes use SNR reports in practice; leave RST blank for manual
+   * entry rather than inventing a CW-style 599. */
+  if (g_strcmp0 (mode, "FT8") == 0 || g_strcmp0 (mode, "FT4") == 0)
+    return "";
+  return "599";                /* CW, RTTY, PSK31, … */
+}
+
+static gboolean
+rst_looks_default (const char *s)
+{
+  return !*s || g_str_equal (s, "59") || g_str_equal (s, "599");
+}
+
 static void
 on_mode_changed (LogflWindow *self)
 {
   /* Refresh the RST defaults, but never stomp a hand-edited report. */
   const char *mode = dd_selected (self->mode_dd, modes);
-  const char *def =
-      (g_strcmp0 (mode, "SSB") == 0 || g_strcmp0 (mode, "FM") == 0 ||
-       g_strcmp0 (mode, "AM") == 0) ? "59" : "599";
-  const char *cur_s = entry_text (self->rst_s);
-  const char *cur_r = entry_text (self->rst_r);
-  if (!*cur_s || g_str_equal (cur_s, "59") || g_str_equal (cur_s, "599"))
+  const char *def = rst_default_for_mode (mode);
+  if (rst_looks_default (entry_text (self->rst_s)))
     gtk_editable_set_text (GTK_EDITABLE (self->rst_s), def);
-  if (!*cur_r || g_str_equal (cur_r, "59") || g_str_equal (cur_r, "599"))
+  if (rst_looks_default (entry_text (self->rst_r)))
     gtk_editable_set_text (GTK_EDITABLE (self->rst_r), def);
   update_wb4 (self);
 }
@@ -246,6 +298,12 @@ on_dup_response (GObject *source, GAsyncResult *res, gpointer user_data)
 static void
 log_qso (LogflWindow *self)
 {
+  if (!self->store)
+    {
+      toast (self, "Log store is not open");
+      return;
+    }
+
   /* One pending confirm at a time — replacing pending would free the QSO
    * still owned by an open dialog. */
   if (self->pending)
@@ -275,7 +333,7 @@ log_qso (LogflWindow *self)
   q->rst_rcvd = g_strdup (entry_text (self->rst_r));
   q->name = g_strdup (entry_text (self->name));
   q->comment = g_strdup (entry_text (self->comment));
-  q->station_callsign = g_strdup ("OK1BR");
+  q->station_callsign = g_strdup (DEFAULT_STATION_CALLSIGN);
 
   gboolean dup = FALSE;
   logfl_store_dup_check (self->store, q->call, q->band, q->mode, q->ts,
@@ -296,7 +354,9 @@ log_qso (LogflWindow *self)
                                   NULL);
   adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg), "log",
                                             ADW_RESPONSE_SUGGESTED);
-  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "log");
+  /* Prefer Cancel on Enter so an accidental duplicate is not logged. */
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "cancel");
+  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dlg), "cancel");
   adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
                            on_dup_response, self);
 }
@@ -397,8 +457,12 @@ on_import_ready (GObject *source, GAsyncResult *res, gpointer user_data)
       toast (self, "Import failed: %s", err->message);
       g_clear_error (&err);
     }
+  else if (!self->store)
+    {
+      toast (self, "Log store is not open");
+    }
   else if (logfl_adif_import_data (self->store, data, (gssize) len,
-                                   DUP_WINDOW_S, &rep, &err))
+                                   ADIF_IMPORT_DUP_WINDOW_S, &rep, &err))
     {
       toast (self, "Imported %u QSO · %u dups skipped · %u bad records",
              rep.n_imported, rep.n_dup_skipped, rep.n_bad);
@@ -435,6 +499,12 @@ on_export_ready (GObject *source, GAsyncResult *res, gpointer user_data)
   if (!file)
     {
       g_clear_error (&err);
+      return;
+    }
+  if (!self->store)
+    {
+      toast (self, "Log store is not open");
+      g_object_unref (file);
       return;
     }
   guint n = 0;
@@ -610,12 +680,35 @@ mk_entry (LogflWindow *self, int width_chars, const char *placeholder)
   return e;
 }
 
+static gboolean
+show_store_open_error (gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  if (!self->store_open_error)
+    return G_SOURCE_REMOVE;
+
+  AdwDialog *dlg = adw_alert_dialog_new ("Cannot open log", NULL);
+  adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
+      "The log database could not be opened:\n\n%s\n\nPath: %s",
+      self->store_open_error,
+      self->db_path ? self->db_path : "(unknown)");
+  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg),
+                                  "close", "Close", NULL);
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "close");
+  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dlg), "close");
+  adw_dialog_present (dlg, GTK_WIDGET (self));
+  g_clear_pointer (&self->store_open_error, g_free);
+  return G_SOURCE_REMOVE;
+}
+
 static void
 logfl_window_dispose (GObject *obj)
 {
   LogflWindow *self = LOGFL_WINDOW (obj);
   g_clear_handle_id (&self->clock_id, g_source_remove);
+  g_clear_handle_id (&self->search_id, g_source_remove);
   g_clear_pointer (&self->pending, logfl_qso_free);
+  g_clear_pointer (&self->store_open_error, g_free);
   /* Drop our refs; the column view may still hold one on selection until
    * the widget tree is torn down by the parent dispose. */
   g_clear_object (&self->selection);
@@ -654,7 +747,13 @@ logfl_window_init (LogflWindow *self)
   g_free (dir);
   self->store = logfl_store_open (self->db_path, &err);
   if (!self->store)
-    g_error ("cannot open log store %s: %s", self->db_path, err->message);
+    {
+      /* Do not abort the process (g_error); surface a dialog once the
+       * window is up and keep the UI empty until the user closes it. */
+      self->store_open_error = g_strdup (err ? err->message : "unknown error");
+      g_clear_error (&err);
+      g_idle_add (show_store_open_error, self);
+    }
 
   /* Header bar: title + search, menu. */
   GtkWidget *header = adw_header_bar_new ();
@@ -668,7 +767,7 @@ logfl_window_init (LogflWindow *self)
                                          "Search call, name, QTH…");
   gtk_widget_set_size_request (self->search, 240, -1);
   g_signal_connect_swapped (self->search, "search-changed",
-                            G_CALLBACK (reload), self);
+                            G_CALLBACK (on_search_changed), self);
   adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->search);
 
   self->delete_btn = gtk_button_new_from_icon_name ("user-trash-symbolic");
@@ -698,7 +797,7 @@ logfl_window_init (LogflWindow *self)
   gtk_editable_set_text (GTK_EDITABLE (self->rst_s), "599");
   gtk_editable_set_text (GTK_EDITABLE (self->rst_r), "599");
   self->band_dd = gtk_drop_down_new_from_strings (bands);
-  gtk_drop_down_set_selected (GTK_DROP_DOWN (self->band_dd), 3); /* 40m */
+  gtk_drop_down_set_selected (GTK_DROP_DOWN (self->band_dd), 5); /* 40m */
   g_signal_connect_swapped (self->band_dd, "notify::selected",
                             G_CALLBACK (update_wb4), self);
   self->mode_dd = gtk_drop_down_new_from_strings (modes);
