@@ -418,6 +418,31 @@ logfl_tci_client_tune (LogflTciClient *c, double freq_hz)
                                  (long long) (freq_hz + 0.5)));
 }
 
+void
+logfl_tci_client_cw_send (LogflTciClient *c, const char *text)
+{
+  if (!c || !c->thread || !text || !*text)
+    return;
+  /* TCI reserves ':' ',' ';' — scrub free text before queueing. */
+  char *t = g_strdup (text);
+  for (char *p = t; *p; p++)
+    {
+      if (*p == ':' || *p == ',' || *p == ';')
+        *p = ' ';
+    }
+  /* ExpertSDR / sdr-for-linux: cw_macros:<rx>,<text> */
+  cli_queue (c, g_strdup_printf ("cw_macros:0,%s;", t));
+  g_free (t);
+}
+
+void
+logfl_tci_client_cw_stop (LogflTciClient *c)
+{
+  if (!c || !c->thread)
+    return;
+  cli_queue (c, g_strdup ("cw_macros_stop;"));
+}
+
 const char *
 logfl_tci_mode_to_log (const char *tci_mode)
 {

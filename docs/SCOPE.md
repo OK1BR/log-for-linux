@@ -147,8 +147,12 @@ importing someone's log and exporting it again must never silently drop data.
   host/port (and station callsign) live in Preferences → GKeyFile
   `~/.config/log-for-linux/settings.ini` (`src/app/settings.c`, skimmer/sdr
   house style: `AdwPreferencesDialog`, save on dialog close; host/port change
-  reconnects immediately). The logbook never changes radio state except that
-  explicit user QSY.
+  reconnects immediately). Entry window has an N1MM-inspired **macro bar**
+  (F1–F8 + Esc stop): CQ/EXCH/TU/MY/HIS/AGN/QRZ/STOP with `{MYCALL}` `{CALL}`
+  `{RST}` expansion; CW text is sent via TCI `cw_macros` to sdr-for-linux when
+  connected (not a 1:1 N1MM clone; editable macros / SSB wav later). The
+  logbook never changes radio state except explicit user QSY and those
+  operator-triggered CW macros.
 - **M5 — WSJT-X UDP.** UDP server (default port 2237): decode `QSO Logged`
   into the store, answer status/worked-B4 (callsign highlight).
   Gate: `log-udp-test` — replay captured WSJT-X datagrams headless; live check

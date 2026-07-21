@@ -688,6 +688,193 @@ log_qso (LogflWindow *self)
                            on_dup_response, self);
 }
 
+/* --- macros (N1MM-inspired F-keys; our defaults, not a 1:1 clone) -------- */
+
+#define N_MACROS 8
+
+/* Button caption + CW text. Tokens: {MYCALL} {CALL} {RST} and ! = call. */
+static const struct {
+  const char *caption;         /* short label under F-number               */
+  const char *tmpl;            /* NULL = stop keyer                        */
+} macros[N_MACROS] = {
+  { "CQ",   "CQ {MYCALL} {MYCALL} TEST" },
+  { "EXCH", "{CALL} {RST}" },
+  { "TU",   "TU {MYCALL}" },
+  { "MY",   "{MYCALL}" },
+  { "HIS",  "{CALL}" },
+  { "AGN",  "AGN?" },
+  { "QRZ",  "QRZ {MYCALL}" },
+  { "STOP", NULL },
+};
+
+static char *
+macro_expand (LogflWindow *self, const char *tmpl)
+{
+  const char *mycall =
+      self->settings.station_callsign && *self->settings.station_callsign
+          ? self->settings.station_callsign
+          : "OK1BR";
+  const char *his = entry_text (self->call);
+  if (!his)
+    his = "";
+  const char *rst = entry_text (self->rst_s);
+  if (!rst || !*rst)
+    rst = "599";
+
+  GString *out = g_string_new (NULL);
+  for (const char *p = tmpl; *p;)
+    {
+      if (g_str_has_prefix (p, "{MYCALL}"))
+        {
+          g_string_append (out, mycall);
+          p += strlen ("{MYCALL}");
+        }
+      else if (g_str_has_prefix (p, "{CALL}"))
+        {
+          g_string_append (out, his);
+          p += strlen ("{CALL}");
+        }
+      else if (g_str_has_prefix (p, "{RST}"))
+        {
+          g_string_append (out, rst);
+          p += strlen ("{RST}");
+        }
+      else if (*p == '!')
+        {
+          g_string_append (out, his);
+          p++;
+        }
+      else
+        {
+          g_string_append_c (out, *p);
+          p++;
+        }
+    }
+  /* Collapse leftover double spaces from empty {CALL}. */
+  char *s = g_string_free (out, FALSE);
+  for (char *a = s; *a;)
+    {
+      if (a[0] == ' ' && a[1] == ' ')
+        memmove (a, a + 1, strlen (a));
+      else
+        a++;
+    }
+  g_strstrip (s);
+  return s;
+}
+
+static void
+macro_run (LogflWindow *self, guint idx)
+{
+  if (idx >= N_MACROS)
+    return;
+
+  if (!macros[idx].tmpl)
+    {
+      if (self->tci && logfl_tci_client_is_ready (self->tci))
+        {
+          logfl_tci_client_cw_stop (self->tci);
+          toast (self, "CW stop");
+        }
+      else
+        toast (self, "TCI not connected");
+      return;
+    }
+
+  char *msg = macro_expand (self, macros[idx].tmpl);
+  if (!msg || !*msg)
+    {
+      g_free (msg);
+      toast (self, "Empty macro (need a callsign?)");
+      return;
+    }
+
+  if (!self->tci || !logfl_tci_client_is_ready (self->tci))
+    {
+      toast (self, "TCI offline — %s: %s", macros[idx].caption, msg);
+      g_free (msg);
+      return;
+    }
+
+  /* Only CW/RTTY-style keyer path for now (SSB wav later). */
+  const char *mode = dd_selected (self->mode_dd, modes);
+  if (mode && g_strcmp0 (mode, "CW") != 0 && g_strcmp0 (mode, "RTTY") != 0)
+    {
+      toast (self, "Macros send CW via TCI — switch mode to CW (%s)", msg);
+      g_free (msg);
+      return;
+    }
+
+  logfl_tci_client_cw_send (self->tci, msg);
+  toast (self, "TX %s: %s", macros[idx].caption, msg);
+  g_free (msg);
+}
+
+static void
+on_macro_clicked (GtkButton *btn, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  guint idx = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (btn), "macro"));
+  macro_run (self, idx);
+}
+
+static gboolean
+on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
+             GdkModifierType state, gpointer user_data)
+{
+  (void) ctl;
+  (void) keycode;
+  LogflWindow *self = user_data;
+  /* Don't steal keys while typing in an entry — only bare F-keys when the
+   * focus is not an editable, OR always for F-keys (N1MM always maps F-keys).
+   * N1MM sends F-keys even from the call box; match that. */
+  if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))
+    return FALSE;
+  if (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F8)
+    {
+      macro_run (self, keyval - GDK_KEY_F1);
+      return TRUE;
+    }
+  if (keyval == GDK_KEY_Escape)
+    {
+      macro_run (self, N_MACROS - 1); /* STOP */
+      return TRUE;
+    }
+  return FALSE;
+}
+
+static GtkWidget *
+build_macro_bar (LogflWindow *self)
+{
+  /* Equal-width F-key strip under the entry row — contest-logger feel,
+   * not a pixel clone of N1MM. */
+  GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+  gtk_widget_set_hexpand (bar, TRUE);
+
+  for (guint i = 0; i < N_MACROS; i++)
+    {
+      char *lab = g_strdup_printf ("F%u\n%s", i + 1, macros[i].caption);
+      GtkWidget *btn = gtk_button_new_with_label (lab);
+      g_free (lab);
+      gtk_widget_set_hexpand (btn, TRUE);
+      gtk_widget_set_focus_on_click (btn, FALSE);
+      if (macros[i].tmpl)
+        {
+          char *tip = g_strdup_printf ("F%u · %s", i + 1, macros[i].tmpl);
+          gtk_widget_set_tooltip_text (btn, tip);
+          g_free (tip);
+        }
+      else
+        gtk_widget_set_tooltip_text (btn, "F8 / Esc · stop CW keyer");
+      if (i == N_MACROS - 1)
+        gtk_widget_add_css_class (btn, "destructive-action");
+      g_object_set_data (G_OBJECT (btn), "macro", GUINT_TO_POINTER (i));
+      g_signal_connect (btn, "clicked", G_CALLBACK (on_macro_clicked), self);
+      gtk_box_append (GTK_BOX (bar), btn);
+    }
+  return bar;
+}
+
 static gboolean
 clock_tick (gpointer user_data)
 {
@@ -1303,7 +1490,7 @@ logfl_window_init (LogflWindow *self)
 {
   gtk_window_set_title (GTK_WINDOW (self), "Log for Linux");
   /* Entry-focused main window — the table lives in a separate window. */
-  gtk_window_set_default_size (GTK_WINDOW (self), 1100, 180);
+  gtk_window_set_default_size (GTK_WINDOW (self), 1100, 260);
   g_action_map_add_action_entries (G_ACTION_MAP (self), win_actions,
                                    G_N_ELEMENTS (win_actions), self);
 
@@ -1411,13 +1598,22 @@ logfl_window_init (LogflWindow *self)
   gtk_widget_set_hexpand (self->wb4_label, TRUE);
   gtk_widget_add_css_class (self->wb4_label, "dim-label");
 
-  GtkWidget *entry_bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  GtkWidget *macro_bar = build_macro_bar (self);
+
+  GtkWidget *entry_bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
   gtk_widget_set_margin_top (entry_bar, 10);
   gtk_widget_set_margin_bottom (entry_bar, 10);
   gtk_widget_set_margin_start (entry_bar, 12);
   gtk_widget_set_margin_end (entry_bar, 12);
   gtk_box_append (GTK_BOX (entry_bar), fields);
+  gtk_box_append (GTK_BOX (entry_bar), macro_bar);
   gtk_box_append (GTK_BOX (entry_bar), self->wb4_label);
+
+  /* F1–F8 / Esc work from the entry window (contest-logger style). */
+  GtkEventController *keys = gtk_event_controller_key_new ();
+  gtk_event_controller_set_propagation_phase (keys, GTK_PHASE_CAPTURE);
+  g_signal_connect (keys, "key-pressed", G_CALLBACK (on_main_key), self);
+  gtk_widget_add_controller (GTK_WIDGET (self), keys);
 
   self->toasts = ADW_TOAST_OVERLAY (adw_toast_overlay_new ());
   adw_toast_overlay_set_child (self->toasts, entry_bar);

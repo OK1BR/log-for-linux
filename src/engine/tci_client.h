@@ -53,6 +53,11 @@ void     logfl_tci_client_get_state (LogflTciClient *c, LogflTciState *out);
 /* Explicit user QSY only — never called from automatic state updates. */
 void logfl_tci_client_tune (LogflTciClient *c, double freq_hz);
 
+/* CW keyer via TCI (sdr-for-linux cw_macros / cw_macros_stop). Text must not
+ * contain ':' or ';' — they are scrubbed. No-op when not connected. */
+void logfl_tci_client_cw_send (LogflTciClient *c, const char *text);
+void logfl_tci_client_cw_stop (LogflTciClient *c);
+
 /* Map a TCI modulation string to a logbook mode dropdown value, or NULL
  * when the mapping is unknown (leave the UI alone). */
 const char *logfl_tci_mode_to_log (const char *tci_mode);
