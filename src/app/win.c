@@ -1572,70 +1572,92 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
   (void) param;
   LogflWindow *self = user_data;
 
+  /* Same pattern as sdr-for-linux: one AdwPreferencesPage per topic with
+   * title + icon so the dialog shows a header page switcher (tabs), not a
+   * single long scroll of mixed groups. */
   AdwDialog *dlg = adw_preferences_dialog_new ();
   adw_dialog_set_title (dlg, "Preferences");
 
-  GtkWidget *page = adw_preferences_page_new ();
+  /* --- Station --------------------------------------------------------- */
+  AdwPreferencesPage *p_station = ADW_PREFERENCES_PAGE (g_object_new (
+      ADW_TYPE_PREFERENCES_PAGE,
+      "title", "Station",
+      "icon-name", "avatar-default-symbolic",
+      NULL));
+  AdwPreferencesGroup *sgrp = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Operator",
+      "description", "Stamped on new QSOs as STATION_CALLSIGN (ADIF)",
+      NULL));
+  GtkWidget *call_row = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (call_row), "Callsign");
+  gtk_editable_set_text (
+      GTK_EDITABLE (call_row),
+      self->settings.station_callsign ? self->settings.station_callsign : "");
+  adw_preferences_group_add (sgrp, call_row);
+  adw_preferences_page_add (p_station, sgrp);
+  adw_preferences_dialog_add (ADW_PREFERENCES_DIALOG (dlg), p_station);
 
-  /* TCI — same group naming as skimmer-for-linux. */
-  GtkWidget *tgrp = adw_preferences_group_new ();
-  adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (tgrp), "TCI server");
-  adw_preferences_group_set_description (
-      ADW_PREFERENCES_GROUP (tgrp),
+  /* --- TCI (client → sdr-for-linux server) ----------------------------- */
+  AdwPreferencesPage *p_tci = ADW_PREFERENCES_PAGE (g_object_new (
+      ADW_TYPE_PREFERENCES_PAGE,
+      "title", "TCI",
+      "icon-name", "network-transmit-receive-symbolic",
+      NULL));
+  AdwPreferencesGroup *tgrp = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Server",
+      "description",
       "sdr-for-linux WebSocket endpoint — connection is automatic; "
-      "changing host or port reconnects immediately");
-
+      "changing host or port reconnects immediately",
+      NULL));
   GtkWidget *host_row = adw_entry_row_new ();
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (host_row), "Host");
   gtk_editable_set_text (
       GTK_EDITABLE (host_row),
       self->settings.tci_host ? self->settings.tci_host
                               : LOGFL_TCI_DEFAULT_HOST);
-  adw_preferences_group_add (ADW_PREFERENCES_GROUP (tgrp), host_row);
+  adw_preferences_group_add (tgrp, host_row);
 
   GtkWidget *port_row = adw_spin_row_new_with_range (1, 65535, 1);
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (port_row), "Port");
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (port_row),
+                               "ExpertSDR / sdr-for-linux default 40001");
   adw_spin_row_set_value (
       ADW_SPIN_ROW (port_row),
       self->settings.tci_port ? self->settings.tci_port
                               : LOGFL_TCI_DEFAULT_PORT);
-  adw_preferences_group_add (ADW_PREFERENCES_GROUP (tgrp), port_row);
-  adw_preferences_page_add (ADW_PREFERENCES_PAGE (page),
-                            ADW_PREFERENCES_GROUP (tgrp));
+  adw_preferences_group_add (tgrp, port_row);
+  adw_preferences_page_add (p_tci, tgrp);
+  adw_preferences_dialog_add (ADW_PREFERENCES_DIALOG (dlg), p_tci);
 
-  GtkWidget *sgrp = adw_preferences_group_new ();
-  adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (sgrp), "Station");
-  adw_preferences_group_set_description (
-      ADW_PREFERENCES_GROUP (sgrp),
-      "Stamped on new QSOs as STATION_CALLSIGN (ADIF)");
-  GtkWidget *call_row = adw_entry_row_new ();
-  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (call_row), "Callsign");
-  gtk_editable_set_text (
-      GTK_EDITABLE (call_row),
-      self->settings.station_callsign ? self->settings.station_callsign : "");
-  adw_preferences_group_add (ADW_PREFERENCES_GROUP (sgrp), call_row);
-  adw_preferences_page_add (ADW_PREFERENCES_PAGE (page),
-                            ADW_PREFERENCES_GROUP (sgrp));
-
-  GtkWidget *cgrp = adw_preferences_group_new ();
-  adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (cgrp),
-                                   "Contest messaging");
-  adw_preferences_group_set_description (
-      ADW_PREFERENCES_GROUP (cgrp),
-      "ESM: Enter advances CQ → exchange → log → TU. "
+  /* --- Messaging (macros / ESM) ---------------------------------------- */
+  AdwPreferencesPage *p_msg = ADW_PREFERENCES_PAGE (g_object_new (
+      ADW_TYPE_PREFERENCES_PAGE,
+      "title", "Messaging",
+      "icon-name", "input-keyboard-symbolic",
+      NULL));
+  AdwPreferencesGroup *cgrp = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP,
+      "title", "ESM",
+      "description",
+      "Enter advances CQ → exchange → log → TU. "
       "Off keeps Enter = Log QSO for daily use. "
-      "Edit F-keys with right-click on the macro bar.");
+      "Edit F-keys with right-click on the macro bar (Run / S&P banks).",
+      NULL));
   GtkWidget *esm_row = adw_switch_row_new ();
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (esm_row),
-                                 "ESM — Enter sends message");
+                                 "Enter sends message");
   adw_switch_row_set_active (ADW_SWITCH_ROW (esm_row),
                              self->settings.esm_enabled);
-  adw_preferences_group_add (ADW_PREFERENCES_GROUP (cgrp), esm_row);
-  adw_preferences_page_add (ADW_PREFERENCES_PAGE (page),
-                            ADW_PREFERENCES_GROUP (cgrp));
+  adw_preferences_group_add (cgrp, esm_row);
+  adw_preferences_page_add (p_msg, cgrp);
+  adw_preferences_dialog_add (ADW_PREFERENCES_DIALOG (dlg), p_msg);
 
-  adw_preferences_dialog_add (ADW_PREFERENCES_DIALOG (dlg),
-                              ADW_PREFERENCES_PAGE (page));
+  /* Keep the page switcher in the header (sdr-for-linux does the same). */
+  adw_dialog_set_content_width (dlg, 640);
+  adw_dialog_set_content_height (dlg, 420);
+
   g_object_set_data (G_OBJECT (dlg), "tci-host", host_row);
   g_object_set_data (G_OBJECT (dlg), "tci-port", port_row);
   g_object_set_data (G_OBJECT (dlg), "station-call", call_row);
