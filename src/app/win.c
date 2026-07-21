@@ -1242,7 +1242,7 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
   LogflWindow *self = user_data;
   if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))
     return FALSE;
-  if (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F12)
+  if (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F8)
     {
       macro_run (self, keyval - GDK_KEY_F1);
       return TRUE;
@@ -1272,9 +1272,9 @@ build_macro_bar (LogflWindow *self)
       GTK_TOGGLE_BUTTON (self->bank_snp_btn),
       self->settings.macro_bank == LOGFL_MACRO_BANK_SNP);
   gtk_widget_set_tooltip_text (self->bank_run_btn,
-                               "Run message bank (F1–F12 + free row)");
+                               "Run message bank (F1–F8 + free row)");
   gtk_widget_set_tooltip_text (self->bank_snp_btn,
-                               "Search & Pounce message bank (F1–F12 + free row)");
+                               "Search & Pounce message bank (F1–F8 + free row)");
   g_signal_connect (self->bank_run_btn, "toggled",
                     G_CALLBACK (on_bank_run_toggled), self);
   g_signal_connect (self->bank_snp_btn, "toggled",
@@ -1290,7 +1290,7 @@ build_macro_bar (LogflWindow *self)
   gtk_box_append (GTK_BOX (top), self->bank_snp_btn);
   gtk_box_append (GTK_BOX (top), self->esm_hint);
 
-  /* Two rows of 12: F1–F12, then free M1–M11 + STOP. */
+  /* Two rows of 8: F1–F8, then free M1–M7 + STOP. */
   GtkWidget *rows = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
   for (guint row = 0; row < LOGFL_MACRO_N_ROWS; row++)
     {
@@ -2026,7 +2026,7 @@ logfl_window_init (LogflWindow *self)
 {
   gtk_window_set_title (GTK_WINDOW (self), "Log for Linux");
   /* Entry-focused main window — the table lives in a separate window. */
-  gtk_window_set_default_size (GTK_WINDOW (self), 1200, 320);
+  gtk_window_set_default_size (GTK_WINDOW (self), 1100, 300);
   g_action_map_add_action_entries (G_ACTION_MAP (self), win_actions,
                                    G_N_ELEMENTS (win_actions), self);
 
@@ -2153,7 +2153,7 @@ logfl_window_init (LogflWindow *self)
   gtk_box_append (GTK_BOX (entry_bar), macro_bar);
   gtk_box_append (GTK_BOX (entry_bar), self->wb4_label);
 
-  /* F1–F12 / Esc (STOP) from the entry window (contest-logger style). */
+  /* F1–F8 / Esc (STOP) from the entry window (contest-logger style). */
   GtkEventController *keys = gtk_event_controller_key_new ();
   gtk_event_controller_set_propagation_phase (keys, GTK_PHASE_CAPTURE);
   g_signal_connect (keys, "key-pressed", G_CALLBACK (on_main_key), self);

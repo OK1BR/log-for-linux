@@ -53,21 +53,21 @@ test_defaults_and_banks (void)
   g_assert_cmpstr (k->caption, ==, "CQ");
   g_assert_true (strstr (k->tmpl, "{MYCALL}") != NULL);
 
-  /* F8 is free, not stop; STOP is last of row 2. */
+  /* F8 is free, not stop; STOP is last of row 2 (index 15). */
+  g_assert_cmpuint (LOGFL_MACRO_N_KEYS, ==, 16);
   g_assert_false (logfl_macro_index_is_stop (7));
   k = logfl_macro_set_key (&set, LOGFL_MACRO_BANK_RUN, 7);
   g_assert_cmpstr (k->caption, ==, "");
   g_assert_cmpstr (k->tmpl, ==, "");
 
   g_assert_true (logfl_macro_index_is_stop (LOGFL_MACRO_STOP_IDX));
+  g_assert_cmpuint (LOGFL_MACRO_STOP_IDX, ==, 15);
   k = logfl_macro_set_key (&set, LOGFL_MACRO_BANK_RUN, LOGFL_MACRO_STOP_IDX);
   g_assert_cmpstr (k->caption, ==, "STOP");
   g_assert_cmpstr (k->tmpl, ==, "");
 
-  /* F12 free; second-row free slot also empty. */
-  k = logfl_macro_set_key (&set, LOGFL_MACRO_BANK_RUN, 11);
-  g_assert_cmpstr (k->tmpl, ==, "");
-  k = logfl_macro_set_key (&set, LOGFL_MACRO_BANK_RUN, 12);
+  /* Second-row free slot empty. */
+  k = logfl_macro_set_key (&set, LOGFL_MACRO_BANK_RUN, 8);
   g_assert_cmpstr (k->tmpl, ==, "");
 
   k = logfl_macro_set_key (&set, LOGFL_MACRO_BANK_SNP, 0);

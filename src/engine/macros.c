@@ -21,8 +21,8 @@ logfl_macro_set_init_defaults (LogflMacroSet *set)
   g_return_if_fail (set != NULL);
   logfl_macro_set_clear (set);
 
-  /* Row 1 F1–F7 useful defaults; F8–F12 free. Row 2 free except last = STOP.
-   * Indices 0..11 = F1..F12, 12..23 = second row (23 = STOP). */
+  /* Row 1 F1–F7 useful defaults, F8 free. Row 2 free except last = STOP.
+   * Indices 0..7 = F1..F8, 8..15 = second row (15 = STOP). */
   static const struct { const char *c; const char *t; } run_filled[] = {
     { "CQ",   "CQ {MYCALL} {MYCALL} TEST" },
     { "EXCH", "{CALL} {RST}" },

@@ -21,7 +21,7 @@ typedef struct {
   char   *station_callsign;    /* STATION_CALLSIGN stamped on new QSOs       */
   gboolean esm_enabled;        /* M5: Enter advances ESM instead of log      */
   LogflMacroBankId macro_bank; /* Run or S&P                                 */
-  LogflMacroSet macros;        /* F1–F12 + free row + STOP per bank          */
+  LogflMacroSet macros;        /* F1–F8 + free row + STOP (16) per bank      */
 } LogflSettings;
 
 /* Fill defaults (heap strings + macro banks). Safe on a zeroed struct. */

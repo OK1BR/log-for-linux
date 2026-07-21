@@ -3,7 +3,7 @@
  * Pure GLib: token expansion, Run/S&P banks, ESM (Enter sends message).
  * No GTK; headless gate is log-macro-test. UI owns persistence and TX.
  *
- * Layout per bank: two rows of 12 — F1–F12 on row 1, free slots on row 2
+ * Layout per bank: two rows of 8 — F1–F8 on row 1, free slots on row 2
  * with STOP as the last key (Esc). Empty free templates are unused, not stop.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
@@ -15,9 +15,9 @@
 
 G_BEGIN_DECLS
 
-#define LOGFL_MACRO_N_ROW   12
+#define LOGFL_MACRO_N_ROW   8
 #define LOGFL_MACRO_N_ROWS  2
-#define LOGFL_MACRO_N_KEYS  (LOGFL_MACRO_N_ROW * LOGFL_MACRO_N_ROWS) /* 24 */
+#define LOGFL_MACRO_N_KEYS  (LOGFL_MACRO_N_ROW * LOGFL_MACRO_N_ROWS) /* 16 */
 /* Last key on the second row — stop keyer (also Esc). */
 #define LOGFL_MACRO_STOP_IDX (LOGFL_MACRO_N_KEYS - 1)
 
