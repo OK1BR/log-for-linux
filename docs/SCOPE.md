@@ -132,10 +132,18 @@ importing someone's log and exporting it again must never silently drop data.
   GtkFileDialog + GFile I/O with a result toast (imported/dups/bad);
   import dedup is exact-timestamp only; QSO+calls counters live in the
   header subtitle. Store open failure surfaces a dialog instead of aborting.
-- **M4 — TCI integration.** Connect to `sdr-for-linux`, entry row pre-fills
+- **M4 — TCI integration. CODE LANDED 2026-07-21 (offline gate green).**
+  Connect to `sdr-for-linux` (`ws://127.0.0.1:40001`), entry row pre-fills
   freq/mode from the live VFO, double-click on a logged QSO → QSY.
   Gate: `log-tci-test` — mock TCI server (skimmer house pattern); live check
-  against the real radio.
+  against the real radio when available.
+  Done as `src/engine/tci_client.c` (libwebsockets, text plane only — no IQ):
+  handshake to `ready;`, track `vfo`/`modulation`/`device`/`protocol`, explicit
+  `tune()` for QSY, mode map into the logbook dropdown (cw→CW, usb/lsb→SSB,
+  digu/digl→FT8, …). UI (`win.c`): background connect + 5 s reconnect, status
+  line next to the UTC clock, auto-prefill of MHz/band/mode from the radio,
+  double-click / activate on a table row QSYs when frequency is set. The
+  logbook never changes radio state except that explicit user QSY.
 - **M5 — WSJT-X UDP.** UDP server (default port 2237): decode `QSO Logged`
   into the store, answer status/worked-B4 (callsign highlight).
   Gate: `log-udp-test` — replay captured WSJT-X datagrams headless; live check

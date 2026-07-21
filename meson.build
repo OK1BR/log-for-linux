@@ -20,6 +20,7 @@ gio_dep    = dependency('gio-2.0')             # M4/M5: TCI + WSJT-X sockets
 gtk_dep    = dependency('gtk4')                # app front-end
 adw_dep    = dependency('libadwaita-1')        # app control surface
 sqlite_dep = dependency('sqlite3')             # M1: canonical log store
+lws_dep    = dependency('libwebsockets')       # M4: TCI client transport
 
 engine_inc = include_directories('src/engine')
 
@@ -29,8 +30,9 @@ engine_sources = [
   'src/engine/engine.c',       # M0: identity, sqlite selfcheck
   'src/engine/log_store.c',    # M1: canonical QSO store (schema, CRUD, queries)
   'src/engine/adif.c',         # M2: ADIF import/export, lossless round-trip
+  'src/engine/tci_client.c',   # M4: TCI client (VFO/mode, explicit QSY)
 ]
-engine_deps = [glib_dep, gio_dep, sqlite_dep]
+engine_deps = [glib_dep, gio_dep, sqlite_dep, lws_dep]
 
 engine_lib = static_library('logfl-engine',
   engine_sources,
@@ -66,15 +68,24 @@ log_adif_test = executable('log-adif-test',
 )
 test('adif', log_adif_test, timeout : 60)
 
+# M4: TCI client — mock server handshake, live VFO/mode, tune().
+log_tci_test = executable('log-tci-test',
+  ['src/tci_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('tci', log_tci_test, timeout : 30)
+
 # --- App --------------------------------------------------------------------
 executable('log-for-linux',
   [
     'src/app/main.c',
-    'src/app/win.c',        # M3: main window — entry row, table, ADIF UI
+    'src/app/win.c',        # M3 UI + M4 TCI prefill / QSY
     'src/app/qso_row.c',    # M3: GObject row wrapper for GtkColumnView
   ],
   include_directories : engine_inc,
-  dependencies : [glib_dep, gio_dep, gtk_dep, adw_dep],
+  dependencies : [glib_dep, gio_dep, gtk_dep, adw_dep, lws_dep],
   link_with : engine_lib,
   install : true,
 )

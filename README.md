@@ -7,10 +7,10 @@ their technology and architecture: a headless, GLib-only engine under a
 GTK4/libadwaita front-end, plain C, meson. Replaces the earlier Rust
 prototype (BRlog).
 
-> **Status:** M0–M2 offline gates green; **M3 UI v1** code landed (entry row,
-> QSO table, search, ADIF I/O, worked-B4). Manual UI gate:
-> [`docs/M3-CHECKLIST.md`](docs/M3-CHECKLIST.md). Scope & milestones:
-> [`docs/SCOPE.md`](docs/SCOPE.md).
+> **Status:** M0–M4 offline gates green (store, ADIF, UI, **TCI**). M3 manual
+> UI gate: [`docs/M3-CHECKLIST.md`](docs/M3-CHECKLIST.md). TCI talks to
+> `sdr-for-linux` on `ws://127.0.0.1:40001` (prefill VFO; double-click QSY).
+> Scope: [`docs/SCOPE.md`](docs/SCOPE.md).
 
 ## Build
 

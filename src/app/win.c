@@ -1,5 +1,6 @@
 /* win.c — the main logbook window: entry row (UTC clock, worked-B4 hint),
- * QSO table, search, ADIF import/export, delete with confirmation (M3).
+ * QSO table, search, ADIF import/export, delete with confirmation (M3),
+ * TCI prefill + double-click QSY (M4).
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */
@@ -11,6 +12,9 @@
 #include "engine.h"
 #include "log_store.h"
 #include "qso_row.h"
+#include "tci_client.h"
+
+#define TCI_RETRY_S 5
 
 /* Live entry: same call+band+mode within this window asks before logging. */
 #define DUP_WINDOW_S 300
@@ -49,12 +53,16 @@ struct _LogflWindow {
   GtkWidget *search;
   GtkWidget *call, *rst_s, *rst_r, *freq, *name, *comment;
   GtkWidget *band_dd, *mode_dd;
-  GtkWidget *wb4_label, *clock_label;
+  GtkWidget *wb4_label, *clock_label, *tci_label;
   GtkWidget *delete_btn;
 
   guint clock_id;
   guint search_id;             /* debounce timeout for search-changed */
+  guint tci_retry_id;          /* reconnect timer when TCI is down */
   gboolean syncing_freq;       /* guard against freq↔band feedback */
+  gboolean syncing_tci;        /* guard: applying radio state to entry */
+  gboolean tci_connecting;     /* connect thread in flight */
+  LogflTciClient *tci;
   LogflQso *pending;           /* QSO awaiting dup confirmation */
   gint64 pending_delete_id;
   gboolean delete_confirm_open; /* async delete dialog is up */
@@ -161,6 +169,244 @@ on_search_changed (LogflWindow *self)
                                    self);
 }
 
+/* --- TCI (M4) ----------------------------------------------------------- */
+
+static void tci_schedule_connect (LogflWindow *self);
+static void update_wb4 (LogflWindow *self);
+
+static void
+tci_set_status (LogflWindow *self, const char *txt)
+{
+  if (self->tci_label)
+    gtk_label_set_text (GTK_LABEL (self->tci_label), txt ? txt : "");
+}
+
+static void
+select_mode_string (LogflWindow *self, const char *mode)
+{
+  if (!mode)
+    return;
+  for (guint i = 0; modes[i]; i++)
+    if (g_str_equal (modes[i], mode))
+      {
+        gtk_drop_down_set_selected (GTK_DROP_DOWN (self->mode_dd), i);
+        return;
+      }
+}
+
+typedef struct {
+  LogflWindow  *self;
+  LogflTciState st;
+} TciStateIdle;
+
+static gboolean
+tci_apply_state (gpointer user_data)
+{
+  TciStateIdle *d = user_data;
+  LogflWindow *self = d->self;
+  const LogflTciState *st = &d->st;
+
+  /* Drop if the window is already tearing down. */
+  if (self->tci_label == NULL)
+    {
+      g_free (d);
+      return G_SOURCE_REMOVE;
+    }
+
+  self->syncing_tci = TRUE;
+
+  if (st->vfo_hz > 0)
+    {
+      char *mhz = fmt_freq (st->vfo_hz / 1e6);
+      gtk_editable_set_text (GTK_EDITABLE (self->freq), mhz);
+      g_free (mhz);
+    }
+
+  const char *log_mode = logfl_tci_mode_to_log (st->mode);
+  if (log_mode)
+    select_mode_string (self, log_mode);
+
+  self->syncing_tci = FALSE;
+
+  char *mhz_txt = st->vfo_hz > 0 ? fmt_freq (st->vfo_hz / 1e6) : g_strdup ("—");
+  char *status = g_strdup_printf (
+      "TCI · %s · %s MHz · %s",
+      st->device[0] ? st->device : "radio",
+      mhz_txt,
+      st->mode[0] ? st->mode : "—");
+  tci_set_status (self, status);
+  g_free (status);
+  g_free (mhz_txt);
+
+  update_wb4 (self);
+  g_free (d);
+  return G_SOURCE_REMOVE;
+}
+
+/* LWS thread → main loop. user_data is the window (stable while client lives). */
+static void
+on_tci_state (const LogflTciState *st, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  TciStateIdle *d = g_new (TciStateIdle, 1);
+  d->self = self;
+  d->st = *st;
+  g_idle_add (tci_apply_state, d);
+}
+
+typedef struct {
+  LogflWindow    *self;   /* strong ref held for the job */
+  LogflTciClient *cli;    /* owned by job until success installs it */
+  gboolean        ok;
+} TciConnectResult;
+
+static gboolean
+tci_mark_offline (gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  if (self->tci_label == NULL)
+    return G_SOURCE_REMOVE;
+
+  if (self->tci)
+    {
+      logfl_tci_client_set_state_cb (self->tci, NULL, NULL);
+      logfl_tci_client_set_closed_cb (self->tci, NULL, NULL);
+      logfl_tci_client_free (self->tci);
+      self->tci = NULL;
+    }
+  tci_set_status (self, "TCI offline");
+  tci_schedule_connect (self);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+on_tci_closed (gpointer user_data)
+{
+  g_idle_add (tci_mark_offline, user_data);
+}
+
+static gboolean
+tci_connect_done (gpointer user_data)
+{
+  TciConnectResult *r = user_data;
+  LogflWindow *self = r->self;
+  self->tci_connecting = FALSE;
+
+  /* Window gone or disposing: drop the orphan client. */
+  if (self->tci_label == NULL)
+    {
+      if (r->cli)
+        {
+          logfl_tci_client_set_state_cb (r->cli, NULL, NULL);
+          logfl_tci_client_set_closed_cb (r->cli, NULL, NULL);
+          logfl_tci_client_free (r->cli);
+        }
+      g_object_unref (self);
+      g_free (r);
+      return G_SOURCE_REMOVE;
+    }
+
+  if (r->ok && r->cli)
+    {
+      if (self->tci && self->tci != r->cli)
+        {
+          logfl_tci_client_set_state_cb (self->tci, NULL, NULL);
+          logfl_tci_client_set_closed_cb (self->tci, NULL, NULL);
+          logfl_tci_client_free (self->tci);
+        }
+      self->tci = r->cli;
+      r->cli = NULL;
+      g_clear_handle_id (&self->tci_retry_id, g_source_remove);
+    }
+  else
+    {
+      if (r->cli)
+        {
+          logfl_tci_client_free (r->cli);
+          r->cli = NULL;
+        }
+      tci_set_status (self, "TCI offline");
+      tci_schedule_connect (self);
+    }
+
+  g_object_unref (self);
+  g_free (r);
+  return G_SOURCE_REMOVE;
+}
+
+static gpointer
+tci_connect_thread (gpointer data)
+{
+  TciConnectResult *r = data;
+  GError *err = NULL;
+  r->ok = logfl_tci_client_start (r->cli, &err);
+  g_clear_error (&err);
+  g_idle_add (tci_connect_done, r);
+  return NULL;
+}
+
+static gboolean
+tci_connect_kick (gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  self->tci_retry_id = 0;
+  if (self->tci_label == NULL || self->tci_connecting)
+    return G_SOURCE_REMOVE;
+  if (self->tci && logfl_tci_client_is_ready (self->tci))
+    return G_SOURCE_REMOVE;
+
+  LogflTciClient *cli =
+      logfl_tci_client_new (LOGFL_TCI_DEFAULT_HOST, LOGFL_TCI_DEFAULT_PORT);
+  logfl_tci_client_set_state_cb (cli, on_tci_state, self);
+  logfl_tci_client_set_closed_cb (cli, on_tci_closed, self);
+
+  TciConnectResult *r = g_new0 (TciConnectResult, 1);
+  r->self = g_object_ref (self);
+  r->cli = cli;
+  self->tci_connecting = TRUE;
+  tci_set_status (self, "TCI connecting…");
+  g_thread_unref (g_thread_new ("logfl-tci-conn", tci_connect_thread, r));
+  return G_SOURCE_REMOVE;
+}
+
+static void
+tci_schedule_connect (LogflWindow *self)
+{
+  if (self->tci_connecting || self->tci_retry_id || self->tci_label == NULL)
+    return;
+  self->tci_retry_id =
+      g_timeout_add_seconds (TCI_RETRY_S, tci_connect_kick, self);
+}
+
+static void
+on_row_activate (GtkColumnView *view, guint position, gpointer user_data)
+{
+  (void) view;
+  LogflWindow *self = user_data;
+  if (!self->tci || !logfl_tci_client_is_ready (self->tci))
+    {
+      toast (self, "TCI not connected — cannot QSY");
+      return;
+    }
+  LogflQsoRow *row =
+      g_list_model_get_item (G_LIST_MODEL (self->rows), position);
+  if (!row)
+    return;
+  const LogflQso *q = logfl_qso_row_qso (row);
+  if (q->freq <= 0)
+    {
+      toast (self, "No frequency on this QSO");
+      g_object_unref (row);
+      return;
+    }
+  double hz = q->freq * 1e6;
+  logfl_tci_client_tune (self->tci, hz);
+  char *mhz = fmt_freq (q->freq);
+  toast (self, "QSY %s → %s MHz", q->call, mhz);
+  g_free (mhz);
+  g_object_unref (row);
+}
+
 /* --- entry row logic ---------------------------------------------------- */
 
 static void
@@ -237,6 +483,7 @@ on_freq_changed (LogflWindow *self)
 {
   if (self->syncing_freq)
     return;
+  /* Still apply band sync when the change came from TCI. */
   char *txt = g_strdup (entry_text (self->freq));
   g_strdelimit (txt, ",", '.');
   double mhz = g_ascii_strtod (txt, NULL);
@@ -707,6 +954,17 @@ logfl_window_dispose (GObject *obj)
   LogflWindow *self = LOGFL_WINDOW (obj);
   g_clear_handle_id (&self->clock_id, g_source_remove);
   g_clear_handle_id (&self->search_id, g_source_remove);
+  g_clear_handle_id (&self->tci_retry_id, g_source_remove);
+  /* Sentinel for in-flight TCI idles / connect jobs: null the status label
+   * first so they drop work instead of touching a half-torn window. */
+  self->tci_label = NULL;
+  if (self->tci)
+    {
+      logfl_tci_client_set_state_cb (self->tci, NULL, NULL);
+      logfl_tci_client_set_closed_cb (self->tci, NULL, NULL);
+      logfl_tci_client_free (self->tci);
+      self->tci = NULL;
+    }
   g_clear_pointer (&self->pending, logfl_qso_free);
   g_clear_pointer (&self->store_open_error, g_free);
   /* Drop our refs; the column view may still hold one on selection until
@@ -830,12 +1088,18 @@ logfl_window_init (LogflWindow *self)
   gtk_widget_add_css_class (self->clock_label, "numeric");
   gtk_widget_add_css_class (self->clock_label, "dim-label");
   gtk_label_set_xalign (GTK_LABEL (self->clock_label), 0);
+  self->tci_label = gtk_label_new ("TCI offline");
+  gtk_widget_add_css_class (self->tci_label, "dim-label");
+  gtk_label_set_xalign (GTK_LABEL (self->tci_label), 0);
+  gtk_label_set_ellipsize (GTK_LABEL (self->tci_label), PANGO_ELLIPSIZE_END);
   self->wb4_label = gtk_label_new ("");
   gtk_label_set_xalign (GTK_LABEL (self->wb4_label), 0);
   gtk_label_set_ellipsize (GTK_LABEL (self->wb4_label),
                            PANGO_ELLIPSIZE_END);
+  gtk_widget_set_hexpand (self->wb4_label, TRUE);
   GtkWidget *info = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 24);
   gtk_box_append (GTK_BOX (info), self->clock_label);
+  gtk_box_append (GTK_BOX (info), self->tci_label);
   gtk_box_append (GTK_BOX (info), self->wb4_label);
 
   GtkWidget *entry_bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
@@ -855,6 +1119,7 @@ logfl_window_init (LogflWindow *self)
   gtk_single_selection_set_autoselect (self->selection, FALSE);
   GtkWidget *view = gtk_column_view_new (GTK_SELECTION_MODEL (self->selection));
   gtk_widget_add_css_class (view, "data-table");
+  g_signal_connect (view, "activate", G_CALLBACK (on_row_activate), self);
   add_column (GTK_COLUMN_VIEW (view), "UTC", COL_UTC, FALSE);
   add_column (GTK_COLUMN_VIEW (view), "Call", COL_CALL, FALSE);
   add_column (GTK_COLUMN_VIEW (view), "Band", COL_BAND, FALSE);
@@ -887,6 +1152,8 @@ logfl_window_init (LogflWindow *self)
   self->clock_id = g_timeout_add_seconds (1, clock_tick, self);
   clock_tick (self);
   reload (self);
+  /* M4: connect to sdr-for-linux TCI in a background thread (non-blocking). */
+  g_idle_add (tci_connect_kick, self);
   gtk_widget_grab_focus (self->call);
 }
 
