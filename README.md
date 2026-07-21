@@ -7,10 +7,11 @@ their technology and architecture: a headless, GLib-only engine under a
 GTK4/libadwaita front-end, plain C, meson. Replaces the earlier Rust
 prototype (BRlog).
 
-> **Status:** M0–M4 offline gates green (store, ADIF, UI, **TCI**). M3 manual
-> UI gate: [`docs/M3-CHECKLIST.md`](docs/M3-CHECKLIST.md). TCI talks to
-> `sdr-for-linux` on `ws://127.0.0.1:40001` (prefill VFO; double-click QSY).
-> Scope: [`docs/SCOPE.md`](docs/SCOPE.md).
+> **Status:** M0–M5 offline gates green (store, ADIF, UI, TCI, **macros v2**).
+> M3 manual UI gate: [`docs/M3-CHECKLIST.md`](docs/M3-CHECKLIST.md). TCI talks
+> to `sdr-for-linux` on `ws://127.0.0.1:40001` (prefill VFO; double-click QSY).
+> F1–F8 macros: Run/S&P banks, right-click edit, optional ESM. Scope:
+> [`docs/SCOPE.md`](docs/SCOPE.md).
 
 ## Build
 
@@ -30,8 +31,8 @@ meson install -C builddir
 ```
 
 SQLite log: `~/.local/share/log-for-linux/log.db` (WAL). Preferences:
-`~/.config/log-for-linux/settings.ini` (TCI host/port, station callsign) —
-menu → Preferences (`AdwPreferencesDialog`, same pattern as skimmer/sdr).
-ADIF is interchange only (import/export from the window menu).
+`~/.config/log-for-linux/settings.ini` (TCI host/port, station callsign,
+macro banks, ESM) — menu → Preferences (`AdwPreferencesDialog`, same pattern
+as skimmer/sdr). ADIF is interchange only (import/export from the window menu).
 
 C11 · GTK4 · libadwaita · SQLite · meson · GPL-3.0-or-later

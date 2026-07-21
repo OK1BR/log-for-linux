@@ -153,29 +153,21 @@ importing someone's log and exporting it again must never silently drop data.
   when connected. Full editable macros / Run·S&P / ESM → **M5**. The logbook
   never changes radio state except explicit user QSY and those
   operator-triggered CW macros.
-- **M5 — macros v2 (contest-style messaging). PLANNED (Richard 2026-07-21).**
-  Grow the F-key strip from fixed defaults into a proper messaging layer
-  (inspired by N1MM+, not a clone). Scope:
-  1. **Editable macros** — operator can change labels + CW text (and later
-     other modes); persist under `settings.ini` or a dedicated file; keep
-     token expansion (`{MYCALL}`, `{CALL}`, `{RST}`, …). Editor UI (dialog
-     or right-click on a key), not only source rebuilds.
-  2. **Run vs S&P** — two message banks (like N1MM’s 12+12 positional sets,
-     we can stay at 8+8 or 12+12). Visible mode toggle on the entry window;
-     F-keys pick the active bank. Optional later: auto Run on CQ key / S&P
-     after QSY (only if it stays predictable).
-  3. **ESM — Enter sends message** — Enter in the entry row advances a small
-     state machine (e.g. empty call → CQ; call filled → exchange; after
-     log → TU), so the operator’s “own” sequence is one key. Few general
-     loggers have this; Richard wants it. Must remain optional and never
-     surprise on non-contest daily logging (toggle in prefs).
-  4. **SSB “wav” / DVK — OUT OF SCOPE for now (Richard 2026-07-21).**
-     N1MM-style phone F-keys play pre-recorded `.wav` voice clips into TX.
-     **Do not implement** until explicitly revisited (needs a real TX audio
-     path via sdr-for-linux / TCI). M5 is CW (and text) macros only: editable
-     keys, Run/S&P, ESM.
-  Gate: headless tests for token expansion + Run/S&P bank selection + ESM
-  state transitions; live CW smoke against sdr-for-linux TCI keyer.
+- **M5 — macros v2 (contest-style messaging). IMPLEMENTED 2026-07-21
+  (offline gate green).** Grew the F-key strip into a messaging layer
+  (inspired by N1MM+, not a clone). Done:
+  1. **Editable macros** — right-click F-key → caption + CW template dialog;
+     persist in `settings.ini` groups `macros_run` / `macros_snp`; tokens
+     `{MYCALL}` `{CALL}` `{RST}` and `!` via engine `logfl_macro_expand`.
+  2. **Run vs S&P** — two 8-key banks with distinct defaults; Run/S&P
+     toggles on the entry window; active bank persisted as `contest.bank`.
+  3. **ESM — Enter sends message** — optional (`contest.esm` / Preferences);
+     Enter advances READY→EXCH→LOG→TU (empty call → CQ; after log with
+     cleared call still TU). **Log QSO** button always logs. Off by default
+     so daily logging keeps Enter = log.
+  4. **SSB “wav” / DVK — OUT OF SCOPE** (unchanged): CW text via TCI only.
+  Gate: `log-macro-test` — expand, bank defaults/edit, ESM transitions.
+  Live CW smoke against sdr-for-linux when available (not formal signed gate).
 - **M6 — WSJT-X UDP.** UDP server (default port 2237): decode `QSO Logged`
   into the store, answer status/worked-B4 (callsign highlight).
   Gate: `log-udp-test` — replay captured WSJT-X datagrams headless; live check

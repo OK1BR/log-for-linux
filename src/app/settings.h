@@ -11,15 +11,20 @@
 
 #include <glib.h>
 
+#include "macros.h"
+
 G_BEGIN_DECLS
 
 typedef struct {
   char   *tci_host;            /* sdr-for-linux WebSocket host               */
   guint16 tci_port;            /* default 40001                              */
   char   *station_callsign;    /* STATION_CALLSIGN stamped on new QSOs       */
+  gboolean esm_enabled;        /* M5: Enter advances ESM instead of log      */
+  LogflMacroBankId macro_bank; /* Run or S&P                                 */
+  LogflMacroSet macros;        /* F1–F8 captions + templates per bank        */
 } LogflSettings;
 
-/* Fill defaults (heap strings). Safe on a zeroed struct. */
+/* Fill defaults (heap strings + macro banks). Safe on a zeroed struct. */
 void logfl_settings_init_defaults (LogflSettings *s);
 
 /* Load from disk, keeping defaults for missing keys. */

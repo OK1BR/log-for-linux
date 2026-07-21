@@ -12,6 +12,7 @@
 #include "adif.h"
 #include "engine.h"
 #include "log_store.h"
+#include "macros.h"
 #include "qso_row.h"
 #include "settings.h"
 #include "tci_client.h"
@@ -61,6 +62,10 @@ struct _LogflWindow {
   GtkWidget *edit_btn;         /* log window: load selected into entry */
   GtkWidget *log_btn;          /* "Log QSO" / "Save QSO" on main window */
   GtkWidget *cancel_edit_btn;  /* visible only while editing */
+  GtkWidget *macro_btns[LOGFL_MACRO_N_KEYS];
+  GtkWidget *bank_run_btn;
+  GtkWidget *bank_snp_btn;
+  GtkWidget *esm_hint;         /* short ESM status under macro bar */
 
   guint clock_id;
   guint search_id;             /* debounce timeout for search-changed */
@@ -74,9 +79,14 @@ struct _LogflWindow {
   LogflQso *editing;           /* non-NULL: entry row is editing this QSO */
   gint64 pending_delete_id;
   gboolean delete_confirm_open; /* async delete dialog is up */
+  LogflEsmPhase esm_phase;     /* M5 Enter-sends-message state */
+  gboolean esm_force_log;      /* ESM LOG step → bypass ESM on Enter */
 };
 
 G_DEFINE_FINAL_TYPE (LogflWindow, logfl_window, ADW_TYPE_APPLICATION_WINDOW)
+
+static void refresh_esm_hint (LogflWindow *self);
+static GtkWidget *labeled (const char *caption, GtkWidget *child);
 
 /* --- small helpers ------------------------------------------------------ */
 
@@ -802,8 +812,11 @@ do_add_pending (LogflWindow *self)
   if (logfl_store_add (self->store, q, &err))
     {
       toast (self, "Logged %s · %s · %s", q->call, q->band, q->mode);
+      if (self->settings.esm_enabled)
+        self->esm_phase = LOGFL_ESM_PHASE_TU;
       clear_entry_row (self);
       reload (self);
+      refresh_esm_hint (self);
     }
   else
     {
@@ -886,88 +899,29 @@ log_qso (LogflWindow *self)
                            on_dup_response, self);
 }
 
-/* --- macros (N1MM-inspired F-keys; our defaults, not a 1:1 clone) -------- */
+/* --- macros v2 (editable banks, Run/S&P, ESM) --------------------------- */
 
-#define N_MACROS 8
+static void refresh_macro_bar (LogflWindow *self);
+static void refresh_esm_hint (LogflWindow *self);
 
-/* Button caption + CW text. Tokens: {MYCALL} {CALL} {RST} and ! = call. */
-static const struct {
-  const char *caption;         /* short label under F-number               */
-  const char *tmpl;            /* NULL = stop keyer                        */
-} macros[N_MACROS] = {
-  { "CQ",   "CQ {MYCALL} {MYCALL} TEST" },
-  { "EXCH", "{CALL} {RST}" },
-  { "TU",   "TU {MYCALL}" },
-  { "MY",   "{MYCALL}" },
-  { "HIS",  "{CALL}" },
-  { "AGN",  "AGN?" },
-  { "QRZ",  "QRZ {MYCALL}" },
-  { "STOP", NULL },
-};
-
-static char *
-macro_expand (LogflWindow *self, const char *tmpl)
+static const LogflMacroKey *
+active_macro_key (LogflWindow *self, guint idx)
 {
-  const char *mycall =
-      self->settings.station_callsign && *self->settings.station_callsign
-          ? self->settings.station_callsign
-          : "OK1BR";
-  const char *his = entry_text (self->call);
-  if (!his)
-    his = "";
-  const char *rst = entry_text (self->rst_s);
-  if (!rst || !*rst)
-    rst = "599";
-
-  GString *out = g_string_new (NULL);
-  for (const char *p = tmpl; *p;)
-    {
-      if (g_str_has_prefix (p, "{MYCALL}"))
-        {
-          g_string_append (out, mycall);
-          p += strlen ("{MYCALL}");
-        }
-      else if (g_str_has_prefix (p, "{CALL}"))
-        {
-          g_string_append (out, his);
-          p += strlen ("{CALL}");
-        }
-      else if (g_str_has_prefix (p, "{RST}"))
-        {
-          g_string_append (out, rst);
-          p += strlen ("{RST}");
-        }
-      else if (*p == '!')
-        {
-          g_string_append (out, his);
-          p++;
-        }
-      else
-        {
-          g_string_append_c (out, *p);
-          p++;
-        }
-    }
-  /* Collapse leftover double spaces from empty {CALL}. */
-  char *s = g_string_free (out, FALSE);
-  for (char *a = s; *a;)
-    {
-      if (a[0] == ' ' && a[1] == ' ')
-        memmove (a, a + 1, strlen (a));
-      else
-        a++;
-    }
-  g_strstrip (s);
-  return s;
+  return logfl_macro_set_key (&self->settings.macros,
+                              self->settings.macro_bank, idx);
 }
 
 static void
 macro_run (LogflWindow *self, guint idx)
 {
-  if (idx >= N_MACROS)
+  if (idx >= LOGFL_MACRO_N_KEYS)
     return;
 
-  if (!macros[idx].tmpl)
+  const LogflMacroKey *k = active_macro_key (self, idx);
+  if (!k)
+    return;
+
+  if (logfl_macro_key_is_stop (k))
     {
       if (self->tci && logfl_tci_client_is_ready (self->tci))
         {
@@ -979,7 +933,12 @@ macro_run (LogflWindow *self, guint idx)
       return;
     }
 
-  char *msg = macro_expand (self, macros[idx].tmpl);
+  const char *mycall =
+      self->settings.station_callsign && *self->settings.station_callsign
+          ? self->settings.station_callsign
+          : "OK1BR";
+  char *msg = logfl_macro_expand (k->tmpl, mycall, entry_text (self->call),
+                                  entry_text (self->rst_s));
   if (!msg || !*msg)
     {
       g_free (msg);
@@ -987,14 +946,16 @@ macro_run (LogflWindow *self, guint idx)
       return;
     }
 
+  const char *cap = k->caption && *k->caption ? k->caption : "F-key";
+
   if (!self->tci || !logfl_tci_client_is_ready (self->tci))
     {
-      toast (self, "TCI offline — %s: %s", macros[idx].caption, msg);
+      toast (self, "TCI offline — %s: %s", cap, msg);
       g_free (msg);
       return;
     }
 
-  /* Only CW/RTTY-style keyer path for now (SSB wav later). */
+  /* CW path only (SSB wav/DVK out of scope for M5). */
   const char *mode = dd_selected (self->mode_dd, modes);
   if (mode && g_strcmp0 (mode, "CW") != 0 && g_strcmp0 (mode, "RTTY") != 0)
     {
@@ -1004,7 +965,7 @@ macro_run (LogflWindow *self, guint idx)
     }
 
   logfl_tci_client_cw_send (self->tci, msg);
-  toast (self, "TX %s: %s", macros[idx].caption, msg);
+  toast (self, "TX %s: %s", cap, msg);
   g_free (msg);
 }
 
@@ -1016,6 +977,222 @@ on_macro_clicked (GtkButton *btn, gpointer user_data)
   macro_run (self, idx);
 }
 
+/* Right-click a macro key → edit caption + template for the active bank. */
+static void
+on_macro_edit_response (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  AdwAlertDialog *dlg = ADW_ALERT_DIALOG (source);
+  const char *resp = adw_alert_dialog_choose_finish (dlg, res);
+  guint idx = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (dlg), "macro"));
+  GtkWidget *cap_e = g_object_get_data (G_OBJECT (dlg), "cap");
+  GtkWidget *tmpl_e = g_object_get_data (G_OBJECT (dlg), "tmpl");
+  if (!g_str_equal (resp, "save") || !cap_e || !tmpl_e)
+    return;
+
+  logfl_macro_set_set_key (&self->settings.macros, self->settings.macro_bank,
+                           idx, gtk_editable_get_text (GTK_EDITABLE (cap_e)),
+                           gtk_editable_get_text (GTK_EDITABLE (tmpl_e)));
+  logfl_settings_save (&self->settings);
+  refresh_macro_bar (self);
+  toast (self, "Macro F%u saved", idx + 1);
+}
+
+static void
+macro_edit_dialog (LogflWindow *self, guint idx)
+{
+  const LogflMacroKey *k = active_macro_key (self, idx);
+  if (!k)
+    return;
+
+  const char *bank =
+      self->settings.macro_bank == LOGFL_MACRO_BANK_SNP ? "S&P" : "Run";
+  char *title = g_strdup_printf ("Edit F%u · %s", idx + 1, bank);
+  AdwDialog *dlg = adw_alert_dialog_new (title, NULL);
+  g_free (title);
+  adw_alert_dialog_format_body (
+      ADW_ALERT_DIALOG (dlg),
+      "Tokens: {MYCALL} {CALL} {RST}  ·  empty text = stop keyer");
+
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  GtkWidget *cap_e = gtk_entry_new ();
+  gtk_entry_set_placeholder_text (GTK_ENTRY (cap_e), "Caption");
+  gtk_editable_set_text (GTK_EDITABLE (cap_e),
+                         k->caption ? k->caption : "");
+  GtkWidget *tmpl_e = gtk_entry_new ();
+  gtk_entry_set_placeholder_text (GTK_ENTRY (tmpl_e), "CW text");
+  gtk_editable_set_text (GTK_EDITABLE (tmpl_e), k->tmpl ? k->tmpl : "");
+  gtk_box_append (GTK_BOX (box), labeled ("Caption", cap_e));
+  gtk_box_append (GTK_BOX (box), labeled ("Template", tmpl_e));
+  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), box);
+
+  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg),
+                                  "cancel", "Cancel", "save", "Save", NULL);
+  adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg), "save",
+                                            ADW_RESPONSE_SUGGESTED);
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "save");
+  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dlg), "cancel");
+
+  g_object_set_data (G_OBJECT (dlg), "macro", GUINT_TO_POINTER (idx));
+  g_object_set_data (G_OBJECT (dlg), "cap", cap_e);
+  g_object_set_data (G_OBJECT (dlg), "tmpl", tmpl_e);
+  adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
+                           on_macro_edit_response, self);
+}
+
+static void
+on_macro_right_click (GtkGestureClick *gesture, gint n_press, gdouble x,
+                      gdouble y, gpointer user_data)
+{
+  (void) n_press;
+  (void) x;
+  (void) y;
+  LogflWindow *self = user_data;
+  GtkWidget *btn = gtk_event_controller_get_widget (
+      GTK_EVENT_CONTROLLER (gesture));
+  guint idx = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (btn), "macro"));
+  macro_edit_dialog (self, idx);
+}
+
+static void
+set_macro_bank (LogflWindow *self, LogflMacroBankId bank)
+{
+  if (self->settings.macro_bank == bank)
+    {
+      /* Keep toggle visuals consistent. */
+      if (self->bank_run_btn)
+        gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->bank_run_btn),
+                                      bank == LOGFL_MACRO_BANK_RUN);
+      if (self->bank_snp_btn)
+        gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->bank_snp_btn),
+                                      bank == LOGFL_MACRO_BANK_SNP);
+      return;
+    }
+  self->settings.macro_bank = bank;
+  logfl_settings_save (&self->settings);
+  refresh_macro_bar (self);
+  if (self->bank_run_btn)
+    gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->bank_run_btn),
+                                  bank == LOGFL_MACRO_BANK_RUN);
+  if (self->bank_snp_btn)
+    gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->bank_snp_btn),
+                                  bank == LOGFL_MACRO_BANK_SNP);
+}
+
+static void
+on_bank_run_toggled (GtkToggleButton *btn, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  if (gtk_toggle_button_get_active (btn))
+    set_macro_bank (self, LOGFL_MACRO_BANK_RUN);
+}
+
+static void
+on_bank_snp_toggled (GtkToggleButton *btn, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  if (gtk_toggle_button_get_active (btn))
+    set_macro_bank (self, LOGFL_MACRO_BANK_SNP);
+}
+
+static void
+refresh_macro_bar (LogflWindow *self)
+{
+  for (guint i = 0; i < LOGFL_MACRO_N_KEYS; i++)
+    {
+      GtkWidget *btn = self->macro_btns[i];
+      if (!btn)
+        continue;
+      const LogflMacroKey *k = active_macro_key (self, i);
+      const char *cap = (k && k->caption && *k->caption) ? k->caption : "—";
+      char *lab = g_strdup_printf ("F%u\n%s", i + 1, cap);
+      gtk_button_set_label (GTK_BUTTON (btn), lab);
+      g_free (lab);
+      if (k && !logfl_macro_key_is_stop (k))
+        {
+          char *tip = g_strdup_printf (
+              "F%u · %s\nRight-click to edit", i + 1,
+              k->tmpl ? k->tmpl : "");
+          gtk_widget_set_tooltip_text (btn, tip);
+          g_free (tip);
+        }
+      else
+        gtk_widget_set_tooltip_text (
+            btn, "F8 / Esc · stop CW keyer\nRight-click to edit");
+    }
+}
+
+static void
+refresh_esm_hint (LogflWindow *self)
+{
+  if (!self->esm_hint)
+    return;
+  if (!self->settings.esm_enabled)
+    {
+      gtk_label_set_text (GTK_LABEL (self->esm_hint), "");
+      return;
+    }
+  const char *ph = "Ready";
+  switch (self->esm_phase)
+    {
+    case LOGFL_ESM_PHASE_LOG:
+      ph = "Enter → Log QSO";
+      break;
+    case LOGFL_ESM_PHASE_TU:
+      ph = "Enter → TU";
+      break;
+    case LOGFL_ESM_PHASE_READY:
+    default:
+      ph = "Enter → CQ / EXCH";
+      break;
+    }
+  char *txt = g_strdup_printf ("ESM on · %s", ph);
+  gtk_label_set_text (GTK_LABEL (self->esm_hint), txt);
+  g_free (txt);
+}
+
+static void
+esm_enter (LogflWindow *self)
+{
+  const char *call = entry_text (self->call);
+  gboolean present = call && *call;
+  guint key = 0;
+  LogflEsmAct act = logfl_esm_decide (self->esm_phase, present, &key);
+
+  switch (act)
+    {
+    case LOGFL_ESM_ACT_SEND_MACRO:
+      macro_run (self, key);
+      self->esm_phase =
+          logfl_esm_next (self->esm_phase, act, present);
+      refresh_esm_hint (self);
+      break;
+    case LOGFL_ESM_ACT_LOG:
+      self->esm_force_log = TRUE;
+      log_qso (self);
+      self->esm_force_log = FALSE;
+      /* Phase advances in do_add_pending on success; if still pending
+       * (dup dialog), leave LOG so a cancelled dup can retry. */
+      refresh_esm_hint (self);
+      break;
+    case LOGFL_ESM_ACT_NONE:
+    default:
+      break;
+    }
+}
+
+/* Enter in entry fields: ESM cycle when enabled, else log (or save edit). */
+static void
+on_entry_activate (LogflWindow *self)
+{
+  if (self->editing || self->esm_force_log || !self->settings.esm_enabled)
+    {
+      log_qso (self);
+      return;
+    }
+  esm_enter (self);
+}
+
 static gboolean
 on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
              GdkModifierType state, gpointer user_data)
@@ -1023,9 +1200,6 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
   (void) ctl;
   (void) keycode;
   LogflWindow *self = user_data;
-  /* Don't steal keys while typing in an entry — only bare F-keys when the
-   * focus is not an editable, OR always for F-keys (N1MM always maps F-keys).
-   * N1MM sends F-keys even from the call box; match that. */
   if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))
     return FALSE;
   if (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F8)
@@ -1035,7 +1209,7 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
     }
   if (keyval == GDK_KEY_Escape)
     {
-      macro_run (self, N_MACROS - 1); /* STOP */
+      macro_run (self, LOGFL_MACRO_N_KEYS - 1); /* STOP */
       return TRUE;
     }
   return FALSE;
@@ -1044,33 +1218,67 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
 static GtkWidget *
 build_macro_bar (LogflWindow *self)
 {
-  /* Equal-width F-key strip under the entry row — contest-logger feel,
-   * not a pixel clone of N1MM. */
+  GtkWidget *wrap = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+
+  GtkWidget *top = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  self->bank_run_btn = gtk_toggle_button_new_with_label ("Run");
+  self->bank_snp_btn = gtk_toggle_button_new_with_label ("S&P");
+  gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (self->bank_snp_btn),
+                               GTK_TOGGLE_BUTTON (self->bank_run_btn));
+  gtk_toggle_button_set_active (
+      GTK_TOGGLE_BUTTON (self->bank_run_btn),
+      self->settings.macro_bank == LOGFL_MACRO_BANK_RUN);
+  gtk_toggle_button_set_active (
+      GTK_TOGGLE_BUTTON (self->bank_snp_btn),
+      self->settings.macro_bank == LOGFL_MACRO_BANK_SNP);
+  gtk_widget_set_tooltip_text (self->bank_run_btn,
+                               "Run message bank (F1–F8)");
+  gtk_widget_set_tooltip_text (self->bank_snp_btn,
+                               "Search & Pounce message bank (F1–F8)");
+  g_signal_connect (self->bank_run_btn, "toggled",
+                    G_CALLBACK (on_bank_run_toggled), self);
+  g_signal_connect (self->bank_snp_btn, "toggled",
+                    G_CALLBACK (on_bank_snp_toggled), self);
+
+  self->esm_hint = gtk_label_new ("");
+  gtk_label_set_xalign (GTK_LABEL (self->esm_hint), 1);
+  gtk_widget_add_css_class (self->esm_hint, "dim-label");
+  gtk_widget_add_css_class (self->esm_hint, "caption");
+  gtk_widget_set_hexpand (self->esm_hint, TRUE);
+
+  gtk_box_append (GTK_BOX (top), self->bank_run_btn);
+  gtk_box_append (GTK_BOX (top), self->bank_snp_btn);
+  gtk_box_append (GTK_BOX (top), self->esm_hint);
+
   GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
   gtk_widget_set_hexpand (bar, TRUE);
 
-  for (guint i = 0; i < N_MACROS; i++)
+  for (guint i = 0; i < LOGFL_MACRO_N_KEYS; i++)
     {
-      char *lab = g_strdup_printf ("F%u\n%s", i + 1, macros[i].caption);
-      GtkWidget *btn = gtk_button_new_with_label (lab);
-      g_free (lab);
+      GtkWidget *btn = gtk_button_new_with_label ("F?");
       gtk_widget_set_hexpand (btn, TRUE);
       gtk_widget_set_focus_on_click (btn, FALSE);
-      if (macros[i].tmpl)
-        {
-          char *tip = g_strdup_printf ("F%u · %s", i + 1, macros[i].tmpl);
-          gtk_widget_set_tooltip_text (btn, tip);
-          g_free (tip);
-        }
-      else
-        gtk_widget_set_tooltip_text (btn, "F8 / Esc · stop CW keyer");
-      if (i == N_MACROS - 1)
+      if (i == LOGFL_MACRO_N_KEYS - 1)
         gtk_widget_add_css_class (btn, "destructive-action");
       g_object_set_data (G_OBJECT (btn), "macro", GUINT_TO_POINTER (i));
       g_signal_connect (btn, "clicked", G_CALLBACK (on_macro_clicked), self);
+
+      GtkGesture *rg = gtk_gesture_click_new ();
+      gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (rg),
+                                     GDK_BUTTON_SECONDARY);
+      g_signal_connect (rg, "pressed", G_CALLBACK (on_macro_right_click),
+                        self);
+      gtk_widget_add_controller (btn, GTK_EVENT_CONTROLLER (rg));
+
+      self->macro_btns[i] = btn;
       gtk_box_append (GTK_BOX (bar), btn);
     }
-  return bar;
+
+  gtk_box_append (GTK_BOX (wrap), top);
+  gtk_box_append (GTK_BOX (wrap), bar);
+  refresh_macro_bar (self);
+  refresh_esm_hint (self);
+  return wrap;
 }
 
 static gboolean
@@ -1315,6 +1523,7 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
   GtkWidget *host_row = g_object_get_data (G_OBJECT (dlg), "tci-host");
   GtkWidget *port_row = g_object_get_data (G_OBJECT (dlg), "tci-port");
   GtkWidget *call_row = g_object_get_data (G_OBJECT (dlg), "station-call");
+  GtkWidget *esm_row = g_object_get_data (G_OBJECT (dlg), "esm");
 
   const char *h = gtk_editable_get_text (GTK_EDITABLE (host_row));
   char *host = g_strstrip (g_strdup ((h && *h) ? h : LOGFL_TCI_DEFAULT_HOST));
@@ -1323,23 +1532,31 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
     port = LOGFL_TCI_DEFAULT_PORT;
   const char *c = gtk_editable_get_text (GTK_EDITABLE (call_row));
   char *call = g_strstrip (g_strdup (c ? c : ""));
+  gboolean esm = esm_row
+                     ? adw_switch_row_get_active (ADW_SWITCH_ROW (esm_row))
+                     : FALSE;
 
   gboolean tci_changed =
       g_strcmp0 (host, self->settings.tci_host) != 0 ||
       (guint16) port != self->settings.tci_port;
   gboolean call_changed =
       g_strcmp0 (call, self->settings.station_callsign) != 0;
+  gboolean esm_changed = esm != self->settings.esm_enabled;
 
-  if (tci_changed || call_changed)
+  if (tci_changed || call_changed || esm_changed)
     {
       g_free (self->settings.tci_host);
       self->settings.tci_host = host;
       self->settings.tci_port = (guint16) port;
       g_free (self->settings.station_callsign);
       self->settings.station_callsign = call;
+      self->settings.esm_enabled = esm;
+      if (esm_changed)
+        self->esm_phase = LOGFL_ESM_PHASE_READY;
       logfl_settings_save (&self->settings);
       if (tci_changed)
         tci_reconnect_now (self);
+      refresh_esm_hint (self);
     }
   else
     {
@@ -1400,11 +1617,29 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
   adw_preferences_page_add (ADW_PREFERENCES_PAGE (page),
                             ADW_PREFERENCES_GROUP (sgrp));
 
+  GtkWidget *cgrp = adw_preferences_group_new ();
+  adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (cgrp),
+                                   "Contest messaging");
+  adw_preferences_group_set_description (
+      ADW_PREFERENCES_GROUP (cgrp),
+      "ESM: Enter advances CQ → exchange → log → TU. "
+      "Off keeps Enter = Log QSO for daily use. "
+      "Edit F-keys with right-click on the macro bar.");
+  GtkWidget *esm_row = adw_switch_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (esm_row),
+                                 "ESM — Enter sends message");
+  adw_switch_row_set_active (ADW_SWITCH_ROW (esm_row),
+                             self->settings.esm_enabled);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (cgrp), esm_row);
+  adw_preferences_page_add (ADW_PREFERENCES_PAGE (page),
+                            ADW_PREFERENCES_GROUP (cgrp));
+
   adw_preferences_dialog_add (ADW_PREFERENCES_DIALOG (dlg),
                               ADW_PREFERENCES_PAGE (page));
   g_object_set_data (G_OBJECT (dlg), "tci-host", host_row);
   g_object_set_data (G_OBJECT (dlg), "tci-port", port_row);
   g_object_set_data (G_OBJECT (dlg), "station-call", call_row);
+  g_object_set_data (G_OBJECT (dlg), "esm", esm_row);
   g_signal_connect (dlg, "closed", G_CALLBACK (prefs_closed), self);
   adw_dialog_present (dlg, GTK_WIDGET (self));
 }
@@ -1542,7 +1777,9 @@ mk_entry (LogflWindow *self, int width_chars, const char *placeholder)
   gtk_editable_set_width_chars (GTK_EDITABLE (e), width_chars);
   if (placeholder)
     gtk_entry_set_placeholder_text (GTK_ENTRY (e), placeholder);
-  g_signal_connect_swapped (e, "activate", G_CALLBACK (log_qso), self);
+  /* Enter: ESM cycle when enabled, otherwise log / save edit. */
+  g_signal_connect_swapped (e, "activate", G_CALLBACK (on_entry_activate),
+                            self);
   return e;
 }
 

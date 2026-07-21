@@ -31,6 +31,7 @@ engine_sources = [
   'src/engine/log_store.c',    # M1: canonical QSO store (schema, CRUD, queries)
   'src/engine/adif.c',         # M2: ADIF import/export, lossless round-trip
   'src/engine/tci_client.c',   # M4: TCI client (VFO/mode, explicit QSY)
+  'src/engine/macros.c',       # M5: F-key expand, Run/S&P banks, ESM
 ]
 engine_deps = [glib_dep, gio_dep, sqlite_dep, lws_dep]
 
@@ -77,13 +78,22 @@ log_tci_test = executable('log-tci-test',
 )
 test('tci', log_tci_test, timeout : 30)
 
+# M5: macros — token expand, Run/S&P banks, ESM state transitions.
+log_macro_test = executable('log-macro-test',
+  ['src/macro_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('macros', log_macro_test, timeout : 30)
+
 # --- App --------------------------------------------------------------------
 executable('log-for-linux',
   [
     'src/app/main.c',
-    'src/app/win.c',        # M3 UI + M4 TCI prefill / QSY + prefs
+    'src/app/win.c',        # M3 UI + M4 TCI + M5 macros v2
     'src/app/qso_row.c',    # M3: GObject row wrapper for GtkColumnView
-    'src/app/settings.c',   # GKeyFile prefs (TCI host/port, station call)
+    'src/app/settings.c',   # GKeyFile prefs (TCI, station, macros, ESM)
   ],
   include_directories : engine_inc,
   dependencies : [glib_dep, gio_dep, gtk_dep, adw_dep, lws_dep],
