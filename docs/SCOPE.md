@@ -181,7 +181,7 @@ importing someone's log and exporting it again must never silently drop data.
   Gate: `log-qsl-test` over mocked endpoints; live check with a small batch.
 - **Edit saved QSO. IMPLEMENTED 2026-07-21.** Decided 2026-07-21 (Richard):
   v1 originally only add/delete; correcting a logged QSO is first-class.
-  UI: QSO log window pencil loads the row into the main entry row (`Save QSO`
+  UI: pencil on the QSO table loads the row into the entry strip (`Save QSO`
   / `Cancel`); double-click still QSYs. Engine path is `logfl_store_get` +
   `logfl_store_update` so extras, QSL flags, original `ts`, grid/QTH/power
   and station fields stay intact while call/RST/band/mode/freq/name/comment
