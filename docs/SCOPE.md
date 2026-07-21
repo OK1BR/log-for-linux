@@ -160,6 +160,9 @@ importing someone's log and exporting it again must never silently drop data.
   1. **Editable macros** — right-click F-key → caption + CW template dialog;
      persist in `settings.ini` groups `macros_run` / `macros_snp`; tokens
      `{MYCALL}` `{CALL}` `{RST}` and `!` via engine `logfl_macro_expand`.
+     Since 2026-07-21 also a full editor in Preferences → Messaging: both
+     banks behind a Run/S&P switcher, one expander per key, edits apply
+     live and save on dialog close.
   2. **Run vs S&P** — two 8-key banks with distinct defaults; Run/S&P
      toggles on the entry window; active bank persisted as `contest.bank`.
   3. **ESM — Enter sends message** — optional (`contest.esm` / Preferences);

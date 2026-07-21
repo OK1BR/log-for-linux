@@ -84,6 +84,7 @@ struct _LogflWindow {
   gboolean delete_confirm_open; /* async delete dialog is up */
   LogflEsmPhase esm_phase;     /* M5 Enter-sends-message state */
   gboolean esm_force_log;      /* ESM LOG step → bypass ESM on Enter */
+  gboolean prefs_macros_dirty; /* macro edits in Preferences await ini save */
 };
 
 G_DEFINE_FINAL_TYPE (LogflWindow, logfl_window, ADW_TYPE_APPLICATION_WINDOW)
@@ -124,13 +125,9 @@ fmt_freq (double mhz)
 {
   if (mhz <= 0)
     return g_strdup ("");
+  /* Hz-exact: always six decimals, zero-padded — never shortened. */
   char buf[G_ASCII_DTOSTR_BUF_SIZE];
-  g_ascii_formatd (buf, sizeof buf, "%.4f", mhz);
-  char *last = buf + strlen (buf) - 1;
-  while (last > buf && *last == '0')
-    *last-- = '\0';
-  if (*last == '.')
-    *last = '\0';
+  g_ascii_formatd (buf, sizeof buf, "%.6f", mhz);
   return g_strdup (buf);
 }
 
@@ -1604,6 +1601,110 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
       g_free (host);
       g_free (call);
     }
+
+  if (self->prefs_macros_dirty)
+    {
+      self->prefs_macros_dirty = FALSE;
+      logfl_settings_save (&self->settings);
+    }
+}
+
+/* --- Preferences → Messaging: inline macro bank editors ----------------- */
+
+/* One expander per key: title "F1 · CQ", subtitle = template. Edits land in
+ * the in-memory set (and on the strip) immediately; the ini is written once
+ * on dialog close (prefs_closed). Right-click on the bar stays available. */
+
+static void
+pref_macro_retitle (AdwExpanderRow *xrow, const LogflMacroKey *k, guint idx)
+{
+  char *slot = macro_slot_name (idx);
+  char *title = (k->caption && *k->caption)
+                    ? g_strdup_printf ("%s · %s", slot, k->caption)
+                    : g_strdup (slot);
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (xrow), title);
+  if (!logfl_macro_index_is_stop (idx))
+    adw_expander_row_set_subtitle (
+        xrow, (k->tmpl && *k->tmpl) ? k->tmpl : "unused");
+  g_free (title);
+  g_free (slot);
+}
+
+static void
+on_pref_macro_changed (GtkEditable *e, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  guint bank = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (e), "bank"));
+  guint idx = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (e), "idx"));
+  gboolean is_cap =
+      GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (e), "is-cap"));
+  const LogflMacroKey *k =
+      logfl_macro_set_key (&self->settings.macros, bank, idx);
+  if (!k)
+    return;
+
+  /* set_key frees the old strings — copy the half we keep before the call. */
+  const char *txt = gtk_editable_get_text (e);
+  char *cap = g_strdup (is_cap ? txt : k->caption);
+  char *tmpl = g_strdup (is_cap ? k->tmpl : txt);
+  logfl_macro_set_set_key (&self->settings.macros, bank, idx, cap, tmpl);
+  g_free (cap);
+  g_free (tmpl);
+
+  pref_macro_retitle (g_object_get_data (G_OBJECT (e), "xrow"),
+                      logfl_macro_set_key (&self->settings.macros, bank, idx),
+                      idx);
+  self->prefs_macros_dirty = TRUE;
+  refresh_macro_bar (self);
+}
+
+static GtkWidget *
+pref_macro_entry (LogflWindow *self, const char *title, const char *text,
+                  guint bank, guint idx, gboolean is_cap, GtkWidget *xrow)
+{
+  GtkWidget *e = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (e), title);
+  gtk_editable_set_text (GTK_EDITABLE (e), text ? text : "");
+  g_object_set_data (G_OBJECT (e), "bank", GUINT_TO_POINTER (bank));
+  g_object_set_data (G_OBJECT (e), "idx", GUINT_TO_POINTER (idx));
+  g_object_set_data (G_OBJECT (e), "is-cap", GUINT_TO_POINTER (is_cap));
+  g_object_set_data (G_OBJECT (e), "xrow", xrow);
+  g_signal_connect (e, "changed", G_CALLBACK (on_pref_macro_changed), self);
+  return e;
+}
+
+/* Rows of one bank, packed as an untitled group — the caller puts both
+ * banks in a GtkStack behind a Run/S&P switcher so it is always explicit
+ * which bank is being edited. */
+static GtkWidget *
+macro_bank_rows (LogflWindow *self, LogflMacroBankId bank)
+{
+  AdwPreferencesGroup *grp =
+      ADW_PREFERENCES_GROUP (adw_preferences_group_new ());
+  for (guint i = 0; i < LOGFL_MACRO_N_KEYS; i++)
+    {
+      const LogflMacroKey *k =
+          logfl_macro_set_key (&self->settings.macros, bank, i);
+      GtkWidget *xrow = adw_expander_row_new ();
+      /* Captions/templates are user text — never Pango markup. */
+      adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (xrow), FALSE);
+      adw_expander_row_add_row (
+          ADW_EXPANDER_ROW (xrow),
+          pref_macro_entry (self, "Caption", k->caption, bank, i, TRUE,
+                            xrow));
+      if (logfl_macro_index_is_stop (i))
+        adw_expander_row_set_subtitle (
+            ADW_EXPANDER_ROW (xrow),
+            "Esc — always stops the keyer; caption only");
+      else
+        adw_expander_row_add_row (
+            ADW_EXPANDER_ROW (xrow),
+            pref_macro_entry (self, "CW text", k->tmpl, bank, i, FALSE,
+                              xrow));
+      pref_macro_retitle (ADW_EXPANDER_ROW (xrow), k, i);
+      adw_preferences_group_add (grp, xrow);
+    }
+  return GTK_WIDGET (grp);
 }
 
 static void
@@ -1684,7 +1785,7 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
       "description",
       "Enter advances CQ → exchange → log → TU. "
       "Off keeps Enter = Log QSO for daily use. "
-      "Edit F-keys with right-click on the macro bar (Run / S&amp;P banks).",
+      "Macro keys are editable below, or right-click them on the bar.",
       NULL));
   GtkWidget *esm_row = adw_switch_row_new ();
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (esm_row),
@@ -1693,6 +1794,39 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
                              self->settings.esm_enabled);
   adw_preferences_group_add (cgrp, esm_row);
   adw_preferences_page_add (p_msg, cgrp);
+
+  /* Both banks behind an explicit Run/S&P switcher; opens on the bank
+   * that is active on the macro bar. */
+  AdwPreferencesGroup *mgrp = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Macro banks",
+      "description",
+      "Tokens: {MYCALL} {CALL} {RST} — ! is short for {CALL}. "
+      "Empty CW text = unused slot.",
+      NULL));
+  GtkWidget *mstack = gtk_stack_new ();
+  gtk_stack_set_vhomogeneous (GTK_STACK (mstack), FALSE);
+  gtk_stack_set_transition_type (GTK_STACK (mstack),
+                                 GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+  gtk_stack_add_titled (GTK_STACK (mstack),
+                        macro_bank_rows (self, LOGFL_MACRO_BANK_RUN),
+                        "run", "Run");
+  gtk_stack_add_titled (GTK_STACK (mstack),
+                        macro_bank_rows (self, LOGFL_MACRO_BANK_SNP),
+                        "snp", "S&P");
+  gtk_stack_set_visible_child_name (
+      GTK_STACK (mstack),
+      self->settings.macro_bank == LOGFL_MACRO_BANK_SNP ? "snp" : "run");
+  GtkWidget *msw = gtk_stack_switcher_new ();
+  gtk_stack_switcher_set_stack (GTK_STACK_SWITCHER (msw),
+                                GTK_STACK (mstack));
+  gtk_widget_set_halign (msw, GTK_ALIGN_CENTER);
+  GtkWidget *mbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
+  gtk_box_append (GTK_BOX (mbox), msw);
+  gtk_box_append (GTK_BOX (mbox), mstack);
+  adw_preferences_group_add (mgrp, mbox);
+  adw_preferences_page_add (p_msg, mgrp);
+
   adw_preferences_dialog_add (ADW_PREFERENCES_DIALOG (dlg), p_msg);
 
   /* --- WSJT-X / JTDX UDP ----------------------------------------------- */
@@ -2635,7 +2769,7 @@ build_qso_table (LogflWindow *self)
   add_column (GTK_COLUMN_VIEW (view), "UTC", COL_UTC, 128, FALSE, self);
   add_column (GTK_COLUMN_VIEW (view), "Call", COL_CALL, 100, FALSE, self);
   add_column (GTK_COLUMN_VIEW (view), "Band", COL_BAND, 64, FALSE, self);
-  add_column (GTK_COLUMN_VIEW (view), "MHz", COL_FREQ, 92, FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "MHz", COL_FREQ, 108, FALSE, self);
   add_column (GTK_COLUMN_VIEW (view), "Mode", COL_MODE, 88, FALSE, self);
   add_column (GTK_COLUMN_VIEW (view), "RST", COL_RST, 96, FALSE, self);
   add_column (GTK_COLUMN_VIEW (view), "Name", COL_NAME, 120, TRUE, self);
@@ -2735,7 +2869,7 @@ logfl_window_init (LogflWindow *self)
   self->mode_dd = gtk_drop_down_new_from_strings (modes);
   g_signal_connect_swapped (self->mode_dd, "notify::selected",
                             G_CALLBACK (on_mode_changed), self);
-  self->freq = mk_entry (self, 8, "7.030");
+  self->freq = mk_entry (self, 10, "7.030000");
   g_signal_connect_swapped (self->freq, "changed",
                             G_CALLBACK (on_freq_changed), self);
   /* Seed mid-band so a quick Log QSO still writes freq (TCI overwrites). */
