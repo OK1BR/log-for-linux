@@ -1,6 +1,6 @@
-/* win.c — main logbook window: entry row (UTC clock, worked-B4, TCI) and a
- * separate QSO-list window (table, search, delete, double-click QSY). ADIF
- * import/export and preferences live on the main window menu (M3/M4).
+/* win.c — main logbook window: entry row + worked-B4, footer with UTC and
+ * active TCI status; separate QSO-list window (table, search, delete, QSY).
+ * ADIF import/export and preferences live on the main window menu (M3/M4).
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */
@@ -1403,23 +1403,13 @@ logfl_window_init (LogflWindow *self)
   gtk_box_append (GTK_BOX (fields), labeled ("Comment", self->comment));
   gtk_box_append (GTK_BOX (fields), log_btn);
 
-  self->clock_label = gtk_label_new ("");
-  gtk_widget_add_css_class (self->clock_label, "numeric");
-  gtk_widget_add_css_class (self->clock_label, "dim-label");
-  gtk_label_set_xalign (GTK_LABEL (self->clock_label), 0);
-  self->tci_label = gtk_label_new ("TCI offline");
-  gtk_widget_add_css_class (self->tci_label, "dim-label");
-  gtk_label_set_xalign (GTK_LABEL (self->tci_label), 0);
-  gtk_label_set_ellipsize (GTK_LABEL (self->tci_label), PANGO_ELLIPSIZE_END);
+  /* Worked-B4 stays with the entry row (depends on call/band/mode). */
   self->wb4_label = gtk_label_new ("");
   gtk_label_set_xalign (GTK_LABEL (self->wb4_label), 0);
   gtk_label_set_ellipsize (GTK_LABEL (self->wb4_label),
                            PANGO_ELLIPSIZE_END);
   gtk_widget_set_hexpand (self->wb4_label, TRUE);
-  GtkWidget *info = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 24);
-  gtk_box_append (GTK_BOX (info), self->clock_label);
-  gtk_box_append (GTK_BOX (info), self->tci_label);
-  gtk_box_append (GTK_BOX (info), self->wb4_label);
+  gtk_widget_add_css_class (self->wb4_label, "dim-label");
 
   GtkWidget *entry_bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
   gtk_widget_set_margin_top (entry_bar, 10);
@@ -1427,15 +1417,35 @@ logfl_window_init (LogflWindow *self)
   gtk_widget_set_margin_start (entry_bar, 12);
   gtk_widget_set_margin_end (entry_bar, 12);
   gtk_box_append (GTK_BOX (entry_bar), fields);
-  gtk_box_append (GTK_BOX (entry_bar), info);
+  gtk_box_append (GTK_BOX (entry_bar), self->wb4_label);
 
   self->toasts = ADW_TOAST_OVERLAY (adw_toast_overlay_new ());
   adw_toast_overlay_set_child (self->toasts, entry_bar);
+
+  /* Footer: UTC clock/date (left) · active TCI status (right). */
+  self->clock_label = gtk_label_new ("");
+  gtk_widget_add_css_class (self->clock_label, "numeric");
+  gtk_widget_add_css_class (self->clock_label, "dim-label");
+  gtk_label_set_xalign (GTK_LABEL (self->clock_label), 0);
+  self->tci_label = gtk_label_new ("TCI offline");
+  gtk_widget_add_css_class (self->tci_label, "dim-label");
+  gtk_label_set_xalign (GTK_LABEL (self->tci_label), 1);
+  gtk_label_set_ellipsize (GTK_LABEL (self->tci_label), PANGO_ELLIPSIZE_END);
+  gtk_widget_set_hexpand (self->tci_label, TRUE);
+
+  GtkWidget *footer = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
+  gtk_widget_set_margin_top (footer, 4);
+  gtk_widget_set_margin_bottom (footer, 4);
+  gtk_widget_set_margin_start (footer, 12);
+  gtk_widget_set_margin_end (footer, 12);
+  gtk_box_append (GTK_BOX (footer), self->clock_label);
+  gtk_box_append (GTK_BOX (footer), self->tci_label);
 
   GtkWidget *tbv = adw_toolbar_view_new ();
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), header);
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (tbv),
                                 GTK_WIDGET (self->toasts));
+  adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (tbv), footer);
   adw_application_window_set_content (ADW_APPLICATION_WINDOW (self), tbv);
 
   build_log_window (self);
