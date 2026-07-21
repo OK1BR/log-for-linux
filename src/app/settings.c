@@ -81,6 +81,8 @@ logfl_settings_init_defaults (LogflSettings *s)
   s->esm_enabled = FALSE;
   s->macro_bank = LOGFL_MACRO_BANK_RUN;
   logfl_macro_set_init_defaults (&s->macros);
+  s->wsjtx_enabled = TRUE;
+  s->wsjtx_port = LOGFL_WSJTX_DEFAULT_PORT;
 }
 
 void
@@ -133,6 +135,16 @@ logfl_settings_load (LogflSettings *s)
         }
 
       load_macros (kf, &s->macros);
+
+      if (g_key_file_has_key (kf, "wsjtx", "enabled", NULL))
+        s->wsjtx_enabled =
+            g_key_file_get_boolean (kf, "wsjtx", "enabled", NULL);
+      if (g_key_file_has_key (kf, "wsjtx", "port", NULL))
+        {
+          int p = g_key_file_get_integer (kf, "wsjtx", "port", NULL);
+          if (p > 0 && p <= 65535)
+            s->wsjtx_port = (guint16) p;
+        }
     }
   g_key_file_free (kf);
   g_free (path);
@@ -165,6 +177,11 @@ logfl_settings_save (const LogflSettings *s)
                                                                : "run");
   save_macros (kf, &s->macros);
 
+  g_key_file_set_boolean (kf, "wsjtx", "enabled", s->wsjtx_enabled);
+  g_key_file_set_integer (kf, "wsjtx", "port",
+                          s->wsjtx_port ? s->wsjtx_port
+                                        : LOGFL_WSJTX_DEFAULT_PORT);
+
   GError *err = NULL;
   if (!g_key_file_save_to_file (kf, path, &err))
     {
@@ -188,4 +205,6 @@ logfl_settings_clear (LogflSettings *s)
   s->esm_enabled = FALSE;
   s->macro_bank = LOGFL_MACRO_BANK_RUN;
   logfl_macro_set_clear (&s->macros);
+  s->wsjtx_enabled = FALSE;
+  s->wsjtx_port = 0;
 }

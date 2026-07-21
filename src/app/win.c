@@ -1,6 +1,6 @@
 /* win.c — main logbook window: entry row, macro strip, QSO table (search /
- * edit / delete / double-click QSY), footer with UTC and TCI status.
- * ADIF import/export and preferences live on the window menu (M3/M4).
+ * edit / delete / double-click QSY), footer with UTC, TCI and WSJT-X status.
+ * ADIF import/export and preferences live on the window menu (M3/M4/M6).
  * Edit loads a row into the entry strip and uses logfl_store_update.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
@@ -16,6 +16,7 @@
 #include "qso_row.h"
 #include "settings.h"
 #include "tci_client.h"
+#include "wsjtx_udp.h"
 
 #define TCI_RETRY_S 5
 
@@ -55,7 +56,7 @@ struct _LogflWindow {
   GtkWidget *search;
   GtkWidget *call, *rst_s, *rst_r, *freq, *name, *comment;
   GtkWidget *band_dd, *mode_dd;
-  GtkWidget *wb4_label, *clock_label, *tci_label;
+  GtkWidget *wb4_label, *clock_label, *tci_label, *wsjtx_label;
   GtkWidget *delete_btn;
   GtkWidget *edit_btn;         /* load selected QSO into entry row */
   GtkWidget *log_btn;          /* "Log QSO" / "Save QSO" */
@@ -72,6 +73,7 @@ struct _LogflWindow {
   gboolean tci_connecting;     /* connect thread in flight */
   guint tci_epoch;             /* bumps on reconnect; stale jobs drop */
   LogflTciClient *tci;
+  LogflWsjtxServer *wsjtx;     /* M6: UDP listener for WSJT-X / JTDX        */
   LogflQso *pending;           /* QSO awaiting dup confirmation */
   LogflQso *editing;           /* non-NULL: entry row is editing this QSO */
   gint64 pending_delete_id;
@@ -1535,6 +1537,125 @@ tci_disconnect (LogflWindow *self)
   tci_set_status (self, "TCI offline");
 }
 
+/* --- M6 WSJT-X UDP ------------------------------------------------------ */
+
+static void
+wsjtx_set_status (LogflWindow *self, const char *txt)
+{
+  if (self->wsjtx_label)
+    gtk_label_set_text (GTK_LABEL (self->wsjtx_label), txt ? txt : "");
+}
+
+static void
+on_wsjtx_logged (LogflQso *q, const LogflWsjtxQsoLogged *raw, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  (void) raw;
+  if (!self->store || !self->wsjtx_label)
+    {
+      logfl_qso_free (q);
+      return;
+    }
+  /* Prefer station call from prefs when the packet left it empty. */
+  if ((!q->station_callsign || !q->station_callsign[0]) &&
+      self->settings.station_callsign && self->settings.station_callsign[0])
+    {
+      g_free (q->station_callsign);
+      q->station_callsign = g_strdup (self->settings.station_callsign);
+    }
+  if (!q->band || !q->mode || !q->call || q->ts <= 0)
+    {
+      toast (self, "WSJT-X QSO incomplete (need call, band/freq, mode, time)");
+      logfl_qso_free (q);
+      return;
+    }
+
+  gboolean dup = FALSE;
+  GError *err = NULL;
+  logfl_store_dup_check (self->store, q->call, q->band, q->mode, q->ts, 0,
+                         &dup, NULL);
+  if (dup)
+    {
+      toast (self, "WSJT-X: %s already logged", q->call);
+      logfl_qso_free (q);
+      return;
+    }
+  if (logfl_store_add (self->store, q, &err))
+    {
+      toast (self, "WSJT-X: logged %s · %s · %s", q->call, q->band, q->mode);
+      reload (self);
+    }
+  else
+    {
+      toast (self, "WSJT-X: not logged — %s",
+             err ? err->message : "store error");
+      g_clear_error (&err);
+    }
+  logfl_qso_free (q);
+}
+
+static void
+on_wsjtx_status (const LogflWsjtxStatus *st, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  if (!self->store || !self->wsjtx || !st || !st->dx_call || !st->dx_call[0])
+    return;
+  const char *band = NULL;
+  if (st->dial_hz > 0)
+    band = logfl_adif_band_for_freq ((double) st->dial_hz / 1e6);
+  LogflWorkedB4 wb = { 0 };
+  if (!logfl_store_worked_b4 (self->store, st->dx_call, band, st->mode, &wb,
+                              NULL))
+    return;
+  logfl_wsjtx_server_highlight_b4 (self->wsjtx, st->hdr.id, st->dx_call,
+                                   wb.n_total, NULL);
+}
+
+static void
+wsjtx_stop (LogflWindow *self)
+{
+  if (self->wsjtx)
+    {
+      logfl_wsjtx_server_set_logged_cb (self->wsjtx, NULL, NULL);
+      logfl_wsjtx_server_set_status_cb (self->wsjtx, NULL, NULL);
+      logfl_wsjtx_server_free (self->wsjtx);
+      self->wsjtx = NULL;
+    }
+  wsjtx_set_status (self, "WSJT-X off");
+}
+
+static void
+wsjtx_start (LogflWindow *self)
+{
+  wsjtx_stop (self);
+  if (!self->settings.wsjtx_enabled)
+    {
+      wsjtx_set_status (self, "WSJT-X off");
+      return;
+    }
+  guint16 port = self->settings.wsjtx_port
+                     ? self->settings.wsjtx_port
+                     : LOGFL_WSJTX_DEFAULT_PORT;
+  self->wsjtx = logfl_wsjtx_server_new (LOGFL_WSJTX_DEFAULT_HOST, port);
+  logfl_wsjtx_server_set_logged_cb (self->wsjtx, on_wsjtx_logged, self);
+  logfl_wsjtx_server_set_status_cb (self->wsjtx, on_wsjtx_status, self);
+  GError *err = NULL;
+  if (!logfl_wsjtx_server_start (self->wsjtx, &err))
+    {
+      char *msg = g_strdup_printf ("WSJT-X bind fail");
+      wsjtx_set_status (self, msg);
+      g_free (msg);
+      toast (self, "WSJT-X UDP: %s", err ? err->message : "bind failed");
+      g_clear_error (&err);
+      logfl_wsjtx_server_free (self->wsjtx);
+      self->wsjtx = NULL;
+      return;
+    }
+  char *st = g_strdup_printf ("WSJT-X :%u", port);
+  wsjtx_set_status (self, st);
+  g_free (st);
+}
+
 static void
 tci_reconnect_now (LogflWindow *self)
 {
@@ -1553,6 +1674,8 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
   GtkWidget *port_row = g_object_get_data (G_OBJECT (dlg), "tci-port");
   GtkWidget *call_row = g_object_get_data (G_OBJECT (dlg), "station-call");
   GtkWidget *esm_row = g_object_get_data (G_OBJECT (dlg), "esm");
+  GtkWidget *wsjtx_en_row = g_object_get_data (G_OBJECT (dlg), "wsjtx-en");
+  GtkWidget *wsjtx_port_row = g_object_get_data (G_OBJECT (dlg), "wsjtx-port");
 
   const char *h = gtk_editable_get_text (GTK_EDITABLE (host_row));
   char *host = g_strstrip (g_strdup ((h && *h) ? h : LOGFL_TCI_DEFAULT_HOST));
@@ -1564,6 +1687,14 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
   gboolean esm = esm_row
                      ? adw_switch_row_get_active (ADW_SWITCH_ROW (esm_row))
                      : FALSE;
+  gboolean wsjtx_en = wsjtx_en_row
+                          ? adw_switch_row_get_active (ADW_SWITCH_ROW (wsjtx_en_row))
+                          : self->settings.wsjtx_enabled;
+  int wsjtx_port = wsjtx_port_row
+                       ? (int) adw_spin_row_get_value (ADW_SPIN_ROW (wsjtx_port_row))
+                       : self->settings.wsjtx_port;
+  if (wsjtx_port < 1 || wsjtx_port > 65535)
+    wsjtx_port = LOGFL_WSJTX_DEFAULT_PORT;
 
   gboolean tci_changed =
       g_strcmp0 (host, self->settings.tci_host) != 0 ||
@@ -1571,8 +1702,11 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
   gboolean call_changed =
       g_strcmp0 (call, self->settings.station_callsign) != 0;
   gboolean esm_changed = esm != self->settings.esm_enabled;
+  gboolean wsjtx_changed =
+      wsjtx_en != self->settings.wsjtx_enabled ||
+      (guint16) wsjtx_port != self->settings.wsjtx_port;
 
-  if (tci_changed || call_changed || esm_changed)
+  if (tci_changed || call_changed || esm_changed || wsjtx_changed)
     {
       g_free (self->settings.tci_host);
       self->settings.tci_host = host;
@@ -1580,11 +1714,15 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
       g_free (self->settings.station_callsign);
       self->settings.station_callsign = call;
       self->settings.esm_enabled = esm;
+      self->settings.wsjtx_enabled = wsjtx_en;
+      self->settings.wsjtx_port = (guint16) wsjtx_port;
       if (esm_changed)
         self->esm_phase = LOGFL_ESM_PHASE_READY;
       logfl_settings_save (&self->settings);
       if (tci_changed)
         tci_reconnect_now (self);
+      if (wsjtx_changed)
+        wsjtx_start (self);
       refresh_esm_hint (self);
     }
   else
@@ -1683,14 +1821,47 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
   adw_preferences_page_add (p_msg, cgrp);
   adw_preferences_dialog_add (ADW_PREFERENCES_DIALOG (dlg), p_msg);
 
+  /* --- WSJT-X / JTDX UDP ----------------------------------------------- */
+  AdwPreferencesPage *p_wsjtx = ADW_PREFERENCES_PAGE (g_object_new (
+      ADW_TYPE_PREFERENCES_PAGE,
+      "title", "WSJT-X",
+      "icon-name", "network-wireless-symbolic",
+      NULL));
+  AdwPreferencesGroup *wgrp = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP,
+      "title", "UDP server",
+      "description",
+      "Listen for QSO Logged from WSJT-X / JTDX "
+      "(Settings → Reporting → UDP Server). "
+      "Default 127.0.0.1:2237. Worked-B4 highlights the DX call in Band Activity.",
+      NULL));
+  GtkWidget *wsjtx_en = adw_switch_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (wsjtx_en), "Enabled");
+  adw_switch_row_set_active (ADW_SWITCH_ROW (wsjtx_en),
+                             self->settings.wsjtx_enabled);
+  adw_preferences_group_add (wgrp, wsjtx_en);
+  GtkWidget *wsjtx_port = adw_spin_row_new_with_range (1, 65535, 1);
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (wsjtx_port), "Port");
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (wsjtx_port),
+                               "WSJT-X default 2237");
+  adw_spin_row_set_value (
+      ADW_SPIN_ROW (wsjtx_port),
+      self->settings.wsjtx_port ? self->settings.wsjtx_port
+                                : LOGFL_WSJTX_DEFAULT_PORT);
+  adw_preferences_group_add (wgrp, wsjtx_port);
+  adw_preferences_page_add (p_wsjtx, wgrp);
+  adw_preferences_dialog_add (ADW_PREFERENCES_DIALOG (dlg), p_wsjtx);
+
   /* Keep the page switcher in the header (sdr-for-linux does the same). */
   adw_dialog_set_content_width (dlg, 640);
-  adw_dialog_set_content_height (dlg, 420);
+  adw_dialog_set_content_height (dlg, 480);
 
   g_object_set_data (G_OBJECT (dlg), "tci-host", host_row);
   g_object_set_data (G_OBJECT (dlg), "tci-port", port_row);
   g_object_set_data (G_OBJECT (dlg), "station-call", call_row);
   g_object_set_data (G_OBJECT (dlg), "esm", esm_row);
+  g_object_set_data (G_OBJECT (dlg), "wsjtx-en", wsjtx_en);
+  g_object_set_data (G_OBJECT (dlg), "wsjtx-port", wsjtx_port);
   g_signal_connect (dlg, "closed", G_CALLBACK (prefs_closed), self);
   adw_dialog_present (dlg, GTK_WIDGET (self));
 }
@@ -1865,6 +2036,14 @@ logfl_window_dispose (GObject *obj)
   /* Sentinel for in-flight TCI idles / connect jobs: null the status label
    * first so they drop work instead of touching a half-torn window. */
   self->tci_label = NULL;
+  self->wsjtx_label = NULL;
+  if (self->wsjtx)
+    {
+      logfl_wsjtx_server_set_logged_cb (self->wsjtx, NULL, NULL);
+      logfl_wsjtx_server_set_status_cb (self->wsjtx, NULL, NULL);
+      logfl_wsjtx_server_free (self->wsjtx);
+      self->wsjtx = NULL;
+    }
   if (self->tci)
     {
       logfl_tci_client_set_state_cb (self->tci, NULL, NULL);
@@ -2107,6 +2286,10 @@ logfl_window_init (LogflWindow *self)
   gtk_label_set_xalign (GTK_LABEL (self->tci_label), 1);
   gtk_label_set_ellipsize (GTK_LABEL (self->tci_label), PANGO_ELLIPSIZE_END);
   gtk_widget_set_hexpand (self->tci_label, TRUE);
+  self->wsjtx_label = gtk_label_new ("WSJT-X off");
+  gtk_widget_add_css_class (self->wsjtx_label, "dim-label");
+  gtk_label_set_xalign (GTK_LABEL (self->wsjtx_label), 1);
+  gtk_label_set_ellipsize (GTK_LABEL (self->wsjtx_label), PANGO_ELLIPSIZE_END);
 
   GtkWidget *footer = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
   gtk_widget_set_margin_top (footer, 4);
@@ -2115,6 +2298,7 @@ logfl_window_init (LogflWindow *self)
   gtk_widget_set_margin_end (footer, 12);
   gtk_box_append (GTK_BOX (footer), self->clock_label);
   gtk_box_append (GTK_BOX (footer), self->tci_label);
+  gtk_box_append (GTK_BOX (footer), self->wsjtx_label);
 
   GtkWidget *tbv = adw_toolbar_view_new ();
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), header);
@@ -2128,6 +2312,7 @@ logfl_window_init (LogflWindow *self)
   reload (self);
   /* M4: connect to sdr-for-linux TCI in a background thread (non-blocking). */
   g_idle_add (tci_connect_kick, self);
+  wsjtx_start (self);
   gtk_widget_grab_focus (self->call);
 }
 

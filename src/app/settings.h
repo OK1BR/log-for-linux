@@ -12,6 +12,7 @@
 #include <glib.h>
 
 #include "macros.h"
+#include "wsjtx_udp.h"
 
 G_BEGIN_DECLS
 
@@ -22,6 +23,8 @@ typedef struct {
   gboolean esm_enabled;        /* M5: Enter advances ESM instead of log      */
   LogflMacroBankId macro_bank; /* Run or S&P                                 */
   LogflMacroSet macros;        /* F1–F8 + free row + STOP (16) per bank      */
+  gboolean wsjtx_enabled;      /* M6: listen for WSJT-X / JTDX UDP           */
+  guint16  wsjtx_port;         /* default 2237                               */
 } LogflSettings;
 
 /* Fill defaults (heap strings + macro banks). Safe on a zeroed struct. */

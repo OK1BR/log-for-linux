@@ -32,6 +32,7 @@ engine_sources = [
   'src/engine/adif.c',         # M2: ADIF import/export, lossless round-trip
   'src/engine/tci_client.c',   # M4: TCI client (VFO/mode, explicit QSY)
   'src/engine/macros.c',       # M5: F-key expand, Run/S&P banks, ESM
+  'src/engine/wsjtx_udp.c',    # M6: WSJT-X / JTDX UDP (QSO Logged, highlight)
 ]
 engine_deps = [glib_dep, gio_dep, sqlite_dep, lws_dep]
 
@@ -87,13 +88,22 @@ log_macro_test = executable('log-macro-test',
 )
 test('macros', log_macro_test, timeout : 30)
 
+# M6: WSJT-X UDP — pack/parse QSO Logged, loopback server, highlight.
+log_udp_test = executable('log-udp-test',
+  ['src/udp_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('udp', log_udp_test, timeout : 30)
+
 # --- App --------------------------------------------------------------------
 executable('log-for-linux',
   [
     'src/app/main.c',
-    'src/app/win.c',        # M3 UI + M4 TCI + M5 macros v2
+    'src/app/win.c',        # M3 UI + M4 TCI + M5 macros + M6 WSJT-X
     'src/app/qso_row.c',    # M3: GObject row wrapper for GtkColumnView
-    'src/app/settings.c',   # GKeyFile prefs (TCI, station, macros, ESM)
+    'src/app/settings.c',   # GKeyFile prefs (TCI, station, macros, ESM, WSJT-X)
   ],
   include_directories : engine_inc,
   dependencies : [glib_dep, gio_dep, gtk_dep, adw_dep, lws_dep],

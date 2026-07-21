@@ -86,7 +86,7 @@ Mark each item when verified on a real desktop session.
 | Manual checklist | ☐ complete |
 
 When this passes, mark **M3 IMPLEMENTED** in `docs/SCOPE.md` and treat the
-app as v1 for daily use. Note: M4 (TCI), macro bar v1, and edit-saved-QSO
-already landed in code after the original M3 checklist was written — this
-list remains the manual UI gate for the core logbook. Next after M3 sign-off
-in the planned order: **M5 macros v2**.
+app as v1 for daily use. Note: M4–M6 (TCI, macros v2, WSJT-X UDP) and
+edit-saved-QSO already landed in code after the original M3 checklist was
+written — this list remains the manual UI gate for the core logbook. Next
+feature milestone after M3 sign-off in the planned order: **M7 callbook**.

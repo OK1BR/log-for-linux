@@ -167,10 +167,15 @@ importing someone's log and exporting it again must never silently drop data.
   4. **SSB “wav” / DVK — OUT OF SCOPE** (unchanged): CW text via TCI only.
   Gate: `log-macro-test` — expand, bank defaults/edit, ESM transitions.
   Live CW smoke against sdr-for-linux when available (not formal signed gate).
-- **M6 — WSJT-X UDP.** UDP server (default port 2237): decode `QSO Logged`
-  into the store, answer status/worked-B4 (callsign highlight).
-  Gate: `log-udp-test` — replay captured WSJT-X datagrams headless; live check
-  logging one real FT8 QSO end to end.
+- **M6 — WSJT-X UDP. IMPLEMENTED 2026-07-21 (offline gate green).**
+  UDP server (default `127.0.0.1:2237`): decode `QSO Logged` into the store,
+  on `Status` answer worked-B4 via `Highlight Callsign` (green = new, yellow
+  = worked). Preferences → WSJT-X (enable + port); footer status line.
+  Done as `src/engine/wsjtx_udp.c` (QDataStream BE, utf8=QByteArray, schema
+  2/3): pack/parse helpers, GSocket server on the GLib main loop, heartbeat
+  reply. UI wires auto-log (exact-ts dup skip) + toast + table reload.
+  Gate: `log-udp-test` — synthetic QSO Logged/Status round-trip, store insert,
+  loopback server. Live check: one real FT8 QSO from WSJT-X (not formal gate).
 - **M7 — callbook lookup.** QRZ.com XML (subscriber) / HamQTH (free) —
   name/QTH/grid auto-fill on callsign entry, on-disk cache, credentials in the
   keyring, never in config files.
