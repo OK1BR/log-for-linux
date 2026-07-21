@@ -1256,12 +1256,10 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
   return FALSE;
 }
 
+/* Linked Run / S&P toggles for the header bar (between log and menu). */
 static GtkWidget *
-build_macro_bar (LogflWindow *self)
+build_bank_header_toggle (LogflWindow *self)
 {
-  GtkWidget *wrap = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
-
-  GtkWidget *top = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   self->bank_run_btn = gtk_toggle_button_new_with_label ("Run");
   self->bank_snp_btn = gtk_toggle_button_new_with_label ("S&P");
   gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (self->bank_snp_btn),
@@ -1281,20 +1279,26 @@ build_macro_bar (LogflWindow *self)
   g_signal_connect (self->bank_snp_btn, "toggled",
                     G_CALLBACK (on_bank_snp_toggled), self);
 
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class (box, "linked");
+  gtk_box_append (GTK_BOX (box), self->bank_run_btn);
+  gtk_box_append (GTK_BOX (box), self->bank_snp_btn);
+  return box;
+}
+
+static GtkWidget *
+build_macro_bar (LogflWindow *self)
+{
+  GtkWidget *wrap = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+
   self->esm_hint = gtk_label_new ("");
-  gtk_label_set_xalign (GTK_LABEL (self->esm_hint), 1);
+  gtk_label_set_xalign (GTK_LABEL (self->esm_hint), 0);
   gtk_widget_add_css_class (self->esm_hint, "dim-label");
   gtk_widget_add_css_class (self->esm_hint, "caption");
-  gtk_widget_set_hexpand (self->esm_hint, TRUE);
-
-  gtk_box_append (GTK_BOX (top), self->bank_run_btn);
-  gtk_box_append (GTK_BOX (top), self->bank_snp_btn);
-  gtk_box_append (GTK_BOX (top), self->esm_hint);
+  gtk_box_append (GTK_BOX (wrap), self->esm_hint);
 
   /* Two rows of 8: F1–F8, then free M1–M7 + STOP. Homogeneous so every
    * key has the same width; STOP is a normal button (not destructive red). */
-  GtkWidget *rows = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
-  gtk_widget_set_hexpand (rows, TRUE);
   for (guint row = 0; row < LOGFL_MACRO_N_ROWS; row++)
     {
       GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
@@ -1321,11 +1325,9 @@ build_macro_bar (LogflWindow *self)
           self->macro_btns[i] = btn;
           gtk_box_append (GTK_BOX (bar), btn);
         }
-      gtk_box_append (GTK_BOX (rows), bar);
+      gtk_box_append (GTK_BOX (wrap), bar);
     }
 
-  gtk_box_append (GTK_BOX (wrap), top);
-  gtk_box_append (GTK_BOX (wrap), rows);
   refresh_macro_bar (self);
   refresh_esm_hint (self);
   return wrap;
@@ -2052,7 +2054,8 @@ logfl_window_init (LogflWindow *self)
       g_idle_add (show_store_open_error, self);
     }
 
-  /* Header bar: title; list icon then hamburger on the end. */
+  /* Header bar: title; end = log icon · Run/S&P · hamburger (pack_end is
+   * right-to-left, so menu first). */
   GtkWidget *header = adw_header_bar_new ();
   self->title = ADW_WINDOW_TITLE (adw_window_title_new ("Log for Linux",
                                                         NULL));
@@ -2071,8 +2074,11 @@ logfl_window_init (LogflWindow *self)
   gtk_menu_button_set_menu_model (GTK_MENU_BUTTON (menu_btn),
                                   G_MENU_MODEL (menu));
   g_object_unref (menu);
-  /* pack_end is right-to-left: menu first → rightmost, then list icon. */
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), menu_btn);
+
+  /* Between list icon and menu — compact linked Run / S&P for macros. */
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header),
+                           build_bank_header_toggle (self));
 
   GtkWidget *log_open_btn =
       gtk_button_new_from_icon_name ("view-list-symbolic");
