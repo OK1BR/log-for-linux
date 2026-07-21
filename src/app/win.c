@@ -44,6 +44,7 @@ struct _LogflWindow {
   gboolean syncing_freq;       /* guard against freq↔band feedback */
   LogflQso *pending;           /* QSO awaiting dup confirmation */
   gint64 pending_delete_id;
+  gboolean delete_confirm_open; /* async delete dialog is up */
 };
 
 G_DEFINE_FINAL_TYPE (LogflWindow, logfl_window, ADW_TYPE_APPLICATION_WINDOW)
@@ -245,6 +246,14 @@ on_dup_response (GObject *source, GAsyncResult *res, gpointer user_data)
 static void
 log_qso (LogflWindow *self)
 {
+  /* One pending confirm at a time — replacing pending would free the QSO
+   * still owned by an open dialog. */
+  if (self->pending)
+    {
+      toast (self, "Confirm the previous QSO first");
+      return;
+    }
+
   const char *call = entry_text (self->call);
   if (!*call)
     {
@@ -271,7 +280,6 @@ log_qso (LogflWindow *self)
   gboolean dup = FALSE;
   logfl_store_dup_check (self->store, q->call, q->band, q->mode, q->ts,
                          DUP_WINDOW_S, &dup, NULL);
-  g_clear_pointer (&self->pending, logfl_qso_free);
   self->pending = q;
   if (!dup)
     {
@@ -281,7 +289,7 @@ log_qso (LogflWindow *self)
 
   AdwDialog *dlg = adw_alert_dialog_new ("Duplicate?", NULL);
   adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
-      "%s was already logged on %s/%s within the last %d min.",
+      "%s was already logged on %s/%s within ±%d min.",
       q->call, q->band, q->mode, DUP_WINDOW_S / 60);
   adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg),
                                   "cancel", "Cancel", "log", "Log anyway",
@@ -313,8 +321,12 @@ on_delete_response (GObject *source, GAsyncResult *res, gpointer user_data)
   LogflWindow *self = user_data;
   const char *resp =
       adw_alert_dialog_choose_finish (ADW_ALERT_DIALOG (source), res);
+  self->delete_confirm_open = FALSE;
   if (!g_str_equal (resp, "delete"))
-    return;
+    {
+      self->pending_delete_id = 0;
+      return;
+    }
   GError *err = NULL;
   if (logfl_store_delete (self->store, self->pending_delete_id, &err))
     {
@@ -326,6 +338,7 @@ on_delete_response (GObject *source, GAsyncResult *res, gpointer user_data)
       toast (self, "Delete failed: %s", err->message);
       g_clear_error (&err);
     }
+  self->pending_delete_id = 0;
 }
 
 static void
@@ -333,11 +346,14 @@ on_delete_clicked (GtkButton *btn, gpointer user_data)
 {
   (void) btn;
   LogflWindow *self = user_data;
+  if (self->delete_confirm_open)
+    return;
   LogflQsoRow *row = gtk_single_selection_get_selected_item (self->selection);
   if (!row)
     return;
   const LogflQso *q = logfl_qso_row_qso (row);
   self->pending_delete_id = q->id;
+  self->delete_confirm_open = TRUE;
 
   GDateTime *dt = g_date_time_new_from_unix_utc (q->ts);
   char *when = g_date_time_format (dt, "%d.%m.%Y %H:%M");
@@ -371,9 +387,18 @@ on_import_ready (GObject *source, GAsyncResult *res, gpointer user_data)
       g_clear_error (&err);      /* dismissed */
       return;
     }
-  char *path = g_file_get_path (file);
+  /* g_file_get_path is NULL for non-native URIs (portals, remote); read via
+   * GFile so import still works when the dialog does not yield a local path. */
+  char *data = NULL;
+  gsize len = 0;
   LogflAdifReport rep;
-  if (logfl_adif_import_file (self->store, path, DUP_WINDOW_S, &rep, &err))
+  if (!g_file_load_contents (file, NULL, &data, &len, NULL, &err))
+    {
+      toast (self, "Import failed: %s", err->message);
+      g_clear_error (&err);
+    }
+  else if (logfl_adif_import_data (self->store, data, (gssize) len,
+                                   DUP_WINDOW_S, &rep, &err))
     {
       toast (self, "Imported %u QSO · %u dups skipped · %u bad records",
              rep.n_imported, rep.n_dup_skipped, rep.n_bad);
@@ -384,7 +409,7 @@ on_import_ready (GObject *source, GAsyncResult *res, gpointer user_data)
       toast (self, "Import failed: %s", err->message);
       g_clear_error (&err);
     }
-  g_free (path);
+  g_free (data);
   g_object_unref (file);
 }
 
@@ -412,16 +437,32 @@ on_export_ready (GObject *source, GAsyncResult *res, gpointer user_data)
       g_clear_error (&err);
       return;
     }
-  char *path = g_file_get_path (file);
   guint n = 0;
-  if (logfl_adif_export_file (self->store, path, NULL, &n, &err))
-    toast (self, "Exported %u QSO to %s", n, path);
+  char *data = logfl_adif_export_data (self->store, NULL, &n, &err);
+  if (!data)
+    {
+      toast (self, "Export failed: %s", err->message);
+      g_clear_error (&err);
+      g_object_unref (file);
+      return;
+    }
+  /* Same as import: write through GFile so non-native targets work. */
+  if (g_file_replace_contents (file, data, strlen (data), NULL, FALSE,
+                               G_FILE_CREATE_NONE, NULL, NULL, &err))
+    {
+      char *path = g_file_get_path (file);
+      if (path)
+        toast (self, "Exported %u QSO to %s", n, path);
+      else
+        toast (self, "Exported %u QSO", n);
+      g_free (path);
+    }
   else
     {
       toast (self, "Export failed: %s", err->message);
       g_clear_error (&err);
     }
-  g_free (path);
+  g_free (data);
   g_object_unref (file);
 }
 
@@ -575,6 +616,9 @@ logfl_window_dispose (GObject *obj)
   LogflWindow *self = LOGFL_WINDOW (obj);
   g_clear_handle_id (&self->clock_id, g_source_remove);
   g_clear_pointer (&self->pending, logfl_qso_free);
+  /* Drop our refs; the column view may still hold one on selection until
+   * the widget tree is torn down by the parent dispose. */
+  g_clear_object (&self->selection);
   g_clear_object (&self->rows);
   g_clear_pointer (&self->store, logfl_store_close);
   g_clear_pointer (&self->db_path, g_free);
@@ -703,7 +747,9 @@ logfl_window_init (LogflWindow *self)
   gtk_box_append (GTK_BOX (entry_bar), fields);
   gtk_box_append (GTK_BOX (entry_bar), info);
 
-  /* Table. */
+  /* Table. gtk_single_selection_new() takes ownership of the model ref it
+   * is given (refcount does not increase), so pass an extra ref and keep
+   * self->rows. column_view takes a ref on selection. Drop both in dispose. */
   self->rows = g_list_store_new (LOGFL_TYPE_QSO_ROW);
   self->selection =
       gtk_single_selection_new (G_LIST_MODEL (g_object_ref (self->rows)));
