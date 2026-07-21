@@ -136,8 +136,8 @@ importing someone's log and exporting it again must never silently drop data.
 - **M4 — TCI integration. CODE LANDED 2026-07-21 (offline gate green).**
   Connect to `sdr-for-linux` (`ws://127.0.0.1:40001`), entry row pre-fills
   freq/mode from the live VFO. Table-driven QSY was tried and dropped
-  (2026-07-21): not useful enough for a toolbar control; double-click is
-  reserved for inline cell edit.
+  (2026-07-21): not useful enough for a toolbar control; a click on a cell
+  is reserved for inline edit.
   Gate: `log-tci-test` — mock TCI server (skimmer house pattern); live check
   against the real radio when available.
   Done as `src/engine/tci_client.c` (libwebsockets, text plane only — no IQ):
@@ -189,12 +189,16 @@ importing someone's log and exporting it again must never silently drop data.
 - **Edit saved QSO. IMPLEMENTED 2026-07-21; inline-only 2026-07-21.**
   Decided 2026-07-21 (Richard): correcting a logged QSO is first-class;
   entry strip stays for **new** QSOs only (no pencil / load-into-entry).
-  UI: no row selection/highlight (GtkNoSelection) so a single click does
-  not flash or fight editing; double-click on a cell opens an inline
-  `GtkEntry`. Fields: UTC, call, band, MHz, mode[/submode], RST
-  (`sent/rcvd`), name, comment; Enter commits (label updates immediately),
-  Esc cancels; focus-out / scroll-away commit. Delete is right-click →
-  “Delete QSO…” (confirm, targets the clicked row). No table QSY. Engine
+  UI: no row selection (GtkNoSelection); the theme's row hover highlight
+  marks the edit target and a single click on a cell opens an inline
+  `GtkEntry` (2026-07-21, Richard: single-click beats double-click — the
+  hover then reads as "click to edit", not as a pointless flash).
+  Fields: UTC, call, band, MHz, mode[/submode], RST
+  (`sent/rcvd`), name, comment; Enter commits (label updates immediately) —
+  everything else discards: Esc, a click anywhere outside the cell,
+  focus-out, scroll-away (2026-07-21, Richard). Delete is right-click on
+  the row → confirm dialog (names the QSO, targets the clicked row; no
+  intermediate context menu). No table QSY. Engine
   path is `logfl_store_get` + `logfl_store_update` so extras, QSL flags,
   grid/QTH/power and station fields stay intact when a single cell is
   changed. Also covers fixing early QSOs saved with `freq` NULL (band only)

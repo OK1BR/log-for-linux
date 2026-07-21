@@ -3,8 +3,9 @@
  * status. ADIF import/export and preferences live on the window menu
  * (M3/M4/M6).
  *
- * Table cells: plain label + GtkEntry on double-click only (single click
- * selects the row). Delete is right-click context menu (confirm). Entry
+ * Table cells: plain label that a single click swaps for a GtkEntry (the
+ * row hover highlight marks the edit target; no selection model). A
+ * right-click on a row opens the delete confirm dialog directly. Entry
  * strip is for new QSOs only. TCI: VFO/mode prefill + CW macros.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
@@ -434,7 +435,9 @@ tci_connect_kick (gpointer user_data)
   r->cli = cli;
   r->epoch = self->tci_epoch;
   self->tci_connecting = TRUE;
-  tci_set_status (self, "TCI connecting…");
+  /* No "connecting…" status here — the 5 s background retry against a dead
+   * server fails in milliseconds and the footer would just blink. The label
+   * changes only on real transitions (ready / offline / manual reconnect). */
   g_thread_unref (g_thread_new ("logfl-tci-conn", tci_connect_thread, r));
   return G_SOURCE_REMOVE;
 }
@@ -1111,6 +1114,28 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
   return FALSE;
 }
 
+/* Any press (any button) outside the open cell editor discards that edit —
+ * saving is Enter only. Runs in CAPTURE on the window, before the press
+ * reaches its target; the event is not claimed, so the click still does
+ * whatever it was aimed at (open another cell, push a button, …). */
+static void
+on_window_press (GtkGestureClick *gesture, gint n_press, gdouble x,
+                 gdouble y, gpointer user_data)
+{
+  (void) gesture;
+  (void) n_press;
+  LogflWindow *self = user_data;
+  GtkWidget *box = self->cell_edit_box;
+  if (!box)
+    return;
+  GtkWidget *target =
+      gtk_widget_pick (GTK_WIDGET (self), x, y, GTK_PICK_DEFAULT);
+  if (target != NULL &&
+      (target == box || gtk_widget_is_ancestor (target, box)))
+    return;
+  cell_end_edit (box, FALSE);
+}
+
 /* Single header icon: Run ↔ S&P, icon changes with the active bank. */
 static GtkWidget *
 build_bank_header_btn (LogflWindow *self)
@@ -1251,14 +1276,6 @@ confirm_delete_context_qso (LogflWindow *self)
   adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "cancel");
   adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
                            on_delete_response, self);
-}
-
-static void
-act_delete_qso (GSimpleAction *action, GVariant *param, gpointer user_data)
-{
-  (void) action;
-  (void) param;
-  confirm_delete_context_qso (user_data);
 }
 
 /* --- ADIF import / export ---------------------------------------------- */
@@ -1518,6 +1535,7 @@ tci_reconnect_now (LogflWindow *self)
   /* Invalidate any in-flight connect job; it will free itself and re-kick. */
   self->tci_epoch++;
   tci_disconnect (self);
+  tci_set_status (self, "TCI connecting…");   /* user asked — show feedback */
   if (!self->tci_connecting && self->tci_label)
     tci_connect_kick (self);
 }
@@ -2049,9 +2067,10 @@ commit_cell_edit (LogflWindow *self, LogflQsoRow *row, int col,
   return TRUE;
 }
 
-/* Cell root is a GtkBox with a display GtkLabel + a hidden GtkEntry.
- * No row selection model — single click does nothing useful; double-click
- * opens the entry. (GtkEditableLabel was worse: it stole the first click.) */
+/* Cell root is a GtkBox with a display GtkLabel + a hidden GtkEntry that a
+ * single click swaps in. (GtkEditableLabel was worse: it stole the first
+ * click; a double-click-only gesture made the hover highlight look like a
+ * pointless flash.) */
 
 static GtkWidget *
 cell_label (GtkWidget *box)
@@ -2178,9 +2197,9 @@ cell_begin_edit (GtkWidget *box)
   if (cell_is_editing (box))
     return;
 
-  /* One cell at a time — commit the previous if any. */
+  /* One cell at a time — discard the previous if any (only Enter saves). */
   if (self && self->cell_edit_box && self->cell_edit_box != box)
-    cell_end_edit (self->cell_edit_box, TRUE);
+    cell_end_edit (self->cell_edit_box, FALSE);
 
   char *txt = cell_edit_text (col, logfl_qso_row_qso (row));
   gtk_editable_set_text (GTK_EDITABLE (entry), txt ? txt : "");
@@ -2194,7 +2213,7 @@ cell_begin_edit (GtkWidget *box)
   gtk_editable_select_region (GTK_EDITABLE (entry), 0, -1);
 }
 
-/* Idle: commit when focus left the entry (not on Enter — already handled).
+/* Idle: focus left the entry — discard the edit (only Enter commits).
  * Holds a ref on box; skip once the widget is off the tree (window closing —
  * the stored "logfl-win" pointer must not be dereferenced then). */
 static gboolean
@@ -2205,7 +2224,7 @@ cell_end_edit_idle (gpointer data)
     {
       GtkWidget *entry = cell_entry (box);
       if (!(entry && gtk_widget_has_focus (entry)))
-        cell_end_edit (box, TRUE);
+        cell_end_edit (box, FALSE);
     }
   g_object_unref (box);
   return G_SOURCE_REMOVE;
@@ -2244,17 +2263,21 @@ on_cell_entry_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
   return FALSE;
 }
 
-/* Double-click only — no row select / highlight on single click. */
+/* Single click opens the cell editor (the row hover highlight marks where
+ * the click will land). Clicks inside an already-open entry must fall
+ * through so cursor placement and text selection keep working. */
 static void
 on_cell_click (GtkGestureClick *gesture, gint n_press, gdouble x, gdouble y,
                gpointer user_data)
 {
   (void) x;
   (void) y;
-  if (n_press != 2)
+  if (n_press != 1)
     return;
   GtkWidget *box = user_data;
   if (!g_object_get_data (G_OBJECT (box), "logfl-row"))
+    return;
+  if (cell_is_editing (box))
     return;
   gtk_gesture_set_state (GTK_GESTURE (gesture), GTK_EVENT_SEQUENCE_CLAIMED);
   cell_begin_edit (box);
@@ -2310,8 +2333,7 @@ col_setup (GtkSignalListItemFactory *factory, GObject *object,
                     G_CALLBACK (on_cell_entry_key), box);
   gtk_widget_add_controller (entry, keys);
 
-  /* Gesture on the box (covers the label). n_press==1 is not claimed so
-   * GtkColumnView can select the row. */
+  /* Gesture on the box (covers the label) — first click starts the edit. */
   GtkGesture *click = gtk_gesture_click_new ();
   gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (click),
                                  GDK_BUTTON_PRIMARY);
@@ -2359,9 +2381,9 @@ col_unbind (GtkSignalListItemFactory *factory, GObject *object,
   if (!box)
     return;
 
-  /* Scroll-away while editing: commit what we have. */
+  /* Scroll-away while editing: discard — saving happens on Enter only. */
   if (cell_is_editing (box))
-    cell_end_edit (box, TRUE);
+    cell_end_edit (box, FALSE);
 
   g_object_set_data (G_OBJECT (box), "logfl-row", NULL);
 }
@@ -2386,7 +2408,7 @@ add_column (GtkColumnView *view, const char *title, int col,
 }
 
 /* App-wide CSS for the QSO table: airier rows, compact inline entry so
- * double-click edit does not jump the row height. */
+ * opening a cell edit does not jump the row height. */
 static void
 ensure_table_css (void)
 {
@@ -2418,12 +2440,6 @@ ensure_table_css (void)
       "columnview.data-table .logfl-cell label {\n"
       "  margin: 0;\n"
       "  padding: 2px 0;\n"
-      "}\n"
-      /* No selection model: rows must stay visually inert. Without this a
-       * double-click to edit flashes the whole row via the :active state. */
-      "columnview.data-table listview > row:active,\n"
-      "columnview.data-table listview > row:selected {\n"
-      "  background: none;\n"
       "}\n";
 
   GtkCssProvider *prov = gtk_css_provider_new ();
@@ -2535,32 +2551,42 @@ static const GActionEntry win_actions[] = {
   { .name = "export", .activate = act_export },
   { .name = "preferences", .activate = act_preferences },
   { .name = "about", .activate = act_about },
-  { .name = "delete-qso", .activate = act_delete_qso },
 };
 
-/* Resolve LogflQsoRow under view coordinates (cells carry "logfl-row"). */
+/* Resolve LogflQsoRow under view coordinates. Only the cell boxes carry
+ * "logfl-row", but the hit may land on cell padding (→ the cell widget) or
+ * on the row widget itself — so besides walking up, peek one/two levels
+ * down into children. At the listview level the row data sits too deep to
+ * reach, so a hit between rows still resolves to nothing. */
 static LogflQsoRow *
 row_from_pick (GtkWidget *root, double x, double y)
 {
   GtkWidget *w = gtk_widget_pick (root, x, y, GTK_PICK_DEFAULT);
-  while (w != NULL && w != root)
+  for (; w != NULL && w != root; w = gtk_widget_get_parent (w))
     {
       LogflQsoRow *row = g_object_get_data (G_OBJECT (w), "logfl-row");
       if (row)
         return row;
-      w = gtk_widget_get_parent (w);
+      for (GtkWidget *c = gtk_widget_get_first_child (w); c != NULL;
+           c = gtk_widget_get_next_sibling (c))
+        {
+          row = g_object_get_data (G_OBJECT (c), "logfl-row");
+          if (!row)
+            {
+              GtkWidget *b = gtk_widget_get_first_child (c);
+              row = b ? g_object_get_data (G_OBJECT (b), "logfl-row") : NULL;
+            }
+          if (row)
+            return row;
+        }
     }
   return NULL;
 }
 
-static void
-on_row_context_closed (GtkPopover *popover, gpointer user_data)
-{
-  (void) user_data;
-  gtk_widget_unparent (GTK_WIDGET (popover));
-}
-
-/* Right-click on a table row: remember it and offer Delete (no row select). */
+/* Right-click on a table row → straight to the delete confirm dialog. (A
+ * popover context menu parented to the column view never delivered its
+ * action; a single-item menu was one click of indirection anyway — the
+ * dialog itself names the QSO and defaults to Cancel.) */
 static void
 on_table_right_click (GtkGestureClick *gesture, gint n_press,
                       gdouble x, gdouble y, gpointer user_data)
@@ -2580,20 +2606,8 @@ on_table_right_click (GtkGestureClick *gesture, gint n_press,
   if (self->context_qso_id <= 0)
     return;
 
-  GMenu *menu = g_menu_new ();
-  g_menu_append (menu, "Delete QSO…", "win.delete-qso");
-
-  GtkWidget *popover = gtk_popover_menu_new_from_model (G_MENU_MODEL (menu));
-  g_object_unref (menu);
-  gtk_widget_set_parent (popover, view);
-  gtk_popover_set_has_arrow (GTK_POPOVER (popover), FALSE);
-  gtk_popover_set_pointing_to (
-      GTK_POPOVER (popover),
-      &(const GdkRectangle){ (int) x, (int) y, 1, 1 });
-  g_signal_connect (popover, "closed",
-                    G_CALLBACK (on_row_context_closed), NULL);
   gtk_gesture_set_state (GTK_GESTURE (gesture), GTK_EVENT_SEQUENCE_CLAIMED);
-  gtk_popover_popup (GTK_POPOVER (popover));
+  confirm_delete_context_qso (self);
 }
 
 /* QSO table + search bar — sits under the macro strip. */
@@ -2614,7 +2628,7 @@ build_qso_table (LogflWindow *self)
   gtk_column_view_set_show_row_separators (GTK_COLUMN_VIEW (view), TRUE);
   gtk_widget_set_tooltip_text (
       view,
-      "Double-click a cell to edit. Right-click a row to delete.");
+      "Click a cell to edit. Right-click a row to delete.");
   /* Preferred widths keep short fields readable; Name/Comment expand. */
   add_column (GTK_COLUMN_VIEW (view), "UTC", COL_UTC, 128, FALSE, self);
   add_column (GTK_COLUMN_VIEW (view), "Call", COL_CALL, 100, FALSE, self);
@@ -2779,6 +2793,14 @@ logfl_window_init (LogflWindow *self)
   gtk_event_controller_set_propagation_phase (keys, GTK_PHASE_CAPTURE);
   g_signal_connect (keys, "key-pressed", G_CALLBACK (on_main_key), self);
   gtk_widget_add_controller (GTK_WIDGET (self), keys);
+
+  /* Press anywhere outside an open cell editor discards that edit. */
+  GtkGesture *outside = gtk_gesture_click_new ();
+  gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (outside), 0);
+  gtk_event_controller_set_propagation_phase (
+      GTK_EVENT_CONTROLLER (outside), GTK_PHASE_CAPTURE);
+  g_signal_connect (outside, "pressed", G_CALLBACK (on_window_press), self);
+  gtk_widget_add_controller (GTK_WIDGET (self), GTK_EVENT_CONTROLLER (outside));
 
   self->toasts = ADW_TOAST_OVERLAY (adw_toast_overlay_new ());
   adw_toast_overlay_set_child (self->toasts, body);
