@@ -21,8 +21,9 @@ logfl_macro_set_init_defaults (LogflMacroSet *set)
   g_return_if_fail (set != NULL);
   logfl_macro_set_clear (set);
 
-  /* Run — same fixed v1 strip as the original F1–F8 bar. */
-  static const struct { const char *c; const char *t; } run[LOGFL_MACRO_N_KEYS] = {
+  /* Row 1 F1–F7 useful defaults; F8–F12 free. Row 2 free except last = STOP.
+   * Indices 0..11 = F1..F12, 12..23 = second row (23 = STOP). */
+  static const struct { const char *c; const char *t; } run_filled[] = {
     { "CQ",   "CQ {MYCALL} {MYCALL} TEST" },
     { "EXCH", "{CALL} {RST}" },
     { "TU",   "TU {MYCALL}" },
@@ -30,10 +31,8 @@ logfl_macro_set_init_defaults (LogflMacroSet *set)
     { "HIS",  "{CALL}" },
     { "AGN",  "AGN?" },
     { "QRZ",  "QRZ {MYCALL}" },
-    { "STOP", "" },
   };
-  /* S&P — answer / exchange oriented defaults (not an N1MM clone). */
-  static const struct { const char *c; const char *t; } snp[LOGFL_MACRO_N_KEYS] = {
+  static const struct { const char *c; const char *t; } snp_filled[] = {
     { "ANS",  "{CALL} {MYCALL}" },
     { "EXCH", "{RST}" },
     { "TU",   "TU" },
@@ -41,13 +40,29 @@ logfl_macro_set_init_defaults (LogflMacroSet *set)
     { "HIS",  "{CALL}" },
     { "AGN",  "AGN?" },
     { "NR",   "{CALL} {MYCALL} {MYCALL}" },
-    { "STOP", "" },
   };
+  const guint n_filled = G_N_ELEMENTS (run_filled);
 
   for (guint i = 0; i < LOGFL_MACRO_N_KEYS; i++)
     {
-      set_key (&set->keys[LOGFL_MACRO_BANK_RUN][i], run[i].c, run[i].t);
-      set_key (&set->keys[LOGFL_MACRO_BANK_SNP][i], snp[i].c, snp[i].t);
+      if (i < n_filled)
+        {
+          set_key (&set->keys[LOGFL_MACRO_BANK_RUN][i],
+                   run_filled[i].c, run_filled[i].t);
+          set_key (&set->keys[LOGFL_MACRO_BANK_SNP][i],
+                   snp_filled[i].c, snp_filled[i].t);
+        }
+      else if (i == LOGFL_MACRO_STOP_IDX)
+        {
+          set_key (&set->keys[LOGFL_MACRO_BANK_RUN][i], "STOP", "");
+          set_key (&set->keys[LOGFL_MACRO_BANK_SNP][i], "STOP", "");
+        }
+      else
+        {
+          /* Free slot — empty caption + template for the operator to fill. */
+          set_key (&set->keys[LOGFL_MACRO_BANK_RUN][i], "", "");
+          set_key (&set->keys[LOGFL_MACRO_BANK_SNP][i], "", "");
+        }
     }
 }
 
@@ -85,11 +100,9 @@ logfl_macro_set_set_key (LogflMacroSet *set, LogflMacroBankId bank,
 }
 
 gboolean
-logfl_macro_key_is_stop (const LogflMacroKey *k)
+logfl_macro_index_is_stop (guint idx)
 {
-  if (!k || !k->tmpl)
-    return TRUE;
-  return k->tmpl[0] == '\0';
+  return idx == LOGFL_MACRO_STOP_IDX;
 }
 
 char *

@@ -911,17 +911,25 @@ active_macro_key (LogflWindow *self, guint idx)
                               self->settings.macro_bank, idx);
 }
 
+/* Human label for a slot: F1–F12, free M1…, or STOP. */
+static char *
+macro_slot_name (guint idx)
+{
+  if (logfl_macro_index_is_stop (idx))
+    return g_strdup ("STOP");
+  if (idx < LOGFL_MACRO_N_ROW)
+    return g_strdup_printf ("F%u", idx + 1);
+  return g_strdup_printf ("M%u", idx - LOGFL_MACRO_N_ROW + 1);
+}
+
 static void
 macro_run (LogflWindow *self, guint idx)
 {
   if (idx >= LOGFL_MACRO_N_KEYS)
     return;
 
-  const LogflMacroKey *k = active_macro_key (self, idx);
-  if (!k)
-    return;
-
-  if (logfl_macro_key_is_stop (k))
+  /* Dedicated stop slot (last of row 2) — also Esc. Empty free keys are not stop. */
+  if (logfl_macro_index_is_stop (idx))
     {
       if (self->tci && logfl_tci_client_is_ready (self->tci))
         {
@@ -933,6 +941,10 @@ macro_run (LogflWindow *self, guint idx)
       return;
     }
 
+  const LogflMacroKey *k = active_macro_key (self, idx);
+  if (!k)
+    return;
+
   const char *mycall =
       self->settings.station_callsign && *self->settings.station_callsign
           ? self->settings.station_callsign
@@ -942,16 +954,20 @@ macro_run (LogflWindow *self, guint idx)
   if (!msg || !*msg)
     {
       g_free (msg);
-      toast (self, "Empty macro (need a callsign?)");
+      char *slot = macro_slot_name (idx);
+      toast (self, "Empty macro %s (edit or need a callsign?)", slot);
+      g_free (slot);
       return;
     }
 
-  const char *cap = k->caption && *k->caption ? k->caption : "F-key";
+  char *slot = macro_slot_name (idx);
+  const char *cap = k->caption && *k->caption ? k->caption : slot;
 
   if (!self->tci || !logfl_tci_client_is_ready (self->tci))
     {
       toast (self, "TCI offline — %s: %s", cap, msg);
       g_free (msg);
+      g_free (slot);
       return;
     }
 
@@ -961,12 +977,14 @@ macro_run (LogflWindow *self, guint idx)
     {
       toast (self, "Macros send CW via TCI — switch mode to CW (%s)", msg);
       g_free (msg);
+      g_free (slot);
       return;
     }
 
   logfl_tci_client_cw_send (self->tci, msg);
   toast (self, "TX %s: %s", cap, msg);
   g_free (msg);
+  g_free (slot);
 }
 
 static void
@@ -995,7 +1013,9 @@ on_macro_edit_response (GObject *source, GAsyncResult *res, gpointer user_data)
                            gtk_editable_get_text (GTK_EDITABLE (tmpl_e)));
   logfl_settings_save (&self->settings);
   refresh_macro_bar (self);
-  toast (self, "Macro F%u saved", idx + 1);
+  char *slot = macro_slot_name (idx);
+  toast (self, "Macro %s saved", slot);
+  g_free (slot);
 }
 
 static void
@@ -1007,12 +1027,20 @@ macro_edit_dialog (LogflWindow *self, guint idx)
 
   const char *bank =
       self->settings.macro_bank == LOGFL_MACRO_BANK_SNP ? "S&P" : "Run";
-  char *title = g_strdup_printf ("Edit F%u · %s", idx + 1, bank);
+  char *slot = macro_slot_name (idx);
+  char *title = g_strdup_printf ("Edit %s · %s", slot, bank);
   AdwDialog *dlg = adw_alert_dialog_new (title, NULL);
   g_free (title);
-  adw_alert_dialog_format_body (
-      ADW_ALERT_DIALOG (dlg),
-      "Tokens: {MYCALL} {CALL} {RST}  ·  empty text = stop keyer");
+  g_free (slot);
+  if (logfl_macro_index_is_stop (idx))
+    adw_alert_dialog_format_body (
+        ADW_ALERT_DIALOG (dlg),
+        "STOP slot — Esc always stops the keyer. Caption is label only; "
+        "template is ignored.");
+  else
+    adw_alert_dialog_format_body (
+        ADW_ALERT_DIALOG (dlg),
+        "Tokens: {MYCALL} {CALL} {RST}  ·  empty text = unused free slot");
 
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
   GtkWidget *cap_e = gtk_entry_new ();
@@ -1105,20 +1133,32 @@ refresh_macro_bar (LogflWindow *self)
         continue;
       const LogflMacroKey *k = active_macro_key (self, i);
       const char *cap = (k && k->caption && *k->caption) ? k->caption : "—";
-      char *lab = g_strdup_printf ("F%u\n%s", i + 1, cap);
-      gtk_button_set_label (GTK_BUTTON (btn), lab);
-      g_free (lab);
-      if (k && !logfl_macro_key_is_stop (k))
+      char *lab;
+      char *tip;
+
+      if (logfl_macro_index_is_stop (i))
         {
-          char *tip = g_strdup_printf (
-              "F%u · %s\nRight-click to edit", i + 1,
-              k->tmpl ? k->tmpl : "");
-          gtk_widget_set_tooltip_text (btn, tip);
-          g_free (tip);
+          lab = g_strdup ("STOP");
+          tip = g_strdup ("Esc · stop CW keyer\nRight-click to edit label");
+        }
+      else if (i < LOGFL_MACRO_N_ROW)
+        {
+          lab = g_strdup_printf ("F%u\n%s", i + 1, cap);
+          tip = g_strdup_printf ("F%u · %s\nRight-click to edit", i + 1,
+                                 (k && k->tmpl) ? k->tmpl : "");
         }
       else
-        gtk_widget_set_tooltip_text (
-            btn, "F8 / Esc · stop CW keyer\nRight-click to edit");
+        {
+          /* Second row free slots M1… (last is STOP, handled above). */
+          guint m = i - LOGFL_MACRO_N_ROW + 1;
+          lab = g_strdup_printf ("M%u\n%s", m, cap);
+          tip = g_strdup_printf ("Free M%u · %s\nRight-click to edit", m,
+                                 (k && k->tmpl) ? k->tmpl : "");
+        }
+      gtk_button_set_label (GTK_BUTTON (btn), lab);
+      gtk_widget_set_tooltip_text (btn, tip);
+      g_free (lab);
+      g_free (tip);
     }
 }
 
@@ -1202,14 +1242,14 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
   LogflWindow *self = user_data;
   if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))
     return FALSE;
-  if (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F8)
+  if (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F12)
     {
       macro_run (self, keyval - GDK_KEY_F1);
       return TRUE;
     }
   if (keyval == GDK_KEY_Escape)
     {
-      macro_run (self, LOGFL_MACRO_N_KEYS - 1); /* STOP */
+      macro_run (self, LOGFL_MACRO_STOP_IDX);
       return TRUE;
     }
   return FALSE;
@@ -1232,9 +1272,9 @@ build_macro_bar (LogflWindow *self)
       GTK_TOGGLE_BUTTON (self->bank_snp_btn),
       self->settings.macro_bank == LOGFL_MACRO_BANK_SNP);
   gtk_widget_set_tooltip_text (self->bank_run_btn,
-                               "Run message bank (F1–F8)");
+                               "Run message bank (F1–F12 + free row)");
   gtk_widget_set_tooltip_text (self->bank_snp_btn,
-                               "Search & Pounce message bank (F1–F8)");
+                               "Search & Pounce message bank (F1–F12 + free row)");
   g_signal_connect (self->bank_run_btn, "toggled",
                     G_CALLBACK (on_bank_run_toggled), self);
   g_signal_connect (self->bank_snp_btn, "toggled",
@@ -1250,32 +1290,39 @@ build_macro_bar (LogflWindow *self)
   gtk_box_append (GTK_BOX (top), self->bank_snp_btn);
   gtk_box_append (GTK_BOX (top), self->esm_hint);
 
-  GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
-  gtk_widget_set_hexpand (bar, TRUE);
-
-  for (guint i = 0; i < LOGFL_MACRO_N_KEYS; i++)
+  /* Two rows of 12: F1–F12, then free M1–M11 + STOP. */
+  GtkWidget *rows = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+  for (guint row = 0; row < LOGFL_MACRO_N_ROWS; row++)
     {
-      GtkWidget *btn = gtk_button_new_with_label ("F?");
-      gtk_widget_set_hexpand (btn, TRUE);
-      gtk_widget_set_focus_on_click (btn, FALSE);
-      if (i == LOGFL_MACRO_N_KEYS - 1)
-        gtk_widget_add_css_class (btn, "destructive-action");
-      g_object_set_data (G_OBJECT (btn), "macro", GUINT_TO_POINTER (i));
-      g_signal_connect (btn, "clicked", G_CALLBACK (on_macro_clicked), self);
+      GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+      gtk_widget_set_hexpand (bar, TRUE);
+      for (guint col = 0; col < LOGFL_MACRO_N_ROW; col++)
+        {
+          guint i = row * LOGFL_MACRO_N_ROW + col;
+          GtkWidget *btn = gtk_button_new_with_label ("·");
+          gtk_widget_set_hexpand (btn, TRUE);
+          gtk_widget_set_focus_on_click (btn, FALSE);
+          if (logfl_macro_index_is_stop (i))
+            gtk_widget_add_css_class (btn, "destructive-action");
+          g_object_set_data (G_OBJECT (btn), "macro", GUINT_TO_POINTER (i));
+          g_signal_connect (btn, "clicked", G_CALLBACK (on_macro_clicked),
+                            self);
 
-      GtkGesture *rg = gtk_gesture_click_new ();
-      gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (rg),
-                                     GDK_BUTTON_SECONDARY);
-      g_signal_connect (rg, "pressed", G_CALLBACK (on_macro_right_click),
-                        self);
-      gtk_widget_add_controller (btn, GTK_EVENT_CONTROLLER (rg));
+          GtkGesture *rg = gtk_gesture_click_new ();
+          gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (rg),
+                                         GDK_BUTTON_SECONDARY);
+          g_signal_connect (rg, "pressed",
+                            G_CALLBACK (on_macro_right_click), self);
+          gtk_widget_add_controller (btn, GTK_EVENT_CONTROLLER (rg));
 
-      self->macro_btns[i] = btn;
-      gtk_box_append (GTK_BOX (bar), btn);
+          self->macro_btns[i] = btn;
+          gtk_box_append (GTK_BOX (bar), btn);
+        }
+      gtk_box_append (GTK_BOX (rows), bar);
     }
 
   gtk_box_append (GTK_BOX (wrap), top);
-  gtk_box_append (GTK_BOX (wrap), bar);
+  gtk_box_append (GTK_BOX (wrap), rows);
   refresh_macro_bar (self);
   refresh_esm_hint (self);
   return wrap;
@@ -1979,7 +2026,7 @@ logfl_window_init (LogflWindow *self)
 {
   gtk_window_set_title (GTK_WINDOW (self), "Log for Linux");
   /* Entry-focused main window — the table lives in a separate window. */
-  gtk_window_set_default_size (GTK_WINDOW (self), 1100, 260);
+  gtk_window_set_default_size (GTK_WINDOW (self), 1200, 320);
   g_action_map_add_action_entries (G_ACTION_MAP (self), win_actions,
                                    G_N_ELEMENTS (win_actions), self);
 
@@ -2106,7 +2153,7 @@ logfl_window_init (LogflWindow *self)
   gtk_box_append (GTK_BOX (entry_bar), macro_bar);
   gtk_box_append (GTK_BOX (entry_bar), self->wb4_label);
 
-  /* F1–F8 / Esc work from the entry window (contest-logger style). */
+  /* F1–F12 / Esc (STOP) from the entry window (contest-logger style). */
   GtkEventController *keys = gtk_event_controller_key_new ();
   gtk_event_controller_set_propagation_phase (keys, GTK_PHASE_CAPTURE);
   g_signal_connect (keys, "key-pressed", G_CALLBACK (on_main_key), self);

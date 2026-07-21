@@ -3,6 +3,9 @@
  * Pure GLib: token expansion, Run/S&P banks, ESM (Enter sends message).
  * No GTK; headless gate is log-macro-test. UI owns persistence and TX.
  *
+ * Layout per bank: two rows of 12 — F1–F12 on row 1, free slots on row 2
+ * with STOP as the last key (Esc). Empty free templates are unused, not stop.
+ *
  * Part of log-for-linux. GPL-3.0-or-later.
  */
 #ifndef LOGFL_MACROS_H
@@ -12,7 +15,11 @@
 
 G_BEGIN_DECLS
 
-#define LOGFL_MACRO_N_KEYS 8
+#define LOGFL_MACRO_N_ROW   12
+#define LOGFL_MACRO_N_ROWS  2
+#define LOGFL_MACRO_N_KEYS  (LOGFL_MACRO_N_ROW * LOGFL_MACRO_N_ROWS) /* 24 */
+/* Last key on the second row — stop keyer (also Esc). */
+#define LOGFL_MACRO_STOP_IDX (LOGFL_MACRO_N_KEYS - 1)
 
 typedef enum {
   LOGFL_MACRO_BANK_RUN = 0,
@@ -26,8 +33,8 @@ typedef enum {
 #define LOGFL_ESM_KEY_TU   2
 
 typedef struct {
-  char *caption;               /* short label under F-number              */
-  char *tmpl;                  /* CW text; empty = stop keyer for that F  */
+  char *caption;               /* short label under F-number / free slot  */
+  char *tmpl;                  /* CW text; empty = unused (except STOP)  */
 } LogflMacroKey;
 
 typedef struct {
@@ -46,8 +53,8 @@ void logfl_macro_set_set_key (LogflMacroSet *set, LogflMacroBankId bank,
                               guint idx, const char *caption,
                               const char *tmpl);
 
-/* TRUE when the key is the stop slot (empty / NULL template). */
-gboolean logfl_macro_key_is_stop (const LogflMacroKey *k);
+/* TRUE for the dedicated STOP slot (last of row 2). Empty free keys are not. */
+gboolean logfl_macro_index_is_stop (guint idx);
 
 /* Expand {MYCALL}, {CALL}, {RST}, and bare '!'. Caller frees. Empty tokens
  * collapse double spaces. NULL tmpl → empty string. */
