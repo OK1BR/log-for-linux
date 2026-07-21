@@ -147,21 +147,46 @@ importing someone's log and exporting it again must never silently drop data.
   host/port (and station callsign) live in Preferences → GKeyFile
   `~/.config/log-for-linux/settings.ini` (`src/app/settings.c`, skimmer/sdr
   house style: `AdwPreferencesDialog`, save on dialog close; host/port change
-  reconnects immediately). Entry window has an N1MM-inspired **macro bar**
-  (F1–F8 + Esc stop): CQ/EXCH/TU/MY/HIS/AGN/QRZ/STOP with `{MYCALL}` `{CALL}`
-  `{RST}` expansion; CW text is sent via TCI `cw_macros` to sdr-for-linux when
-  connected (not a 1:1 N1MM clone; editable macros / SSB wav later). The
-  logbook never changes radio state except explicit user QSY and those
+  reconnects immediately). Entry window has an N1MM-inspired **macro bar v1**
+  (F1–F8 + Esc stop): fixed CQ/EXCH/TU/MY/HIS/AGN/QRZ/STOP with `{MYCALL}`
+  `{CALL}` `{RST}` expansion; CW text via TCI `cw_macros` to sdr-for-linux
+  when connected. Full editable macros / Run·S&P / ESM → **M5**. The logbook
+  never changes radio state except explicit user QSY and those
   operator-triggered CW macros.
-- **M5 — WSJT-X UDP.** UDP server (default port 2237): decode `QSO Logged`
+- **M5 — macros v2 (contest-style messaging). PLANNED (Richard 2026-07-21).**
+  Grow the F-key strip from fixed defaults into a proper messaging layer
+  (inspired by N1MM+, not a clone). Scope:
+  1. **Editable macros** — operator can change labels + CW text (and later
+     other modes); persist under `settings.ini` or a dedicated file; keep
+     token expansion (`{MYCALL}`, `{CALL}`, `{RST}`, …). Editor UI (dialog
+     or right-click on a key), not only source rebuilds.
+  2. **Run vs S&P** — two message banks (like N1MM’s 12+12 positional sets,
+     we can stay at 8+8 or 12+12). Visible mode toggle on the entry window;
+     F-keys pick the active bank. Optional later: auto Run on CQ key / S&P
+     after QSY (only if it stays predictable).
+  3. **ESM — Enter sends message** — Enter in the entry row advances a small
+     state machine (e.g. empty call → CQ; call filled → exchange; after
+     log → TU), so the operator’s “own” sequence is one key. Few general
+     loggers have this; Richard wants it. Must remain optional and never
+     surprise on non-contest daily logging (toggle in prefs).
+  4. **SSB “wav” (optional / later in this milestone or after)** — short
+     explanation: on phone, N1MM F-keys often play **pre-recorded voice
+     `.wav` files** (your CQ, exchange, …) instead of CW text — a DVK
+     (digital voice keyer). Not the same as “SSB mode on the radio”. Only
+     useful once we can play audio into TX (TCI TX audio or local path
+     through sdr-for-linux). **Not a day-one M5 requirement**; document the
+     hook, implement when TX audio path is real.
+  Gate: headless tests for token expansion + Run/S&P bank selection + ESM
+  state transitions; live CW smoke against sdr-for-linux TCI keyer.
+- **M6 — WSJT-X UDP.** UDP server (default port 2237): decode `QSO Logged`
   into the store, answer status/worked-B4 (callsign highlight).
   Gate: `log-udp-test` — replay captured WSJT-X datagrams headless; live check
   logging one real FT8 QSO end to end.
-- **M6 — callbook lookup.** QRZ.com XML (subscriber) / HamQTH (free) —
+- **M7 — callbook lookup.** QRZ.com XML (subscriber) / HamQTH (free) —
   name/QTH/grid auto-fill on callsign entry, on-disk cache, credentials in the
   keyring, never in config files.
   Gate: `log-callbook-test` against canned XML; live smoke against both APIs.
-- **M7 — QSL sync.** LoTW: sign+upload via `tqsl` CLI, pull confirmations
+- **M8 — QSL sync.** LoTW: sign+upload via `tqsl` CLI, pull confirmations
   (`lotwreport.adi`) and mark QSLs; eQSL upload + inbox; Club Log upload.
   Per-QSO sent/confirmed state per service, retry-safe (idempotent re-upload).
   Gate: `log-qsl-test` over mocked endpoints; live check with a small batch.
@@ -171,7 +196,7 @@ importing someone's log and exporting it again must never silently drop data.
   a dialog, `logfl_store_update`, keep extras/QSL fields intact). Do not start
   M5+ assuming the log is append-only from the UI. Also needed to correct
   early QSOs that were saved with `freq` NULL (band only) before the MHz
-  prefill/TCI fallback landed.
+  prefill/TCI fallback landed. Can ship before or with M5.
 - **Freq must be exact in SQL (caught 2026-07-21).** Schema always had
   `freq REAL`; the UI used to leave the MHz entry empty (placeholder only),
   so `bind_qso` stored NULL and only `band` survived. Fix direction: typed
