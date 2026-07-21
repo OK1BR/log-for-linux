@@ -126,12 +126,13 @@ importing someone's log and exporting it again must never silently drop data.
   report), freq → band dropdown auto-sync via the M2 band table (dropdown
   lists every ADIF band the engine knows), Enter anywhere logs; a 5-min
   same call+band+mode duplicate asks first (default Cancel). Table is a
-  virtualized GtkColumnView over the store (newest first), search
-  re-queries the engine (call/name/QTH/comment) with 250 ms debounce;
-  delete goes through a destructive confirmation; ADIF import/export via
-  GtkFileDialog + GFile I/O with a result toast (imported/dups/bad);
-  import dedup is exact-timestamp only; QSO+calls counters live in the
-  header subtitle. Store open failure surfaces a dialog instead of aborting.
+  QSO table lives in a **separate hide-on-close window** (header icon
+  `view-list-symbolic` before the hamburger; also menu “QSO log”) —
+  virtualized GtkColumnView (newest first), search with 250 ms debounce,
+  destructive-confirm delete; main window is the entry row + TCI/status.
+  ADIF import/export via GtkFileDialog + GFile I/O with a result toast;
+  import dedup is exact-timestamp only; QSO+calls counters in both window
+  subtitles. Store open failure surfaces a dialog instead of aborting.
 - **M4 — TCI integration. CODE LANDED 2026-07-21 (offline gate green).**
   Connect to `sdr-for-linux` (`ws://127.0.0.1:40001`), entry row pre-fills
   freq/mode from the live VFO, double-click on a logged QSO → QSY.

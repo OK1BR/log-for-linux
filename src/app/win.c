@@ -1,6 +1,6 @@
-/* win.c — the main logbook window: entry row (UTC clock, worked-B4 hint),
- * QSO table, search, ADIF import/export, delete with confirmation (M3),
- * TCI prefill + double-click QSY (M4).
+/* win.c — main logbook window: entry row (UTC clock, worked-B4, TCI) and a
+ * separate QSO-list window (table, search, delete, double-click QSY). ADIF
+ * import/export and preferences live on the main window menu (M3/M4).
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */
@@ -50,6 +50,8 @@ struct _LogflWindow {
 
   AdwWindowTitle *title;
   AdwToastOverlay *toasts;
+  GtkWidget *log_win;          /* separate QSO table window (hide-on-close) */
+  AdwWindowTitle *log_title;
   GtkWidget *search;
   GtkWidget *call, *rst_s, *rst_r, *freq, *name, *comment;
   GtkWidget *band_dd, *mode_dd;
@@ -119,17 +121,23 @@ reload (LogflWindow *self)
 {
   if (!self->store)
     {
-      g_list_store_remove_all (self->rows);
+      if (self->rows)
+        g_list_store_remove_all (self->rows);
       adw_window_title_set_subtitle (self->title, "log store unavailable");
+      if (self->log_title)
+        adw_window_title_set_subtitle (self->log_title, "log store unavailable");
       return;
     }
 
   GError *err = NULL;
-  const char *text = entry_text (self->search);
-  LogflStoreQuery q = { .text = *text ? text : NULL };
+  const char *text = (self->search && entry_text (self->search)[0])
+                         ? entry_text (self->search)
+                         : NULL;
+  LogflStoreQuery q = { .text = text };
   GPtrArray *list = logfl_store_list (self->store, &q, &err);
 
-  g_list_store_remove_all (self->rows);
+  if (self->rows)
+    g_list_store_remove_all (self->rows);
   if (!list)
     {
       toast (self, "Query failed: %s", err->message);
@@ -149,6 +157,8 @@ reload (LogflWindow *self)
     {
       char *sub = g_strdup_printf ("%u QSO · %u calls", st.n_qso, st.n_calls);
       adw_window_title_set_subtitle (self->title, sub);
+      if (self->log_title)
+        adw_window_title_set_subtitle (self->log_title, sub);
       g_free (sub);
     }
 }
@@ -1152,6 +1162,22 @@ show_store_open_error (gpointer user_data)
 }
 
 static void
+show_log_window (LogflWindow *self)
+{
+  if (!self->log_win)
+    return;
+  gtk_window_present (GTK_WINDOW (self->log_win));
+}
+
+static void
+act_show_log (GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+  (void) action;
+  (void) param;
+  show_log_window (user_data);
+}
+
+static void
 logfl_window_dispose (GObject *obj)
 {
   LogflWindow *self = LOGFL_WINDOW (obj);
@@ -1170,8 +1196,17 @@ logfl_window_dispose (GObject *obj)
     }
   g_clear_pointer (&self->pending, logfl_qso_free);
   g_clear_pointer (&self->store_open_error, g_free);
+  /* Destroy the QSO list window before dropping the list model it uses. */
+  if (self->log_win)
+    {
+      gtk_window_destroy (GTK_WINDOW (self->log_win));
+      self->log_win = NULL;
+      self->log_title = NULL;
+      self->search = NULL;
+      self->delete_btn = NULL;
+    }
   /* Drop our refs; the column view may still hold one on selection until
-   * the widget tree is torn down by the parent dispose. */
+   * the widget tree is torn down. */
   g_clear_object (&self->selection);
   g_clear_object (&self->rows);
   g_clear_pointer (&self->store, logfl_store_close);
@@ -1190,14 +1225,85 @@ static const GActionEntry win_actions[] = {
   { .name = "import", .activate = act_import },
   { .name = "export", .activate = act_export },
   { .name = "preferences", .activate = act_preferences },
+  { .name = "show-log", .activate = act_show_log },
   { .name = "about", .activate = act_about },
 };
+
+/* Secondary window: QSO table + search + delete. Hide-on-close; reopened
+ * from the main header list icon (before the hamburger). */
+static void
+build_log_window (LogflWindow *self)
+{
+  self->rows = g_list_store_new (LOGFL_TYPE_QSO_ROW);
+  self->selection =
+      gtk_single_selection_new (G_LIST_MODEL (g_object_ref (self->rows)));
+  gtk_single_selection_set_autoselect (self->selection, FALSE);
+
+  GtkWidget *view = gtk_column_view_new (GTK_SELECTION_MODEL (self->selection));
+  gtk_widget_add_css_class (view, "data-table");
+  g_signal_connect (view, "activate", G_CALLBACK (on_row_activate), self);
+  add_column (GTK_COLUMN_VIEW (view), "UTC", COL_UTC, FALSE);
+  add_column (GTK_COLUMN_VIEW (view), "Call", COL_CALL, FALSE);
+  add_column (GTK_COLUMN_VIEW (view), "Band", COL_BAND, FALSE);
+  add_column (GTK_COLUMN_VIEW (view), "MHz", COL_FREQ, FALSE);
+  add_column (GTK_COLUMN_VIEW (view), "Mode", COL_MODE, FALSE);
+  add_column (GTK_COLUMN_VIEW (view), "RST", COL_RST, FALSE);
+  add_column (GTK_COLUMN_VIEW (view), "Name", COL_NAME, FALSE);
+  add_column (GTK_COLUMN_VIEW (view), "Comment", COL_COMMENT, TRUE);
+
+  GtkWidget *scroller = gtk_scrolled_window_new ();
+  gtk_widget_set_vexpand (scroller, TRUE);
+  gtk_widget_set_hexpand (scroller, TRUE);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), view);
+
+  GtkWidget *header = adw_header_bar_new ();
+  self->log_title =
+      ADW_WINDOW_TITLE (adw_window_title_new ("QSO log", NULL));
+  adw_header_bar_set_title_widget (ADW_HEADER_BAR (header),
+                                   GTK_WIDGET (self->log_title));
+
+  self->search = gtk_search_entry_new ();
+  gtk_search_entry_set_placeholder_text (GTK_SEARCH_ENTRY (self->search),
+                                         "Search call, name, QTH…");
+  gtk_widget_set_size_request (self->search, 240, -1);
+  g_signal_connect_swapped (self->search, "search-changed",
+                            G_CALLBACK (on_search_changed), self);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->search);
+
+  self->delete_btn = gtk_button_new_from_icon_name ("user-trash-symbolic");
+  gtk_widget_set_tooltip_text (self->delete_btn, "Delete selected QSO");
+  g_signal_connect (self->delete_btn, "clicked",
+                    G_CALLBACK (on_delete_clicked), self);
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header), self->delete_btn);
+
+  GtkWidget *tbv = adw_toolbar_view_new ();
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), header);
+  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (tbv), scroller);
+
+  /* Transient to the main window so it stays associated; not modal. */
+  self->log_win = gtk_window_new ();
+  gtk_window_set_title (GTK_WINDOW (self->log_win), "QSO log");
+  gtk_window_set_default_size (GTK_WINDOW (self->log_win), 1100, 600);
+  gtk_window_set_hide_on_close (GTK_WINDOW (self->log_win), TRUE);
+  gtk_window_set_transient_for (GTK_WINDOW (self->log_win),
+                                GTK_WINDOW (self));
+  gtk_window_set_destroy_with_parent (GTK_WINDOW (self->log_win), TRUE);
+  gtk_window_set_child (GTK_WINDOW (self->log_win), tbv);
+  /* Application association keeps the process alive while only this window
+   * is visible; main is the primary window. */
+  {
+    GtkApplication *app = gtk_window_get_application (GTK_WINDOW (self));
+    if (app)
+      gtk_application_add_window (app, GTK_WINDOW (self->log_win));
+  }
+}
 
 static void
 logfl_window_init (LogflWindow *self)
 {
   gtk_window_set_title (GTK_WINDOW (self), "Log for Linux");
-  gtk_window_set_default_size (GTK_WINDOW (self), 1150, 700);
+  /* Entry-focused main window — the table lives in a separate window. */
+  gtk_window_set_default_size (GTK_WINDOW (self), 1100, 180);
   g_action_map_add_action_entries (G_ACTION_MAP (self), win_actions,
                                    G_N_ELEMENTS (win_actions), self);
 
@@ -1220,30 +1326,17 @@ logfl_window_init (LogflWindow *self)
       g_idle_add (show_store_open_error, self);
     }
 
-  /* Header bar: title + search, menu. */
+  /* Header bar: title; list icon then hamburger on the end. */
   GtkWidget *header = adw_header_bar_new ();
   self->title = ADW_WINDOW_TITLE (adw_window_title_new ("Log for Linux",
                                                         NULL));
   adw_header_bar_set_title_widget (ADW_HEADER_BAR (header),
                                    GTK_WIDGET (self->title));
 
-  self->search = gtk_search_entry_new ();
-  gtk_search_entry_set_placeholder_text (GTK_SEARCH_ENTRY (self->search),
-                                         "Search call, name, QTH…");
-  gtk_widget_set_size_request (self->search, 240, -1);
-  g_signal_connect_swapped (self->search, "search-changed",
-                            G_CALLBACK (on_search_changed), self);
-  adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->search);
-
-  self->delete_btn = gtk_button_new_from_icon_name ("user-trash-symbolic");
-  gtk_widget_set_tooltip_text (self->delete_btn, "Delete selected QSO");
-  g_signal_connect (self->delete_btn, "clicked",
-                    G_CALLBACK (on_delete_clicked), self);
-  adw_header_bar_pack_end (ADW_HEADER_BAR (header), self->delete_btn);
-
   GMenu *menu = g_menu_new ();
   g_menu_append (menu, "_Import ADIF…", "win.import");
   g_menu_append (menu, "_Export ADIF…", "win.export");
+  g_menu_append (menu, "_QSO log", "win.show-log");
   g_menu_append (menu, "_Preferences", "win.preferences");
   g_menu_append (menu, "_About Log for Linux", "win.about");
   GtkWidget *menu_btn = gtk_menu_button_new ();
@@ -1252,7 +1345,15 @@ logfl_window_init (LogflWindow *self)
   gtk_menu_button_set_menu_model (GTK_MENU_BUTTON (menu_btn),
                                   G_MENU_MODEL (menu));
   g_object_unref (menu);
+  /* pack_end is right-to-left: menu first → rightmost, then list icon. */
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), menu_btn);
+
+  GtkWidget *log_open_btn =
+      gtk_button_new_from_icon_name ("view-list-symbolic");
+  gtk_widget_set_tooltip_text (log_open_btn, "Open QSO log");
+  gtk_actionable_set_action_name (GTK_ACTIONABLE (log_open_btn),
+                                  "win.show-log");
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header), log_open_btn);
 
   /* Entry row. */
   self->call = mk_entry (self, 10, "OK1…");
@@ -1266,8 +1367,13 @@ logfl_window_init (LogflWindow *self)
   gtk_drop_down_set_selected (GTK_DROP_DOWN (self->band_dd), 5); /* 40m */
   g_signal_connect_swapped (self->band_dd, "notify::selected",
                             G_CALLBACK (on_band_changed), self);
-  /* Default band has an empty MHz field on first paint — seed mid-band so a
-   * quick Log QSO still writes freq into SQL (TCI overwrites with VFO). */
+  self->mode_dd = gtk_drop_down_new_from_strings (modes);
+  g_signal_connect_swapped (self->mode_dd, "notify::selected",
+                            G_CALLBACK (on_mode_changed), self);
+  self->freq = mk_entry (self, 8, "7.030");
+  g_signal_connect_swapped (self->freq, "changed",
+                            G_CALLBACK (on_freq_changed), self);
+  /* Seed mid-band so a quick Log QSO still writes freq (TCI overwrites). */
   {
     double mhz = logfl_adif_freq_for_band ("40m");
     if (mhz > 0)
@@ -1277,12 +1383,6 @@ logfl_window_init (LogflWindow *self)
         g_free (txt);
       }
   }
-  self->mode_dd = gtk_drop_down_new_from_strings (modes);
-  g_signal_connect_swapped (self->mode_dd, "notify::selected",
-                            G_CALLBACK (on_mode_changed), self);
-  self->freq = mk_entry (self, 8, "7.030");
-  g_signal_connect_swapped (self->freq, "changed",
-                            G_CALLBACK (on_freq_changed), self);
   self->name = mk_entry (self, 12, NULL);
   self->comment = mk_entry (self, 18, NULL);
   gtk_widget_set_hexpand (self->comment, TRUE);
@@ -1329,44 +1429,16 @@ logfl_window_init (LogflWindow *self)
   gtk_box_append (GTK_BOX (entry_bar), fields);
   gtk_box_append (GTK_BOX (entry_bar), info);
 
-  /* Table. gtk_single_selection_new() takes ownership of the model ref it
-   * is given (refcount does not increase), so pass an extra ref and keep
-   * self->rows. column_view takes a ref on selection. Drop both in dispose. */
-  self->rows = g_list_store_new (LOGFL_TYPE_QSO_ROW);
-  self->selection =
-      gtk_single_selection_new (G_LIST_MODEL (g_object_ref (self->rows)));
-  gtk_single_selection_set_autoselect (self->selection, FALSE);
-  GtkWidget *view = gtk_column_view_new (GTK_SELECTION_MODEL (self->selection));
-  gtk_widget_add_css_class (view, "data-table");
-  g_signal_connect (view, "activate", G_CALLBACK (on_row_activate), self);
-  add_column (GTK_COLUMN_VIEW (view), "UTC", COL_UTC, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "Call", COL_CALL, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "Band", COL_BAND, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "MHz", COL_FREQ, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "Mode", COL_MODE, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "RST", COL_RST, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "Name", COL_NAME, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "Comment", COL_COMMENT, TRUE);
-
-  GtkWidget *scroller = gtk_scrolled_window_new ();
-  gtk_widget_set_vexpand (scroller, TRUE);
-  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), view);
-
-  /* Assembly. */
-  GtkWidget *content = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-  gtk_box_append (GTK_BOX (content), entry_bar);
-  gtk_box_append (GTK_BOX (content),
-                  gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
-  gtk_box_append (GTK_BOX (content), scroller);
-
   self->toasts = ADW_TOAST_OVERLAY (adw_toast_overlay_new ());
-  adw_toast_overlay_set_child (self->toasts, content);
+  adw_toast_overlay_set_child (self->toasts, entry_bar);
 
   GtkWidget *tbv = adw_toolbar_view_new ();
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), header);
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (tbv),
                                 GTK_WIDGET (self->toasts));
   adw_application_window_set_content (ADW_APPLICATION_WINDOW (self), tbv);
+
+  build_log_window (self);
 
   self->clock_id = g_timeout_add_seconds (1, clock_tick, self);
   clock_tick (self);
