@@ -103,6 +103,21 @@ toast (LogflWindow *self, const char *fmt, ...)
   g_free (msg);
 }
 
+/* TX confirmations fire on every macro key — keep them short so a Run
+ * session does not stack toasts over the table. */
+static void
+toast_short (LogflWindow *self, const char *fmt, ...)
+{
+  va_list ap;
+  va_start (ap, fmt);
+  char *msg = g_strdup_vprintf (fmt, ap);
+  va_end (ap);
+  AdwToast *t = adw_toast_new (msg);
+  adw_toast_set_timeout (t, 2);
+  adw_toast_overlay_add_toast (self->toasts, t);
+  g_free (msg);
+}
+
 static char *
 fmt_freq (double mhz)
 {
@@ -527,9 +542,10 @@ on_freq_changed (LogflWindow *self)
       }
 }
 
-/* When the operator picks a band with an empty MHz field, seed a mid-band
- * frequency so logging does not store NULL (exact VFO still comes from TCI
- * or a typed value). */
+/* Operator picked a band: keep the MHz field consistent with it. A typed
+ * (or TCI) frequency already inside the band is left alone; anything else —
+ * empty field or a leftover from the previous band — is reseeded with the
+ * band mid-point so the logged QSO never carries band/freq that disagree. */
 static void
 on_band_changed (LogflWindow *self)
 {
@@ -538,21 +554,24 @@ on_band_changed (LogflWindow *self)
       update_wb4 (self);
       return;
     }
-  const char *cur = entry_text (self->freq);
-  if (cur && *cur)
-    {
-      update_wb4 (self);
-      return;
-    }
   const char *band = dd_selected (self->band_dd, bands);
-  double mhz = logfl_adif_freq_for_band (band);
-  if (mhz > 0)
+  char *cur = g_strdup (entry_text (self->freq));
+  g_strdelimit (cur, ",", '.');
+  double cur_mhz = g_ascii_strtod (cur, NULL);
+  g_free (cur);
+  const char *cur_band =
+      cur_mhz > 0 ? logfl_adif_band_for_freq (cur_mhz) : NULL;
+  if (band && (!cur_band || !g_str_equal (cur_band, band)))
     {
-      char *txt = fmt_freq (mhz);
-      self->syncing_freq = TRUE;
-      gtk_editable_set_text (GTK_EDITABLE (self->freq), txt);
-      self->syncing_freq = FALSE;
-      g_free (txt);
+      double mhz = logfl_adif_freq_for_band (band);
+      if (mhz > 0)
+        {
+          char *txt = fmt_freq (mhz);
+          self->syncing_freq = TRUE;
+          gtk_editable_set_text (GTK_EDITABLE (self->freq), txt);
+          self->syncing_freq = FALSE;
+          g_free (txt);
+        }
     }
   update_wb4 (self);
 }
@@ -739,10 +758,10 @@ macro_run (LogflWindow *self, guint idx)
       if (self->tci && logfl_tci_client_is_ready (self->tci))
         {
           logfl_tci_client_cw_stop (self->tci);
-          toast (self, "CW stop");
+          toast_short (self, "CW stop");
         }
       else
-        toast (self, "TCI not connected");
+        toast_short (self, "TCI not connected");
       return;
     }
 
@@ -787,7 +806,7 @@ macro_run (LogflWindow *self, guint idx)
     }
 
   logfl_tci_client_cw_send (self->tci, msg);
-  toast (self, "TX %s: %s", cap, msg);
+  toast_short (self, "TX %s: %s", cap, msg);
   g_free (msg);
   g_free (slot);
 }
@@ -1071,6 +1090,19 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
       if (self->cell_edit_box)
         {
           cell_end_edit (self->cell_edit_box, FALSE);
+          return TRUE;
+        }
+      /* Esc in the search field clears the filter (then jumps back to the
+       * entry row) instead of surprising the operator with a CW stop. */
+      GtkWidget *focus = gtk_window_get_focus (GTK_WINDOW (self));
+      if (focus && self->search &&
+          (focus == self->search ||
+           gtk_widget_is_ancestor (focus, self->search)))
+        {
+          if (entry_text (self->search)[0])
+            gtk_editable_set_text (GTK_EDITABLE (self->search), "");
+          else
+            gtk_widget_grab_focus (self->call);
           return TRUE;
         }
       macro_run (self, LOGFL_MACRO_STOP_IDX);
@@ -1759,6 +1791,23 @@ cell_display_text (int col, const LogflQso *q)
     }
 }
 
+/* Text to prefill the cell entry with. Same as the display except RST,
+ * where the "—/—" placeholder dashes would have to be deleted by hand —
+ * edit the raw values instead. */
+static char *
+cell_edit_text (int col, const LogflQso *q)
+{
+  if (col == COL_RST)
+    {
+      const char *s = q->rst_sent ? q->rst_sent : "";
+      const char *r = q->rst_rcvd ? q->rst_rcvd : "";
+      if (!*s && !*r)
+        return g_strdup ("");
+      return g_strdup_printf ("%s/%s", s, r);
+    }
+  return cell_display_text (col, q);
+}
+
 /* True if s is empty or a placeholder dash (ASCII or em dash). */
 static gboolean
 rst_part_empty (const char *s)
@@ -1825,16 +1874,23 @@ apply_cell_to_qso (LogflQso *q, int col, const char *raw, GError **error)
       q->call = g_steal_pointer (&text);
       break;
     case COL_BAND:
-      if (!*text)
-        {
-          g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
-                       "band required");
-          g_free (text);
-          return FALSE;
-        }
-      g_free (q->band);
-      q->band = g_steal_pointer (&text);
-      break;
+      {
+        if (!*text)
+          {
+            g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
+                         "band required");
+            g_free (text);
+            return FALSE;
+          }
+        g_free (q->band);
+        q->band = g_steal_pointer (&text);
+        /* Keep freq inside the new band — reseed mid-band on mismatch. */
+        const char *fb =
+            q->freq > 0 ? logfl_adif_band_for_freq (q->freq) : NULL;
+        if (!fb || g_ascii_strcasecmp (fb, q->band) != 0)
+          q->freq = logfl_adif_freq_for_band (q->band);
+        break;
+      }
     case COL_FREQ:
       {
         if (!*text)
@@ -1853,6 +1909,16 @@ apply_cell_to_qso (LogflQso *q, int col, const char *raw, GError **error)
             return FALSE;
           }
         q->freq = mhz;
+        /* Frequency is the source of truth — rederive band when known. */
+        if (mhz > 0)
+          {
+            const char *nb = logfl_adif_band_for_freq (mhz);
+            if (nb)
+              {
+                g_free (q->band);
+                q->band = g_strdup (nb);
+              }
+          }
         break;
       }
     case COL_MODE:
@@ -1917,26 +1983,10 @@ apply_cell_to_qso (LogflQso *q, int col, const char *raw, GError **error)
   return TRUE;
 }
 
-static guint
-row_position (LogflWindow *self, LogflQsoRow *row)
-{
-  if (!self->rows || !row)
-    return GTK_INVALID_LIST_POSITION;
-  guint n = g_list_model_get_n_items (G_LIST_MODEL (self->rows));
-  for (guint i = 0; i < n; i++)
-    {
-      LogflQsoRow *r = g_list_model_get_item (G_LIST_MODEL (self->rows), i);
-      gboolean match = (r == row);
-      g_clear_object (&r);
-      if (match)
-        return i;
-    }
-  return GTK_INVALID_LIST_POSITION;
-}
-
 /* Commit edited cell text to the store and update the in-memory row.
- * Does NOT emit list items-changed — caller paints the cell first, then
- * may notify the model so sibling columns rebind cleanly. */
+ * Painting is the caller's job — the edited cell directly, siblings via
+ * row_repaint_siblings (never a model items-changed, which would rebuild
+ * and visibly flash the whole row). */
 static gboolean
 commit_cell_edit (LogflWindow *self, LogflQsoRow *row, int col,
                   const char *new_text, gboolean *out_changed)
@@ -1950,7 +2000,7 @@ commit_cell_edit (LogflWindow *self, LogflQsoRow *row, int col,
   if (!cur || cur->id <= 0)
     return FALSE;
 
-  char *old_disp = cell_display_text (col, cur);
+  char *old_disp = cell_edit_text (col, cur);
   char *nt_strip = g_strdup (new_text ? new_text : "");
   g_strstrip (nt_strip);
   gboolean same = (g_strcmp0 (old_disp, nt_strip) == 0);
@@ -2042,6 +2092,38 @@ cell_set_display (GtkWidget *box, const char *txt)
 }
 
 static void
+cell_repaint_from_row (GtkWidget *box)
+{
+  LogflQsoRow *row = g_object_get_data (G_OBJECT (box), "logfl-row");
+  if (!row || cell_is_editing (box))
+    return;
+  int col = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (box), "logfl-col"));
+  char *txt = cell_display_text (col, logfl_qso_row_qso (row));
+  cell_set_display (box, txt);
+  g_free (txt);
+}
+
+/* Repaint every cell of the row that contains box straight from the row
+ * data. Widget path: box → GtkColumnViewCell → row widget → sibling cells;
+ * cells are recognized by the "logfl-label" marker, so a GTK layout change
+ * degrades to repainting nothing. */
+static void
+row_repaint_siblings (GtkWidget *box)
+{
+  GtkWidget *cell = gtk_widget_get_parent (box);
+  GtkWidget *rw = cell ? gtk_widget_get_parent (cell) : NULL;
+  if (!rw)
+    return;
+  for (GtkWidget *c = gtk_widget_get_first_child (rw); c != NULL;
+       c = gtk_widget_get_next_sibling (c))
+    {
+      GtkWidget *b = gtk_widget_get_first_child (c);
+      if (b && cell_label (b))
+        cell_repaint_from_row (b);
+    }
+}
+
+static void
 cell_end_edit (GtkWidget *box, gboolean commit)
 {
   if (!cell_is_editing (box))
@@ -2077,14 +2159,10 @@ cell_end_edit (GtkWidget *box, gboolean commit)
     }
   cell_show_label (box);
 
-  /* Refresh the whole row so sibling cells stay in sync with the store
-   * (only after this cell is no longer "editing"). */
-  if (changed && self && row)
-    {
-      guint pos = row_position (self, row);
-      if (pos != GTK_INVALID_LIST_POSITION)
-        g_list_model_items_changed (G_LIST_MODEL (self->rows), pos, 1, 1);
-    }
+  /* Sibling cells can show derived fields (MHz ↔ Band) — repaint them in
+   * place from the updated row data. */
+  if (changed)
+    row_repaint_siblings (box);
 }
 
 static void
@@ -2104,7 +2182,7 @@ cell_begin_edit (GtkWidget *box)
   if (self && self->cell_edit_box && self->cell_edit_box != box)
     cell_end_edit (self->cell_edit_box, TRUE);
 
-  char *txt = cell_display_text (col, logfl_qso_row_qso (row));
+  char *txt = cell_edit_text (col, logfl_qso_row_qso (row));
   gtk_editable_set_text (GTK_EDITABLE (entry), txt ? txt : "");
   g_free (txt);
 
@@ -2340,6 +2418,12 @@ ensure_table_css (void)
       "columnview.data-table .logfl-cell label {\n"
       "  margin: 0;\n"
       "  padding: 2px 0;\n"
+      "}\n"
+      /* No selection model: rows must stay visually inert. Without this a
+       * double-click to edit flashes the whole row via the :active state. */
+      "columnview.data-table listview > row:active,\n"
+      "columnview.data-table listview > row:selected {\n"
+      "  background: none;\n"
       "}\n";
 
   GtkCssProvider *prov = gtk_css_provider_new ();
