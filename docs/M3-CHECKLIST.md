@@ -89,10 +89,11 @@ Mark each item when verified on a real desktop session.
 
 ## Known issues at sign-off (not blocking, tracked for follow-up)
 
-- One `GLib-GObject-CRITICAL: g_object_unref: assertion 'G_IS_OBJECT
-  (object)' failed` fired once in the first test session (2026-07-21
-  22:35:36), suspected in window-close teardown; not yet reproduced under
-  `G_DEBUG=fatal-criticals` + gdb — startup and import/export are clean.
+- ~~One `GLib-GObject-CRITICAL: g_object_unref` on window close~~ —
+  **FIXED same day**: `gtk_column_view_new` is transfer-full on its model,
+  so dispose dropped a ref the view owned; the ctor now gets its own ref.
+  Reproduced and verified gone via `LOGFL_AUTOCLOSE_MS` (env hook that
+  closes the window programmatically) + `G_DEBUG=fatal-criticals` + gdb.
 - GTK emits `GtkImage … baselines must be inside the widget size` warnings
   when file dialogs open (origin GTK vs. ours not yet determined).
 

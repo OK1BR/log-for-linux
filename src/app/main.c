@@ -19,6 +19,13 @@ on_activate (AdwApplication *app, gpointer user_data)
   if (!win)
     win = GTK_WINDOW (logfl_window_new (app));
   gtk_window_present (win);
+
+  /* TEMP repro hook: LOGFL_AUTOCLOSE_MS=N closes the window after N ms —
+   * same path as the titlebar X (close-request → destroy cascade). */
+  const char *auto_ms = g_getenv ("LOGFL_AUTOCLOSE_MS");
+  if (auto_ms)
+    g_timeout_add_once ((guint) g_ascii_strtoull (auto_ms, NULL, 10),
+                        (GSourceOnceFunc) gtk_window_close, win);
 }
 
 int

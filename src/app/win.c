@@ -2621,7 +2621,9 @@ build_qso_table (LogflWindow *self)
 
   ensure_table_css ();
 
-  GtkWidget *view = gtk_column_view_new (self->selection);
+  /* gtk_column_view_new is transfer-full on the model — hand it its own
+   * ref so the one in self->selection stays ours to drop in dispose. */
+  GtkWidget *view = gtk_column_view_new (g_object_ref (self->selection));
   self->table_view = view;
   gtk_widget_add_css_class (view, "data-table");
   gtk_column_view_set_single_click_activate (GTK_COLUMN_VIEW (view), FALSE);
