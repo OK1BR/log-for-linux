@@ -112,9 +112,9 @@ importing someone's log and exporting it again must never silently drop data.
   numbers, oldest-first. Gate covers the quirks corpus, UTF-8 names,
   multiline comments, intra-file + re-import dedup accounting and the
   export(import(x)) byte-stability check.
-- **M3 — UI v1: the usable logbook. CODE LANDED 2026-07-20; polish
-  2026-07-21; the manual checklist gate awaits Richard
-  (`docs/M3-CHECKLIST.md`).** Entry row (call/RST/band/mode/…,
+- **M3 — UI v1: the usable logbook. IMPLEMENTED 2026-07-21 — manual
+  checklist signed off by Richard (`docs/M3-CHECKLIST.md`); the app is v1
+  for daily use.** Entry row (call/RST/band/mode/…,
   UTC clock), QSO table (GtkColumnView, newest first), search/filter,
   ADIF import/export in the UI, worked-B4 indication while typing.
   Gate: manual checklist — this milestone is deliberately UI; everything under
