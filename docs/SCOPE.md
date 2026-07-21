@@ -169,13 +169,11 @@ importing someone's log and exporting it again must never silently drop data.
      log → TU), so the operator’s “own” sequence is one key. Few general
      loggers have this; Richard wants it. Must remain optional and never
      surprise on non-contest daily logging (toggle in prefs).
-  4. **SSB “wav” (optional / later in this milestone or after)** — short
-     explanation: on phone, N1MM F-keys often play **pre-recorded voice
-     `.wav` files** (your CQ, exchange, …) instead of CW text — a DVK
-     (digital voice keyer). Not the same as “SSB mode on the radio”. Only
-     useful once we can play audio into TX (TCI TX audio or local path
-     through sdr-for-linux). **Not a day-one M5 requirement**; document the
-     hook, implement when TX audio path is real.
+  4. **SSB “wav” / DVK — OUT OF SCOPE for now (Richard 2026-07-21).**
+     N1MM-style phone F-keys play pre-recorded `.wav` voice clips into TX.
+     **Do not implement** until explicitly revisited (needs a real TX audio
+     path via sdr-for-linux / TCI). M5 is CW (and text) macros only: editable
+     keys, Run/S&P, ESM.
   Gate: headless tests for token expansion + Run/S&P bank selection + ESM
   state transitions; live CW smoke against sdr-for-linux TCI keyer.
 - **M6 — WSJT-X UDP.** UDP server (default port 2237): decode `QSO Logged`
