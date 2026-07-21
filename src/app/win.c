@@ -1138,7 +1138,8 @@ refresh_macro_bar (LogflWindow *self)
 
       if (logfl_macro_index_is_stop (i))
         {
-          lab = g_strdup ("STOP");
+          /* Two-line label like the others so row height matches. */
+          lab = g_strdup ("STOP\nEsc");
           tip = g_strdup ("Esc · stop CW keyer\nRight-click to edit label");
         }
       else if (i < LOGFL_MACRO_N_ROW)
@@ -1290,20 +1291,22 @@ build_macro_bar (LogflWindow *self)
   gtk_box_append (GTK_BOX (top), self->bank_snp_btn);
   gtk_box_append (GTK_BOX (top), self->esm_hint);
 
-  /* Two rows of 8: F1–F8, then free M1–M7 + STOP. */
+  /* Two rows of 8: F1–F8, then free M1–M7 + STOP. Homogeneous so every
+   * key has the same width; STOP is a normal button (not destructive red). */
   GtkWidget *rows = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+  gtk_widget_set_hexpand (rows, TRUE);
   for (guint row = 0; row < LOGFL_MACRO_N_ROWS; row++)
     {
       GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
       gtk_widget_set_hexpand (bar, TRUE);
+      gtk_box_set_homogeneous (GTK_BOX (bar), TRUE);
       for (guint col = 0; col < LOGFL_MACRO_N_ROW; col++)
         {
           guint i = row * LOGFL_MACRO_N_ROW + col;
           GtkWidget *btn = gtk_button_new_with_label ("·");
           gtk_widget_set_hexpand (btn, TRUE);
+          gtk_widget_set_halign (btn, GTK_ALIGN_FILL);
           gtk_widget_set_focus_on_click (btn, FALSE);
-          if (logfl_macro_index_is_stop (i))
-            gtk_widget_add_css_class (btn, "destructive-action");
           g_object_set_data (G_OBJECT (btn), "macro", GUINT_TO_POINTER (i));
           g_signal_connect (btn, "clicked", G_CALLBACK (on_macro_clicked),
                             self);
@@ -1690,7 +1693,7 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
       "description",
       "Enter advances CQ → exchange → log → TU. "
       "Off keeps Enter = Log QSO for daily use. "
-      "Edit F-keys with right-click on the macro bar (Run / S&P banks).",
+      "Edit F-keys with right-click on the macro bar (Run / S&amp;P banks).",
       NULL));
   GtkWidget *esm_row = adw_switch_row_new ();
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (esm_row),
