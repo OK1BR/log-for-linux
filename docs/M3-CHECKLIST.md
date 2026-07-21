@@ -82,8 +82,11 @@ Mark each item when verified on a real desktop session.
 |--|--|
 | Date | |
 | Tester | Richard / OK1BR |
-| Headless `meson test` | 3/3 OK |
+| Headless `meson test` | 4/4 OK (engine, store, adif, tci) |
 | Manual checklist | ☐ complete |
 
 When this passes, mark **M3 IMPLEMENTED** in `docs/SCOPE.md` and treat the
-app as v1 for daily use. Next planned milestone: **M4 TCI** (`sdr-for-linux`).
+app as v1 for daily use. Note: M4 (TCI), macro bar v1, and edit-saved-QSO
+already landed in code after the original M3 checklist was written — this
+list remains the manual UI gate for the core logbook. Next after M3 sign-off
+in the planned order: **M5 macros v2**.

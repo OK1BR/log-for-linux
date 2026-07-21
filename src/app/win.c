@@ -1,6 +1,7 @@
 /* win.c — main logbook window: entry row + worked-B4, footer with UTC and
- * active TCI status; separate QSO-list window (table, search, delete, QSY).
- * ADIF import/export and preferences live on the main window menu (M3/M4).
+ * active TCI status; separate QSO-list window (table, search, edit, delete,
+ * QSY). ADIF import/export and preferences live on the main window menu
+ * (M3/M4). Edit loads a row into the entry strip and uses logfl_store_update.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */
@@ -57,6 +58,9 @@ struct _LogflWindow {
   GtkWidget *band_dd, *mode_dd;
   GtkWidget *wb4_label, *clock_label, *tci_label;
   GtkWidget *delete_btn;
+  GtkWidget *edit_btn;         /* log window: load selected into entry */
+  GtkWidget *log_btn;          /* "Log QSO" / "Save QSO" on main window */
+  GtkWidget *cancel_edit_btn;  /* visible only while editing */
 
   guint clock_id;
   guint search_id;             /* debounce timeout for search-changed */
@@ -67,6 +71,7 @@ struct _LogflWindow {
   guint tci_epoch;             /* bumps on reconnect; stale jobs drop */
   LogflTciClient *tci;
   LogflQso *pending;           /* QSO awaiting dup confirmation */
+  LogflQso *editing;           /* non-NULL: entry row is editing this QSO */
   gint64 pending_delete_id;
   gboolean delete_confirm_open; /* async delete dialog is up */
 };
@@ -206,6 +211,19 @@ select_mode_string (LogflWindow *self, const char *mode)
       }
 }
 
+static void
+select_band_string (LogflWindow *self, const char *band)
+{
+  if (!band)
+    return;
+  for (guint i = 0; bands[i]; i++)
+    if (g_str_equal (bands[i], band))
+      {
+        gtk_drop_down_set_selected (GTK_DROP_DOWN (self->band_dd), i);
+        return;
+      }
+}
+
 typedef struct {
   LogflWindow  *self;
   LogflTciState st;
@@ -225,20 +243,25 @@ tci_apply_state (gpointer user_data)
       return G_SOURCE_REMOVE;
     }
 
-  self->syncing_tci = TRUE;
-
-  if (st->vfo_hz > 0)
+  /* Always refresh the status line; do not stomp the entry while editing. */
+  if (!self->editing)
     {
-      char *mhz = fmt_freq (st->vfo_hz / 1e6);
-      gtk_editable_set_text (GTK_EDITABLE (self->freq), mhz);
-      g_free (mhz);
+      self->syncing_tci = TRUE;
+
+      if (st->vfo_hz > 0)
+        {
+          char *mhz = fmt_freq (st->vfo_hz / 1e6);
+          gtk_editable_set_text (GTK_EDITABLE (self->freq), mhz);
+          g_free (mhz);
+        }
+
+      const char *log_mode = logfl_tci_mode_to_log (st->mode);
+      if (log_mode)
+        select_mode_string (self, log_mode);
+
+      self->syncing_tci = FALSE;
+      update_wb4 (self);
     }
-
-  const char *log_mode = logfl_tci_mode_to_log (st->mode);
-  if (log_mode)
-    select_mode_string (self, log_mode);
-
-  self->syncing_tci = FALSE;
 
   char *mhz_txt = st->vfo_hz > 0 ? fmt_freq (st->vfo_hz / 1e6) : g_strdup ("—");
   char *status = g_strdup_printf (
@@ -250,7 +273,6 @@ tci_apply_state (gpointer user_data)
   g_free (status);
   g_free (mhz_txt);
 
-  update_wb4 (self);
   g_free (d);
   return G_SOURCE_REMOVE;
 }
@@ -578,6 +600,201 @@ clear_entry_row (LogflWindow *self)
 }
 
 static void
+set_edit_ui (LogflWindow *self, gboolean on)
+{
+  if (self->log_btn)
+    gtk_button_set_label (GTK_BUTTON (self->log_btn),
+                          on ? "Save QSO" : "Log QSO");
+  if (self->cancel_edit_btn)
+    gtk_widget_set_visible (self->cancel_edit_btn, on);
+}
+
+static void
+exit_edit_mode (LogflWindow *self)
+{
+  g_clear_pointer (&self->editing, logfl_qso_free);
+  set_edit_ui (self, FALSE);
+}
+
+/* Fill the entry row from a stored QSO (edit mode). Band/mode/freq guards
+ * avoid mid-band seeding and TCI feedback while we load. */
+static void
+load_qso_into_entry (LogflWindow *self, const LogflQso *q)
+{
+  self->syncing_tci = TRUE;
+  self->syncing_freq = TRUE;
+
+  gtk_editable_set_text (GTK_EDITABLE (self->call),
+                         q->call ? q->call : "");
+  gtk_editable_set_text (GTK_EDITABLE (self->rst_s),
+                         q->rst_sent ? q->rst_sent : "");
+  gtk_editable_set_text (GTK_EDITABLE (self->rst_r),
+                         q->rst_rcvd ? q->rst_rcvd : "");
+  select_band_string (self, q->band);
+  select_mode_string (self, q->mode);
+  if (q->freq > 0)
+    {
+      char *txt = fmt_freq (q->freq);
+      gtk_editable_set_text (GTK_EDITABLE (self->freq), txt);
+      g_free (txt);
+    }
+  else
+    gtk_editable_set_text (GTK_EDITABLE (self->freq), "");
+  gtk_editable_set_text (GTK_EDITABLE (self->name),
+                         q->name ? q->name : "");
+  gtk_editable_set_text (GTK_EDITABLE (self->comment),
+                         q->comment ? q->comment : "");
+
+  self->syncing_tci = FALSE;
+  self->syncing_freq = FALSE;
+  update_wb4 (self);
+}
+
+static void
+begin_edit_qso (LogflWindow *self, gint64 id)
+{
+  if (!self->store)
+    {
+      toast (self, "Log store is not open");
+      return;
+    }
+  if (self->pending)
+    {
+      toast (self, "Confirm the previous QSO first");
+      return;
+    }
+
+  GError *err = NULL;
+  LogflQso *q = logfl_store_get (self->store, id, &err);
+  if (!q)
+    {
+      toast (self, "Cannot edit: %s",
+             err ? err->message : "not found");
+      g_clear_error (&err);
+      return;
+    }
+
+  g_clear_pointer (&self->editing, logfl_qso_free);
+  self->editing = q;
+  load_qso_into_entry (self, q);
+  set_edit_ui (self, TRUE);
+  gtk_window_present (GTK_WINDOW (self));
+  gtk_widget_grab_focus (self->call);
+  toast (self, "Editing %s — Save or Cancel",
+         q->call ? q->call : "?");
+}
+
+static void
+cancel_edit_qso (LogflWindow *self)
+{
+  if (!self->editing)
+    return;
+  exit_edit_mode (self);
+  clear_entry_row (self);
+  toast (self, "Edit cancelled");
+}
+
+/* Resolve MHz for a new log (not used for edit — empty stays unset so the
+ * operator can fill a missing freq from before the mid-band fix). */
+static double
+resolve_log_freq (LogflWindow *self, const char *band)
+{
+  char *ftxt = g_strdup (entry_text (self->freq));
+  g_strdelimit (ftxt, ",", '.');
+  double mhz = g_ascii_strtod (ftxt, NULL);
+  g_free (ftxt);
+  if (mhz <= 0 && self->tci && logfl_tci_client_is_ready (self->tci))
+    {
+      LogflTciState st;
+      logfl_tci_client_get_state (self->tci, &st);
+      if (st.vfo_hz > 0)
+        mhz = st.vfo_hz / 1e6;
+    }
+  if (mhz <= 0 && band)
+    mhz = logfl_adif_freq_for_band (band);
+  return mhz;
+}
+
+/* Apply editable entry fields onto q; leave id/ts/extras/QSL/etc. alone. */
+static void
+apply_entry_to_qso (LogflWindow *self, LogflQso *q, gboolean is_new)
+{
+  g_free (q->call);
+  g_free (q->band);
+  g_free (q->mode);
+  g_free (q->rst_sent);
+  g_free (q->rst_rcvd);
+  g_free (q->name);
+  g_free (q->comment);
+
+  q->call = g_strdup (entry_text (self->call));
+  q->band = g_strdup (dd_selected (self->band_dd, bands));
+  q->mode = g_strdup (dd_selected (self->mode_dd, modes));
+  q->rst_sent = g_strdup (entry_text (self->rst_s));
+  q->rst_rcvd = g_strdup (entry_text (self->rst_r));
+  q->name = g_strdup (entry_text (self->name));
+  q->comment = g_strdup (entry_text (self->comment));
+
+  char *ftxt = g_strdup (entry_text (self->freq));
+  g_strdelimit (ftxt, ",", '.');
+  double mhz = g_ascii_strtod (ftxt, NULL);
+  g_free (ftxt);
+
+  if (is_new)
+    {
+      q->ts = g_get_real_time () / G_USEC_PER_SEC;
+      q->freq = resolve_log_freq (self, q->band);
+      g_free (q->station_callsign);
+      q->station_callsign = g_strdup (
+          self->settings.station_callsign && *self->settings.station_callsign
+              ? self->settings.station_callsign
+              : "OK1BR");
+    }
+  else
+    {
+      /* Edit: typed MHz wins; empty keeps previous (or 0 if it was NULL).
+       * Band mid-point only when both empty and still unset — so old
+       * band-only rows can be fixed by typing MHz without force-seeding. */
+      if (mhz > 0)
+        q->freq = mhz;
+      else if (q->freq <= 0 && q->band)
+        q->freq = logfl_adif_freq_for_band (q->band);
+    }
+}
+
+static void
+do_save_edit (LogflWindow *self)
+{
+  LogflQso *q = self->editing;
+  if (!q)
+    return;
+
+  const char *call = entry_text (self->call);
+  if (!call || !*call)
+    {
+      toast (self, "Callsign first");
+      gtk_widget_grab_focus (self->call);
+      return;
+    }
+
+  apply_entry_to_qso (self, q, FALSE);
+
+  GError *err = NULL;
+  if (logfl_store_update (self->store, q, &err))
+    {
+      toast (self, "Updated %s · %s · %s", q->call, q->band, q->mode);
+      exit_edit_mode (self);
+      clear_entry_row (self);
+      reload (self);
+    }
+  else
+    {
+      toast (self, "Not saved: %s", err->message);
+      g_clear_error (&err);
+    }
+}
+
+static void
 do_add_pending (LogflWindow *self)
 {
   GError *err = NULL;
@@ -617,6 +834,13 @@ log_qso (LogflWindow *self)
       return;
     }
 
+  /* Edit path: update in place; no dup dialog (same row). */
+  if (self->editing)
+    {
+      do_save_edit (self);
+      return;
+    }
+
   /* One pending confirm at a time — replacing pending would free the QSO
    * still owned by an open dialog. */
   if (self->pending)
@@ -634,33 +858,7 @@ log_qso (LogflWindow *self)
     }
 
   LogflQso *q = logfl_qso_new ();
-  q->call = g_strdup (call);
-  q->band = g_strdup (dd_selected (self->band_dd, bands));
-  q->mode = g_strdup (dd_selected (self->mode_dd, modes));
-  q->ts = g_get_real_time () / G_USEC_PER_SEC;
-  /* Frequency (MHz): typed field first; if empty, live TCI VFO; last resort
-   * band mid-point so ADIF/SQL never lose the band-only case as NULL. */
-  char *ftxt = g_strdup (entry_text (self->freq));
-  g_strdelimit (ftxt, ",", '.');
-  q->freq = g_ascii_strtod (ftxt, NULL);
-  g_free (ftxt);
-  if (q->freq <= 0 && self->tci && logfl_tci_client_is_ready (self->tci))
-    {
-      LogflTciState st;
-      logfl_tci_client_get_state (self->tci, &st);
-      if (st.vfo_hz > 0)
-        q->freq = st.vfo_hz / 1e6;
-    }
-  if (q->freq <= 0 && q->band)
-    q->freq = logfl_adif_freq_for_band (q->band);
-  q->rst_sent = g_strdup (entry_text (self->rst_s));
-  q->rst_rcvd = g_strdup (entry_text (self->rst_r));
-  q->name = g_strdup (entry_text (self->name));
-  q->comment = g_strdup (entry_text (self->comment));
-  q->station_callsign = g_strdup (
-      self->settings.station_callsign && *self->settings.station_callsign
-          ? self->settings.station_callsign
-          : "OK1BR");
+  apply_entry_to_qso (self, q, TRUE);
 
   gboolean dup = FALSE;
   logfl_store_dup_check (self->store, q->call, q->band, q->mode, q->ts,
@@ -902,9 +1100,15 @@ on_delete_response (GObject *source, GAsyncResult *res, gpointer user_data)
       return;
     }
   GError *err = NULL;
-  if (logfl_store_delete (self->store, self->pending_delete_id, &err))
+  gint64 deleted_id = self->pending_delete_id;
+  if (logfl_store_delete (self->store, deleted_id, &err))
     {
       toast (self, "QSO deleted");
+      if (self->editing && self->editing->id == deleted_id)
+        {
+          exit_edit_mode (self);
+          clear_entry_row (self);
+        }
       reload (self);
     }
   else
@@ -945,6 +1149,21 @@ on_delete_clicked (GtkButton *btn, gpointer user_data)
   adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "cancel");
   adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
                            on_delete_response, self);
+}
+
+static void
+on_edit_clicked (GtkButton *btn, gpointer user_data)
+{
+  (void) btn;
+  LogflWindow *self = user_data;
+  LogflQsoRow *row = gtk_single_selection_get_selected_item (self->selection);
+  if (!row)
+    {
+      toast (self, "Select a QSO to edit");
+      return;
+    }
+  const LogflQso *q = logfl_qso_row_qso (row);
+  begin_edit_qso (self, q->id);
 }
 
 /* --- ADIF import / export ---------------------------------------------- */
@@ -1382,6 +1601,7 @@ logfl_window_dispose (GObject *obj)
       self->tci = NULL;
     }
   g_clear_pointer (&self->pending, logfl_qso_free);
+  g_clear_pointer (&self->editing, logfl_qso_free);
   g_clear_pointer (&self->store_open_error, g_free);
   /* Destroy the QSO list window before dropping the list model it uses. */
   if (self->log_win)
@@ -1391,6 +1611,7 @@ logfl_window_dispose (GObject *obj)
       self->log_title = NULL;
       self->search = NULL;
       self->delete_btn = NULL;
+      self->edit_btn = NULL;
     }
   /* Drop our refs; the column view may still hold one on selection until
    * the widget tree is torn down. */
@@ -1462,6 +1683,15 @@ build_log_window (LogflWindow *self)
   g_signal_connect (self->delete_btn, "clicked",
                     G_CALLBACK (on_delete_clicked), self);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), self->delete_btn);
+
+  self->edit_btn =
+      gtk_button_new_from_icon_name ("document-edit-symbolic");
+  gtk_widget_set_tooltip_text (self->edit_btn,
+                               "Edit selected QSO in the entry row "
+                               "(double-click still QSYs)");
+  g_signal_connect (self->edit_btn, "clicked",
+                    G_CALLBACK (on_edit_clicked), self);
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header), self->edit_btn);
 
   GtkWidget *tbv = adw_toolbar_view_new ();
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), header);
@@ -1574,10 +1804,17 @@ logfl_window_init (LogflWindow *self)
   self->comment = mk_entry (self, 18, NULL);
   gtk_widget_set_hexpand (self->comment, TRUE);
 
-  GtkWidget *log_btn = gtk_button_new_with_label ("Log QSO");
-  gtk_widget_add_css_class (log_btn, "suggested-action");
-  gtk_widget_set_valign (log_btn, GTK_ALIGN_END);
-  g_signal_connect_swapped (log_btn, "clicked", G_CALLBACK (log_qso), self);
+  self->log_btn = gtk_button_new_with_label ("Log QSO");
+  gtk_widget_add_css_class (self->log_btn, "suggested-action");
+  gtk_widget_set_valign (self->log_btn, GTK_ALIGN_END);
+  g_signal_connect_swapped (self->log_btn, "clicked",
+                            G_CALLBACK (log_qso), self);
+
+  self->cancel_edit_btn = gtk_button_new_with_label ("Cancel");
+  gtk_widget_set_valign (self->cancel_edit_btn, GTK_ALIGN_END);
+  gtk_widget_set_visible (self->cancel_edit_btn, FALSE);
+  g_signal_connect_swapped (self->cancel_edit_btn, "clicked",
+                            G_CALLBACK (cancel_edit_qso), self);
 
   GtkWidget *fields = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_box_append (GTK_BOX (fields), labeled ("Call", self->call));
@@ -1588,7 +1825,8 @@ logfl_window_init (LogflWindow *self)
   gtk_box_append (GTK_BOX (fields), labeled ("MHz", self->freq));
   gtk_box_append (GTK_BOX (fields), labeled ("Name", self->name));
   gtk_box_append (GTK_BOX (fields), labeled ("Comment", self->comment));
-  gtk_box_append (GTK_BOX (fields), log_btn);
+  gtk_box_append (GTK_BOX (fields), self->cancel_edit_btn);
+  gtk_box_append (GTK_BOX (fields), self->log_btn);
 
   /* Worked-B4 stays with the entry row (depends on call/band/mode). */
   self->wb4_label = gtk_label_new ("");

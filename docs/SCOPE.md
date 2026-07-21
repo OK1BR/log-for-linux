@@ -188,13 +188,15 @@ importing someone's log and exporting it again must never silently drop data.
   (`lotwreport.adi`) and mark QSLs; eQSL upload + inbox; Club Log upload.
   Per-QSO sent/confirmed state per service, retry-safe (idempotent re-upload).
   Gate: `log-qsl-test` over mocked endpoints; live check with a small batch.
-- **Next UI (before or alongside the next feature milestone)** — **edit an
-  already-saved QSO.** Decided 2026-07-21 (Richard): v1 can only add/delete;
-  correcting a logged QSO must be first-class (load row into the entry row or
-  a dialog, `logfl_store_update`, keep extras/QSL fields intact). Do not start
-  M5+ assuming the log is append-only from the UI. Also needed to correct
-  early QSOs that were saved with `freq` NULL (band only) before the MHz
-  prefill/TCI fallback landed. Can ship before or with M5.
+- **Edit saved QSO. IMPLEMENTED 2026-07-21.** Decided 2026-07-21 (Richard):
+  v1 originally only add/delete; correcting a logged QSO is first-class.
+  UI: QSO log window pencil loads the row into the main entry row (`Save QSO`
+  / `Cancel`); double-click still QSYs. Engine path is `logfl_store_get` +
+  `logfl_store_update` so extras, QSL flags, original `ts`, grid/QTH/power
+  and station fields stay intact while call/RST/band/mode/freq/name/comment
+  can be fixed. TCI prefill is frozen while editing. Needed to correct early
+  QSOs that were saved with `freq` NULL (band only) before the MHz
+  prefill/TCI fallback landed.
 - **Freq must be exact in SQL (caught 2026-07-21).** Schema always had
   `freq REAL`; the UI used to leave the MHz entry empty (placeholder only),
   so `bind_qso` stored NULL and only `band` survived. Fix direction: typed
