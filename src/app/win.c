@@ -1,7 +1,11 @@
 /* win.c — main logbook window: entry row, macro strip, QSO table (search /
- * edit / delete / double-click QSY), footer with UTC, TCI and WSJT-X status.
- * ADIF import/export and preferences live on the window menu (M3/M4/M6).
- * Edit loads a row into the entry strip and uses logfl_store_update.
+ * inline cell edit / right-click delete), footer with UTC, TCI and WSJT-X
+ * status. ADIF import/export and preferences live on the window menu
+ * (M3/M4/M6).
+ *
+ * Table cells: plain label + GtkEntry on double-click only (single click
+ * selects the row). Delete is right-click context menu (confirm). Entry
+ * strip is for new QSOs only. TCI: VFO/mode prefill + CW macros.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */
@@ -49,7 +53,7 @@ struct _LogflWindow {
   LogflSettings settings;      /* ~/.config/log-for-linux/settings.ini   */
 
   GListStore *rows;
-  GtkSingleSelection *selection;
+  GtkSelectionModel *selection; /* GtkNoSelection — no click highlight */
 
   AdwWindowTitle *title;
   AdwToastOverlay *toasts;
@@ -57,10 +61,9 @@ struct _LogflWindow {
   GtkWidget *call, *rst_s, *rst_r, *freq, *name, *comment;
   GtkWidget *band_dd, *mode_dd;
   GtkWidget *wb4_label, *clock_label, *tci_label, *wsjtx_label;
-  GtkWidget *delete_btn;
-  GtkWidget *edit_btn;         /* load selected QSO into entry row */
-  GtkWidget *log_btn;          /* "Log QSO" / "Save QSO" */
-  GtkWidget *cancel_edit_btn;  /* visible only while editing */
+  GtkWidget *table_view;       /* GtkColumnView — right-click context menu */
+  GtkWidget *cell_edit_box;    /* non-NULL while a table cell entry is open */
+  GtkWidget *log_btn;          /* "Log QSO" */
   GtkWidget *macro_btns[LOGFL_MACRO_N_KEYS];
   GtkWidget *bank_btn;         /* header: single Run/S&P icon (cycles) */
   GtkWidget *esm_hint;         /* short ESM status under macro bar */
@@ -75,8 +78,8 @@ struct _LogflWindow {
   LogflTciClient *tci;
   LogflWsjtxServer *wsjtx;     /* M6: UDP listener for WSJT-X / JTDX        */
   LogflQso *pending;           /* QSO awaiting dup confirmation */
-  LogflQso *editing;           /* non-NULL: entry row is editing this QSO */
   gint64 pending_delete_id;
+  gint64 context_qso_id;       /* row under last right-click (delete menu) */
   gboolean delete_confirm_open; /* async delete dialog is up */
   LogflEsmPhase esm_phase;     /* M5 Enter-sends-message state */
   gboolean esm_force_log;      /* ESM LOG step → bypass ESM on Enter */
@@ -216,19 +219,6 @@ select_mode_string (LogflWindow *self, const char *mode)
       }
 }
 
-static void
-select_band_string (LogflWindow *self, const char *band)
-{
-  if (!band)
-    return;
-  for (guint i = 0; bands[i]; i++)
-    if (g_str_equal (bands[i], band))
-      {
-        gtk_drop_down_set_selected (GTK_DROP_DOWN (self->band_dd), i);
-        return;
-      }
-}
-
 typedef struct {
   LogflWindow  *self;
   LogflTciState st;
@@ -248,25 +238,21 @@ tci_apply_state (gpointer user_data)
       return G_SOURCE_REMOVE;
     }
 
-  /* Always refresh the status line; do not stomp the entry while editing. */
-  if (!self->editing)
+  /* Prefill entry from live VFO (entry strip is for new QSOs only). */
+  self->syncing_tci = TRUE;
+  if (st->vfo_hz > 0)
     {
-      self->syncing_tci = TRUE;
-
-      if (st->vfo_hz > 0)
-        {
-          char *mhz = fmt_freq (st->vfo_hz / 1e6);
-          gtk_editable_set_text (GTK_EDITABLE (self->freq), mhz);
-          g_free (mhz);
-        }
-
-      const char *log_mode = logfl_tci_mode_to_log (st->mode);
-      if (log_mode)
-        select_mode_string (self, log_mode);
-
-      self->syncing_tci = FALSE;
-      update_wb4 (self);
+      char *mhz = fmt_freq (st->vfo_hz / 1e6);
+      gtk_editable_set_text (GTK_EDITABLE (self->freq), mhz);
+      g_free (mhz);
     }
+  {
+    const char *log_mode = logfl_tci_mode_to_log (st->mode);
+    if (log_mode)
+      select_mode_string (self, log_mode);
+  }
+  self->syncing_tci = FALSE;
+  update_wb4 (self);
 
   char *mhz_txt = st->vfo_hz > 0 ? fmt_freq (st->vfo_hz / 1e6) : g_strdup ("—");
   char *status = g_strdup_printf (
@@ -441,35 +427,6 @@ tci_schedule_connect (LogflWindow *self)
       g_timeout_add_seconds (TCI_RETRY_S, tci_connect_kick, self);
 }
 
-static void
-on_row_activate (GtkColumnView *view, guint position, gpointer user_data)
-{
-  (void) view;
-  LogflWindow *self = user_data;
-  if (!self->tci || !logfl_tci_client_is_ready (self->tci))
-    {
-      toast (self, "TCI not connected — cannot QSY");
-      return;
-    }
-  LogflQsoRow *row =
-      g_list_model_get_item (G_LIST_MODEL (self->rows), position);
-  if (!row)
-    return;
-  const LogflQso *q = logfl_qso_row_qso (row);
-  if (q->freq <= 0)
-    {
-      toast (self, "No frequency on this QSO");
-      g_object_unref (row);
-      return;
-    }
-  double hz = q->freq * 1e6;
-  logfl_tci_client_tune (self->tci, hz);
-  char *mhz = fmt_freq (q->freq);
-  toast (self, "QSY %s → %s MHz", q->call, mhz);
-  g_free (mhz);
-  g_object_unref (row);
-}
-
 /* --- entry row logic ---------------------------------------------------- */
 
 static void
@@ -604,103 +561,7 @@ clear_entry_row (LogflWindow *self)
   gtk_widget_grab_focus (self->call);
 }
 
-static void
-set_edit_ui (LogflWindow *self, gboolean on)
-{
-  if (self->log_btn)
-    gtk_button_set_label (GTK_BUTTON (self->log_btn),
-                          on ? "Save QSO" : "Log QSO");
-  if (self->cancel_edit_btn)
-    gtk_widget_set_visible (self->cancel_edit_btn, on);
-}
-
-static void
-exit_edit_mode (LogflWindow *self)
-{
-  g_clear_pointer (&self->editing, logfl_qso_free);
-  set_edit_ui (self, FALSE);
-}
-
-/* Fill the entry row from a stored QSO (edit mode). Band/mode/freq guards
- * avoid mid-band seeding and TCI feedback while we load. */
-static void
-load_qso_into_entry (LogflWindow *self, const LogflQso *q)
-{
-  self->syncing_tci = TRUE;
-  self->syncing_freq = TRUE;
-
-  gtk_editable_set_text (GTK_EDITABLE (self->call),
-                         q->call ? q->call : "");
-  gtk_editable_set_text (GTK_EDITABLE (self->rst_s),
-                         q->rst_sent ? q->rst_sent : "");
-  gtk_editable_set_text (GTK_EDITABLE (self->rst_r),
-                         q->rst_rcvd ? q->rst_rcvd : "");
-  select_band_string (self, q->band);
-  select_mode_string (self, q->mode);
-  if (q->freq > 0)
-    {
-      char *txt = fmt_freq (q->freq);
-      gtk_editable_set_text (GTK_EDITABLE (self->freq), txt);
-      g_free (txt);
-    }
-  else
-    gtk_editable_set_text (GTK_EDITABLE (self->freq), "");
-  gtk_editable_set_text (GTK_EDITABLE (self->name),
-                         q->name ? q->name : "");
-  gtk_editable_set_text (GTK_EDITABLE (self->comment),
-                         q->comment ? q->comment : "");
-
-  self->syncing_tci = FALSE;
-  self->syncing_freq = FALSE;
-  update_wb4 (self);
-}
-
-static void
-begin_edit_qso (LogflWindow *self, gint64 id)
-{
-  if (!self->store)
-    {
-      toast (self, "Log store is not open");
-      return;
-    }
-  if (self->pending)
-    {
-      toast (self, "Confirm the previous QSO first");
-      return;
-    }
-
-  GError *err = NULL;
-  LogflQso *q = logfl_store_get (self->store, id, &err);
-  if (!q)
-    {
-      toast (self, "Cannot edit: %s",
-             err ? err->message : "not found");
-      g_clear_error (&err);
-      return;
-    }
-
-  g_clear_pointer (&self->editing, logfl_qso_free);
-  self->editing = q;
-  load_qso_into_entry (self, q);
-  set_edit_ui (self, TRUE);
-  gtk_window_present (GTK_WINDOW (self));
-  gtk_widget_grab_focus (self->call);
-  toast (self, "Editing %s — Save or Cancel",
-         q->call ? q->call : "?");
-}
-
-static void
-cancel_edit_qso (LogflWindow *self)
-{
-  if (!self->editing)
-    return;
-  exit_edit_mode (self);
-  clear_entry_row (self);
-  toast (self, "Edit cancelled");
-}
-
-/* Resolve MHz for a new log (not used for edit — empty stays unset so the
- * operator can fill a missing freq from before the mid-band fix). */
+/* Resolve MHz for a new log: typed entry → live TCI VFO → band mid-point. */
 static double
 resolve_log_freq (LogflWindow *self, const char *band)
 {
@@ -720,9 +581,9 @@ resolve_log_freq (LogflWindow *self, const char *band)
   return mhz;
 }
 
-/* Apply editable entry fields onto q; leave id/ts/extras/QSL/etc. alone. */
+/* Apply entry-row fields onto a new QSO (timestamp, station, freq resolve). */
 static void
-apply_entry_to_qso (LogflWindow *self, LogflQso *q, gboolean is_new)
+apply_entry_to_qso (LogflWindow *self, LogflQso *q)
 {
   g_free (q->call);
   g_free (q->band);
@@ -740,63 +601,13 @@ apply_entry_to_qso (LogflWindow *self, LogflQso *q, gboolean is_new)
   q->name = g_strdup (entry_text (self->name));
   q->comment = g_strdup (entry_text (self->comment));
 
-  char *ftxt = g_strdup (entry_text (self->freq));
-  g_strdelimit (ftxt, ",", '.');
-  double mhz = g_ascii_strtod (ftxt, NULL);
-  g_free (ftxt);
-
-  if (is_new)
-    {
-      q->ts = g_get_real_time () / G_USEC_PER_SEC;
-      q->freq = resolve_log_freq (self, q->band);
-      g_free (q->station_callsign);
-      q->station_callsign = g_strdup (
-          self->settings.station_callsign && *self->settings.station_callsign
-              ? self->settings.station_callsign
-              : "OK1BR");
-    }
-  else
-    {
-      /* Edit: typed MHz wins; empty keeps previous (or 0 if it was NULL).
-       * Band mid-point only when both empty and still unset — so old
-       * band-only rows can be fixed by typing MHz without force-seeding. */
-      if (mhz > 0)
-        q->freq = mhz;
-      else if (q->freq <= 0 && q->band)
-        q->freq = logfl_adif_freq_for_band (q->band);
-    }
-}
-
-static void
-do_save_edit (LogflWindow *self)
-{
-  LogflQso *q = self->editing;
-  if (!q)
-    return;
-
-  const char *call = entry_text (self->call);
-  if (!call || !*call)
-    {
-      toast (self, "Callsign first");
-      gtk_widget_grab_focus (self->call);
-      return;
-    }
-
-  apply_entry_to_qso (self, q, FALSE);
-
-  GError *err = NULL;
-  if (logfl_store_update (self->store, q, &err))
-    {
-      toast (self, "Updated %s · %s · %s", q->call, q->band, q->mode);
-      exit_edit_mode (self);
-      clear_entry_row (self);
-      reload (self);
-    }
-  else
-    {
-      toast (self, "Not saved: %s", err->message);
-      g_clear_error (&err);
-    }
+  q->ts = g_get_real_time () / G_USEC_PER_SEC;
+  q->freq = resolve_log_freq (self, q->band);
+  g_free (q->station_callsign);
+  q->station_callsign = g_strdup (
+      self->settings.station_callsign && *self->settings.station_callsign
+          ? self->settings.station_callsign
+          : "OK1BR");
 }
 
 static void
@@ -842,13 +653,6 @@ log_qso (LogflWindow *self)
       return;
     }
 
-  /* Edit path: update in place; no dup dialog (same row). */
-  if (self->editing)
-    {
-      do_save_edit (self);
-      return;
-    }
-
   /* One pending confirm at a time — replacing pending would free the QSO
    * still owned by an open dialog. */
   if (self->pending)
@@ -866,7 +670,7 @@ log_qso (LogflWindow *self)
     }
 
   LogflQso *q = logfl_qso_new ();
-  apply_entry_to_qso (self, q, TRUE);
+  apply_entry_to_qso (self, q);
 
   gboolean dup = FALSE;
   logfl_store_dup_check (self->store, q->call, q->band, q->mode, q->ts,
@@ -1218,17 +1022,21 @@ esm_enter (LogflWindow *self)
     }
 }
 
-/* Enter in entry fields: ESM cycle when enabled, else log (or save edit). */
+/* Enter in entry fields: ESM cycle when enabled, else log. */
 static void
 on_entry_activate (LogflWindow *self)
 {
-  if (self->editing || self->esm_force_log || !self->settings.esm_enabled)
+  if (self->esm_force_log || !self->settings.esm_enabled)
     {
       log_qso (self);
       return;
     }
   esm_enter (self);
 }
+
+/* Forward: cancel inline cell edit (window Esc runs in CAPTURE before the
+ * entry controller, so Esc must be handled here while a cell is open). */
+static void cell_end_edit (GtkWidget *box, gboolean commit);
 
 static gboolean
 on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
@@ -1241,11 +1049,20 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
     return FALSE;
   if (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F8)
     {
+      /* Do not fire macros while typing in a cell. */
+      if (self->cell_edit_box)
+        return FALSE;
       macro_run (self, keyval - GDK_KEY_F1);
       return TRUE;
     }
   if (keyval == GDK_KEY_Escape)
     {
+      /* Prefer discard of inline edit over CW stop (second Esc still stops). */
+      if (self->cell_edit_box)
+        {
+          cell_end_edit (self->cell_edit_box, FALSE);
+          return TRUE;
+        }
       macro_run (self, LOGFL_MACRO_STOP_IDX);
       return TRUE;
     }
@@ -1324,7 +1141,7 @@ clock_tick (gpointer user_data)
   return G_SOURCE_CONTINUE;
 }
 
-/* --- delete ------------------------------------------------------------- */
+/* --- delete (confirm dialog; triggered from row context menu) ----------- */
 
 static void
 on_delete_response (GObject *source, GAsyncResult *res, gpointer user_data)
@@ -1343,11 +1160,6 @@ on_delete_response (GObject *source, GAsyncResult *res, gpointer user_data)
   if (logfl_store_delete (self->store, deleted_id, &err))
     {
       toast (self, "QSO deleted");
-      if (self->editing && self->editing->id == deleted_id)
-        {
-          exit_edit_mode (self);
-          clear_entry_row (self);
-        }
       reload (self);
     }
   else
@@ -1358,17 +1170,24 @@ on_delete_response (GObject *source, GAsyncResult *res, gpointer user_data)
   self->pending_delete_id = 0;
 }
 
+/* Confirm-delete the QSO last targeted by the row context menu. */
 static void
-on_delete_clicked (GtkButton *btn, gpointer user_data)
+confirm_delete_context_qso (LogflWindow *self)
 {
-  (void) btn;
-  LogflWindow *self = user_data;
-  if (self->delete_confirm_open)
+  if (self->delete_confirm_open || !self->store || self->context_qso_id <= 0)
     return;
-  LogflQsoRow *row = gtk_single_selection_get_selected_item (self->selection);
-  if (!row)
-    return;
-  const LogflQso *q = logfl_qso_row_qso (row);
+
+  GError *err = NULL;
+  LogflQso *q = logfl_store_get (self->store, self->context_qso_id, &err);
+  if (!q)
+    {
+      toast (self, "Cannot delete: %s",
+             err ? err->message : "not found");
+      g_clear_error (&err);
+      self->context_qso_id = 0;
+      return;
+    }
+
   self->pending_delete_id = q->id;
   self->delete_confirm_open = TRUE;
 
@@ -1380,6 +1199,8 @@ on_delete_clicked (GtkButton *btn, gpointer user_data)
       q->call, q->band, q->mode, when);
   g_free (when);
   g_date_time_unref (dt);
+  logfl_qso_free (q);
+
   adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg),
                                   "cancel", "Cancel", "delete", "Delete",
                                   NULL);
@@ -1391,18 +1212,11 @@ on_delete_clicked (GtkButton *btn, gpointer user_data)
 }
 
 static void
-on_edit_clicked (GtkButton *btn, gpointer user_data)
+act_delete_qso (GSimpleAction *action, GVariant *param, gpointer user_data)
 {
-  (void) btn;
-  LogflWindow *self = user_data;
-  LogflQsoRow *row = gtk_single_selection_get_selected_item (self->selection);
-  if (!row)
-    {
-      toast (self, "Select a QSO to edit");
-      return;
-    }
-  const LogflQso *q = logfl_qso_row_qso (row);
-  begin_edit_qso (self, q->id);
+  (void) action;
+  (void) param;
+  confirm_delete_context_qso (user_data);
 }
 
 /* --- ADIF import / export ---------------------------------------------- */
@@ -1896,18 +1710,528 @@ act_about (GSimpleAction *action, GVariant *param, gpointer user_data)
   adw_dialog_present (dlg, GTK_WIDGET (self));
 }
 
-/* --- QSO table ---------------------------------------------------------- */
+/* --- QSO table (inline cell edit via GtkEditableLabel) ----------------- */
+
+/* Display string for a column (caller frees). Matches what the cell shows. */
+static char *
+cell_display_text (int col, const LogflQso *q)
+{
+  switch (col)
+    {
+    case COL_UTC:
+      {
+        GDateTime *dt = g_date_time_new_from_unix_utc (q->ts);
+        char *s = g_date_time_format (dt, "%d.%m.%y %H:%M");
+        g_date_time_unref (dt);
+        return s;
+      }
+    case COL_CALL:
+      return g_strdup (q->call ? q->call : "");
+    case COL_BAND:
+      return g_strdup (q->band ? q->band : "");
+    case COL_FREQ:
+      return fmt_freq (q->freq);
+    case COL_MODE:
+      if (q->submode && *q->submode)
+        return g_strdup_printf ("%s/%s",
+                                q->mode ? q->mode : "", q->submode);
+      return g_strdup (q->mode ? q->mode : "");
+    case COL_RST:
+      return g_strdup_printf ("%s/%s",
+                              q->rst_sent && *q->rst_sent ? q->rst_sent : "—",
+                              q->rst_rcvd && *q->rst_rcvd ? q->rst_rcvd : "—");
+    case COL_NAME:
+      return g_strdup (q->name ? q->name : "");
+    case COL_COMMENT:
+      return g_strdup (q->comment ? q->comment : "");
+    default:
+      return g_strdup ("");
+    }
+}
+
+/* True if s is empty or a placeholder dash (ASCII or em dash). */
+static gboolean
+rst_part_empty (const char *s)
+{
+  if (!s || !*s)
+    return TRUE;
+  if (strcmp (s, "-") == 0 || strcmp (s, "—") == 0 || strcmp (s, "–") == 0)
+    return TRUE;
+  return FALSE;
+}
+
+/* Apply one cell's text onto q. On failure sets error and leaves q partially
+ * modified only for the fields that were assigned before the failure — caller
+ * should discard q (we always work on a store_get copy). */
+static gboolean
+apply_cell_to_qso (LogflQso *q, int col, const char *raw, GError **error)
+{
+  char *text = g_strdup (raw ? raw : "");
+  g_strstrip (text);
+
+  switch (col)
+    {
+    case COL_UTC:
+      {
+        int d = 0, m = 0, y = 0, H = 0, M = 0;
+        if (sscanf (text, "%d.%d.%d %d:%d", &d, &m, &y, &H, &M) != 5)
+          {
+            g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
+                         "UTC must be DD.MM.YY HH:MM");
+            g_free (text);
+            return FALSE;
+          }
+        if (y < 100)
+          y += 2000;
+        if (m < 1 || m > 12 || d < 1 || d > 31 || H < 0 || H > 23
+            || M < 0 || M > 59)
+          {
+            g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
+                         "invalid UTC date/time");
+            g_free (text);
+            return FALSE;
+          }
+        GDateTime *dt = g_date_time_new_utc (y, m, d, H, M, 0);
+        if (!dt)
+          {
+            g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
+                         "invalid UTC date/time");
+            g_free (text);
+            return FALSE;
+          }
+        q->ts = g_date_time_to_unix (dt);
+        g_date_time_unref (dt);
+        break;
+      }
+    case COL_CALL:
+      if (!*text)
+        {
+          g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
+                       "callsign required");
+          g_free (text);
+          return FALSE;
+        }
+      g_free (q->call);
+      q->call = g_steal_pointer (&text);
+      break;
+    case COL_BAND:
+      if (!*text)
+        {
+          g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
+                       "band required");
+          g_free (text);
+          return FALSE;
+        }
+      g_free (q->band);
+      q->band = g_steal_pointer (&text);
+      break;
+    case COL_FREQ:
+      {
+        if (!*text)
+          {
+            q->freq = 0;
+            break;
+          }
+        g_strdelimit (text, ",", '.');
+        char *end = NULL;
+        double mhz = g_ascii_strtod (text, &end);
+        if (end == text || mhz < 0)
+          {
+            g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
+                         "invalid frequency");
+            g_free (text);
+            return FALSE;
+          }
+        q->freq = mhz;
+        break;
+      }
+    case COL_MODE:
+      {
+        if (!*text)
+          {
+            g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
+                         "mode required");
+            g_free (text);
+            return FALSE;
+          }
+        char *slash = strchr (text, '/');
+        g_free (q->mode);
+        g_free (q->submode);
+        if (slash && slash != text && slash[1])
+          {
+            *slash = '\0';
+            q->mode = g_strdup (text);
+            q->submode = g_strdup (slash + 1);
+            g_strstrip (q->mode);
+            g_strstrip (q->submode);
+          }
+        else
+          {
+            q->mode = g_steal_pointer (&text);
+            q->submode = NULL;
+          }
+        break;
+      }
+    case COL_RST:
+      {
+        char *slash = strchr (text, '/');
+        char *sent = text;
+        char *rcvd = NULL;
+        if (slash)
+          {
+            *slash = '\0';
+            rcvd = slash + 1;
+            g_strstrip (sent);
+            g_strstrip (rcvd);
+          }
+        g_free (q->rst_sent);
+        g_free (q->rst_rcvd);
+        q->rst_sent = rst_part_empty (sent) ? NULL : g_strdup (sent);
+        q->rst_rcvd = rst_part_empty (rcvd) ? NULL : g_strdup (rcvd);
+        break;
+      }
+    case COL_NAME:
+      g_free (q->name);
+      q->name = *text ? g_steal_pointer (&text) : NULL;
+      break;
+    case COL_COMMENT:
+      g_free (q->comment);
+      q->comment = *text ? g_steal_pointer (&text) : NULL;
+      break;
+    default:
+      g_free (text);
+      return TRUE;
+    }
+
+  g_free (text);
+  return TRUE;
+}
+
+static guint
+row_position (LogflWindow *self, LogflQsoRow *row)
+{
+  if (!self->rows || !row)
+    return GTK_INVALID_LIST_POSITION;
+  guint n = g_list_model_get_n_items (G_LIST_MODEL (self->rows));
+  for (guint i = 0; i < n; i++)
+    {
+      LogflQsoRow *r = g_list_model_get_item (G_LIST_MODEL (self->rows), i);
+      gboolean match = (r == row);
+      g_clear_object (&r);
+      if (match)
+        return i;
+    }
+  return GTK_INVALID_LIST_POSITION;
+}
+
+/* Commit edited cell text to the store and update the in-memory row.
+ * Does NOT emit list items-changed — caller paints the cell first, then
+ * may notify the model so sibling columns rebind cleanly. */
+static gboolean
+commit_cell_edit (LogflWindow *self, LogflQsoRow *row, int col,
+                  const char *new_text, gboolean *out_changed)
+{
+  if (out_changed)
+    *out_changed = FALSE;
+  if (!self || !self->store || !row)
+    return FALSE;
+
+  const LogflQso *cur = logfl_qso_row_qso (row);
+  if (!cur || cur->id <= 0)
+    return FALSE;
+
+  char *old_disp = cell_display_text (col, cur);
+  char *nt_strip = g_strdup (new_text ? new_text : "");
+  g_strstrip (nt_strip);
+  gboolean same = (g_strcmp0 (old_disp, nt_strip) == 0);
+  g_free (old_disp);
+  g_free (nt_strip);
+  if (same)
+    return TRUE;
+
+  GError *err = NULL;
+  LogflQso *q = logfl_store_get (self->store, cur->id, &err);
+  if (!q)
+    {
+      toast (self, "Edit failed: %s",
+             err ? err->message : "not found");
+      g_clear_error (&err);
+      return FALSE;
+    }
+
+  if (!apply_cell_to_qso (q, col, new_text, &err))
+    {
+      toast (self, "Not saved: %s", err->message);
+      g_clear_error (&err);
+      logfl_qso_free (q);
+      return FALSE;
+    }
+
+  if (!logfl_store_update (self->store, q, &err))
+    {
+      toast (self, "Not saved: %s", err->message);
+      g_clear_error (&err);
+      logfl_qso_free (q);
+      return FALSE;
+    }
+
+  logfl_qso_row_replace (row, q);
+  if (out_changed)
+    *out_changed = TRUE;
+
+  LogflStoreStats st;
+  if (logfl_store_stats (self->store, &st, NULL))
+    {
+      char *sub = g_strdup_printf ("%u QSO · %u calls", st.n_qso, st.n_calls);
+      adw_window_title_set_subtitle (self->title, sub);
+      g_free (sub);
+    }
+  return TRUE;
+}
+
+/* Cell root is a GtkBox with a display GtkLabel + a hidden GtkEntry.
+ * No row selection model — single click does nothing useful; double-click
+ * opens the entry. (GtkEditableLabel was worse: it stole the first click.) */
+
+static GtkWidget *
+cell_label (GtkWidget *box)
+{
+  return g_object_get_data (G_OBJECT (box), "logfl-label");
+}
+
+static GtkWidget *
+cell_entry (GtkWidget *box)
+{
+  return g_object_get_data (G_OBJECT (box), "logfl-entry");
+}
+
+static gboolean
+cell_is_editing (GtkWidget *box)
+{
+  GtkWidget *entry = cell_entry (box);
+  return entry && gtk_widget_get_visible (entry);
+}
+
+static void
+cell_show_label (GtkWidget *box)
+{
+  GtkWidget *label = cell_label (box);
+  GtkWidget *entry = cell_entry (box);
+  if (entry)
+    gtk_widget_set_visible (entry, FALSE);
+  if (label)
+    gtk_widget_set_visible (label, TRUE);
+}
+
+static void
+cell_set_display (GtkWidget *box, const char *txt)
+{
+  GtkWidget *label = cell_label (box);
+  if (label)
+    gtk_label_set_text (GTK_LABEL (label), txt ? txt : "");
+}
+
+static void
+cell_end_edit (GtkWidget *box, gboolean commit)
+{
+  if (!cell_is_editing (box))
+    return;
+
+  LogflWindow *self = g_object_get_data (G_OBJECT (box), "logfl-win");
+  LogflQsoRow *row = g_object_get_data (G_OBJECT (box), "logfl-row");
+  int col = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (box), "logfl-col"));
+  GtkWidget *entry = cell_entry (box);
+
+  /* Leave edit mode in the window tracker first so CAPTURE Esc / F-keys
+   * and list rebind do not treat this cell as still open. */
+  if (self && self->cell_edit_box == box)
+    self->cell_edit_box = NULL;
+
+  gboolean changed = FALSE;
+  if (commit && self && row && entry)
+    {
+      const char *text = gtk_editable_get_text (GTK_EDITABLE (entry));
+      if (!commit_cell_edit (self, row, col, text, &changed))
+        {
+          /* Failed — keep previous stored value on the label. */
+        }
+    }
+
+  /* Always paint the label from the (possibly updated) row *now*, then
+   * swap entry → label. Do not wait for list items-changed / rebind. */
+  if (row)
+    {
+      char *txt = cell_display_text (col, logfl_qso_row_qso (row));
+      cell_set_display (box, txt);
+      g_free (txt);
+    }
+  cell_show_label (box);
+
+  /* Refresh the whole row so sibling cells stay in sync with the store
+   * (only after this cell is no longer "editing"). */
+  if (changed && self && row)
+    {
+      guint pos = row_position (self, row);
+      if (pos != GTK_INVALID_LIST_POSITION)
+        g_list_model_items_changed (G_LIST_MODEL (self->rows), pos, 1, 1);
+    }
+}
+
+static void
+cell_begin_edit (GtkWidget *box)
+{
+  LogflWindow *self = g_object_get_data (G_OBJECT (box), "logfl-win");
+  LogflQsoRow *row = g_object_get_data (G_OBJECT (box), "logfl-row");
+  int col = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (box), "logfl-col"));
+  GtkWidget *label = cell_label (box);
+  GtkWidget *entry = cell_entry (box);
+  if (!row || !entry || !label)
+    return;
+  if (cell_is_editing (box))
+    return;
+
+  /* One cell at a time — commit the previous if any. */
+  if (self && self->cell_edit_box && self->cell_edit_box != box)
+    cell_end_edit (self->cell_edit_box, TRUE);
+
+  char *txt = cell_display_text (col, logfl_qso_row_qso (row));
+  gtk_editable_set_text (GTK_EDITABLE (entry), txt ? txt : "");
+  g_free (txt);
+
+  gtk_widget_set_visible (label, FALSE);
+  gtk_widget_set_visible (entry, TRUE);
+  if (self)
+    self->cell_edit_box = box;
+  gtk_widget_grab_focus (entry);
+  gtk_editable_select_region (GTK_EDITABLE (entry), 0, -1);
+}
+
+/* Idle: commit when focus left the entry (not on Enter — already handled). */
+static gboolean
+cell_end_edit_idle (gpointer data)
+{
+  GtkWidget *box = data;
+  if (!cell_is_editing (box))
+    return G_SOURCE_REMOVE;
+  GtkWidget *entry = cell_entry (box);
+  if (entry && gtk_widget_has_focus (entry))
+    return G_SOURCE_REMOVE;
+  cell_end_edit (box, TRUE);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+on_cell_entry_activate (GtkEntry *entry, gpointer user_data)
+{
+  (void) entry;
+  cell_end_edit (user_data, TRUE);
+}
+
+static void
+on_cell_entry_focus_leave (GtkEventControllerFocus *ctl, gpointer user_data)
+{
+  (void) ctl;
+  GtkWidget *box = user_data;
+  if (!cell_is_editing (box))
+    return;
+  /* Defer so activate/Escape handlers run first. */
+  g_idle_add (cell_end_edit_idle, box);
+}
+
+static gboolean
+on_cell_entry_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
+                   GdkModifierType state, gpointer user_data)
+{
+  (void) ctl;
+  (void) keycode;
+  (void) state;
+  if (keyval == GDK_KEY_Escape)
+    {
+      cell_end_edit (user_data, FALSE);
+      return TRUE;
+    }
+  return FALSE;
+}
+
+/* Double-click only — no row select / highlight on single click. */
+static void
+on_cell_click (GtkGestureClick *gesture, gint n_press, gdouble x, gdouble y,
+               gpointer user_data)
+{
+  (void) x;
+  (void) y;
+  if (n_press != 2)
+    return;
+  GtkWidget *box = user_data;
+  if (!g_object_get_data (G_OBJECT (box), "logfl-row"))
+    return;
+  gtk_gesture_set_state (GTK_GESTURE (gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+  cell_begin_edit (box);
+}
 
 static void
 col_setup (GtkSignalListItemFactory *factory, GObject *object,
            gpointer user_data)
 {
-  (void) factory;
-  (void) user_data;
-  GtkWidget *label = gtk_label_new (NULL);
-  gtk_label_set_xalign (GTK_LABEL (label), 0);
+  int col = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (factory), "col"));
+  LogflWindow *self = user_data;
+  GtkListItem *item = GTK_LIST_ITEM (object);
+
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_set_hexpand (box, TRUE);
+  gtk_widget_set_valign (box, GTK_ALIGN_CENTER);
+  gtk_widget_add_css_class (box, "logfl-cell");
+
+  GtkWidget *label = gtk_label_new ("");
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
   gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
-  gtk_list_item_set_child (GTK_LIST_ITEM (object), label);
+  gtk_widget_set_hexpand (label, TRUE);
+  gtk_widget_set_halign (label, GTK_ALIGN_FILL);
+  gtk_widget_set_valign (label, GTK_ALIGN_CENTER);
+
+  GtkWidget *entry = gtk_entry_new ();
+  gtk_widget_set_hexpand (entry, TRUE);
+  gtk_widget_set_valign (entry, GTK_ALIGN_CENTER);
+  gtk_widget_set_visible (entry, FALSE);
+  /* Flat, compact — match label row height instead of a full form entry. */
+  gtk_entry_set_has_frame (GTK_ENTRY (entry), FALSE);
+  gtk_widget_add_css_class (entry, "flat");
+  gtk_widget_add_css_class (entry, "logfl-cell-edit");
+
+  gtk_box_append (GTK_BOX (box), label);
+  gtk_box_append (GTK_BOX (box), entry);
+
+  g_object_set_data (G_OBJECT (box), "logfl-win", self);
+  g_object_set_data (G_OBJECT (box), "logfl-col", GINT_TO_POINTER (col));
+  g_object_set_data (G_OBJECT (box), "logfl-label", label);
+  g_object_set_data (G_OBJECT (box), "logfl-entry", entry);
+
+  g_signal_connect (entry, "activate",
+                    G_CALLBACK (on_cell_entry_activate), box);
+
+  GtkEventController *focus = gtk_event_controller_focus_new ();
+  g_signal_connect (focus, "leave",
+                    G_CALLBACK (on_cell_entry_focus_leave), box);
+  gtk_widget_add_controller (entry, focus);
+
+  GtkEventController *keys = gtk_event_controller_key_new ();
+  g_signal_connect (keys, "key-pressed",
+                    G_CALLBACK (on_cell_entry_key), box);
+  gtk_widget_add_controller (entry, keys);
+
+  /* Gesture on the box (covers the label). n_press==1 is not claimed so
+   * GtkColumnView can select the row. */
+  GtkGesture *click = gtk_gesture_click_new ();
+  gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (click),
+                                 GDK_BUTTON_PRIMARY);
+  g_signal_connect (click, "pressed", G_CALLBACK (on_cell_click), box);
+  gtk_widget_add_controller (box, GTK_EVENT_CONTROLLER (click));
+
+  /* No focus / select / activate — only double-click gesture edits. */
+  gtk_list_item_set_focusable (item, FALSE);
+  gtk_list_item_set_selectable (item, FALSE);
+  gtk_list_item_set_activatable (item, FALSE);
+  gtk_list_item_set_child (item, box);
 }
 
 static void
@@ -1917,64 +2241,101 @@ col_bind (GtkSignalListItemFactory *factory, GObject *object,
   (void) user_data;
   int col = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (factory), "col"));
   GtkListItem *item = GTK_LIST_ITEM (object);
-  GtkLabel *label = GTK_LABEL (gtk_list_item_get_child (item));
-  const LogflQso *q = logfl_qso_row_qso (gtk_list_item_get_item (item));
-  char *tmp = NULL;
+  GtkWidget *box = gtk_list_item_get_child (item);
+  LogflQsoRow *row = gtk_list_item_get_item (item);
+  if (!box || !row)
+    return;
 
-  switch (col)
-    {
-    case COL_UTC:
-      {
-        GDateTime *dt = g_date_time_new_from_unix_utc (q->ts);
-        tmp = g_date_time_format (dt, "%d.%m.%y %H:%M");
-        g_date_time_unref (dt);
-        gtk_label_set_text (label, tmp);
-        break;
-      }
-    case COL_CALL:
-      gtk_label_set_text (label, q->call);
-      break;
-    case COL_BAND:
-      gtk_label_set_text (label, q->band);
-      break;
-    case COL_FREQ:
-      tmp = fmt_freq (q->freq);
-      gtk_label_set_text (label, tmp);
-      break;
-    case COL_MODE:
-      if (q->submode && *q->submode)
-        tmp = g_strdup_printf ("%s/%s", q->mode, q->submode);
-      gtk_label_set_text (label, tmp ? tmp : q->mode);
-      break;
-    case COL_RST:
-      tmp = g_strdup_printf ("%s/%s",
-                             q->rst_sent ? q->rst_sent : "—",
-                             q->rst_rcvd ? q->rst_rcvd : "—");
-      gtk_label_set_text (label, tmp);
-      break;
-    case COL_NAME:
-      gtk_label_set_text (label, q->name ? q->name : "");
-      break;
-    case COL_COMMENT:
-      gtk_label_set_text (label, q->comment ? q->comment : "");
-      break;
-    }
-  g_free (tmp);
+  g_object_set_data (G_OBJECT (box), "logfl-row", row);
+  g_object_set_data (G_OBJECT (box), "logfl-col", GINT_TO_POINTER (col));
+
+  if (cell_is_editing (box))
+    return;
+
+  char *txt = cell_display_text (col, logfl_qso_row_qso (row));
+  cell_set_display (box, txt);
+  g_free (txt);
 }
 
 static void
+col_unbind (GtkSignalListItemFactory *factory, GObject *object,
+            gpointer user_data)
+{
+  (void) factory;
+  (void) user_data;
+  GtkListItem *item = GTK_LIST_ITEM (object);
+  GtkWidget *box = gtk_list_item_get_child (item);
+  if (!box)
+    return;
+
+  /* Scroll-away while editing: commit what we have. */
+  if (cell_is_editing (box))
+    cell_end_edit (box, TRUE);
+
+  g_object_set_data (G_OBJECT (box), "logfl-row", NULL);
+}
+
+/* fixed_w > 0: preferred column width (px). expand: share leftover space. */
+static void
 add_column (GtkColumnView *view, const char *title, int col,
-            gboolean expand)
+            int fixed_w, gboolean expand, LogflWindow *self)
 {
   GtkListItemFactory *factory = gtk_signal_list_item_factory_new ();
   g_object_set_data (G_OBJECT (factory), "col", GINT_TO_POINTER (col));
-  g_signal_connect (factory, "setup", G_CALLBACK (col_setup), NULL);
-  g_signal_connect (factory, "bind", G_CALLBACK (col_bind), NULL);
+  g_signal_connect (factory, "setup", G_CALLBACK (col_setup), self);
+  g_signal_connect (factory, "bind", G_CALLBACK (col_bind), self);
+  g_signal_connect (factory, "unbind", G_CALLBACK (col_unbind), self);
   GtkColumnViewColumn *c = gtk_column_view_column_new (title, factory);
   gtk_column_view_column_set_resizable (c, TRUE);
+  if (fixed_w > 0)
+    gtk_column_view_column_set_fixed_width (c, fixed_w);
   gtk_column_view_column_set_expand (c, expand);
   gtk_column_view_append_column (view, c);
   g_object_unref (c);
+}
+
+/* App-wide CSS for the QSO table: airier rows, compact inline entry so
+ * double-click edit does not jump the row height. */
+static void
+ensure_table_css (void)
+{
+  static gboolean loaded = FALSE;
+  if (loaded)
+    return;
+  loaded = TRUE;
+
+  const char *css =
+      "columnview.data-table listview > row {\n"
+      "  min-height: 2.6em;\n"
+      "}\n"
+      "columnview.data-table listview > row > cell {\n"
+      "  padding: 6px 10px;\n"
+      "}\n"
+      "columnview.data-table .logfl-cell {\n"
+      "  min-height: 1.8em;\n"
+      "}\n"
+      "columnview.data-table entry.logfl-cell-edit {\n"
+      "  min-height: 1.8em;\n"
+      "  padding-top: 2px;\n"
+      "  padding-bottom: 2px;\n"
+      "  padding-left: 4px;\n"
+      "  padding-right: 4px;\n"
+      "  margin: 0;\n"
+      "  border-radius: 4px;\n"
+      "  outline-offset: -1px;\n"
+      "}\n"
+      "columnview.data-table .logfl-cell label {\n"
+      "  margin: 0;\n"
+      "  padding: 2px 0;\n"
+      "}\n";
+
+  GtkCssProvider *prov = gtk_css_provider_new ();
+  gtk_css_provider_load_from_string (prov, css);
+  gtk_style_context_add_provider_for_display (
+      gdk_display_get_default (),
+      GTK_STYLE_PROVIDER (prov),
+      GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+  g_object_unref (prov);
 }
 
 /* --- construction ------------------------------------------------------- */
@@ -2052,11 +2413,10 @@ logfl_window_dispose (GObject *obj)
       self->tci = NULL;
     }
   g_clear_pointer (&self->pending, logfl_qso_free);
-  g_clear_pointer (&self->editing, logfl_qso_free);
   g_clear_pointer (&self->store_open_error, g_free);
   self->search = NULL;
-  self->delete_btn = NULL;
-  self->edit_btn = NULL;
+  self->table_view = NULL;
+  self->cell_edit_box = NULL;
   /* Drop our refs; the column view may still hold one on selection until
    * the widget tree is torn down. */
   g_clear_object (&self->selection);
@@ -2078,35 +2438,107 @@ static const GActionEntry win_actions[] = {
   { .name = "export", .activate = act_export },
   { .name = "preferences", .activate = act_preferences },
   { .name = "about", .activate = act_about },
+  { .name = "delete-qso", .activate = act_delete_qso },
 };
 
-/* QSO table + search/edit/delete bar — sits under the macro strip. */
+/* Resolve LogflQsoRow under view coordinates (cells carry "logfl-row"). */
+static LogflQsoRow *
+row_from_pick (GtkWidget *root, double x, double y)
+{
+  GtkWidget *w = gtk_widget_pick (root, x, y, GTK_PICK_DEFAULT);
+  while (w != NULL && w != root)
+    {
+      LogflQsoRow *row = g_object_get_data (G_OBJECT (w), "logfl-row");
+      if (row)
+        return row;
+      w = gtk_widget_get_parent (w);
+    }
+  return NULL;
+}
+
+static void
+on_row_context_closed (GtkPopover *popover, gpointer user_data)
+{
+  (void) user_data;
+  gtk_widget_unparent (GTK_WIDGET (popover));
+}
+
+/* Right-click on a table row: remember it and offer Delete (no row select). */
+static void
+on_table_right_click (GtkGestureClick *gesture, gint n_press,
+                      gdouble x, gdouble y, gpointer user_data)
+{
+  if (n_press != 1)
+    return;
+
+  LogflWindow *self = user_data;
+  GtkWidget *view =
+      gtk_event_controller_get_widget (GTK_EVENT_CONTROLLER (gesture));
+  LogflQsoRow *row = row_from_pick (view, x, y);
+  if (!row)
+    return;
+
+  const LogflQso *q = logfl_qso_row_qso (row);
+  self->context_qso_id = q && q->id > 0 ? q->id : 0;
+  if (self->context_qso_id <= 0)
+    return;
+
+  GMenu *menu = g_menu_new ();
+  g_menu_append (menu, "Delete QSO…", "win.delete-qso");
+
+  GtkWidget *popover = gtk_popover_menu_new_from_model (G_MENU_MODEL (menu));
+  g_object_unref (menu);
+  gtk_widget_set_parent (popover, view);
+  gtk_popover_set_has_arrow (GTK_POPOVER (popover), FALSE);
+  gtk_popover_set_pointing_to (
+      GTK_POPOVER (popover),
+      &(const GdkRectangle){ (int) x, (int) y, 1, 1 });
+  g_signal_connect (popover, "closed",
+                    G_CALLBACK (on_row_context_closed), NULL);
+  gtk_gesture_set_state (GTK_GESTURE (gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+  gtk_popover_popup (GTK_POPOVER (popover));
+}
+
+/* QSO table + search bar — sits under the macro strip. */
 static GtkWidget *
 build_qso_table (LogflWindow *self)
 {
   self->rows = g_list_store_new (LOGFL_TYPE_QSO_ROW);
-  self->selection =
-      gtk_single_selection_new (G_LIST_MODEL (g_object_ref (self->rows)));
-  gtk_single_selection_set_autoselect (self->selection, FALSE);
+  /* No selection highlight — single click must not flash or fight edit. */
+  self->selection = GTK_SELECTION_MODEL (
+      gtk_no_selection_new (G_LIST_MODEL (g_object_ref (self->rows))));
 
-  GtkWidget *view = gtk_column_view_new (GTK_SELECTION_MODEL (self->selection));
+  ensure_table_css ();
+
+  GtkWidget *view = gtk_column_view_new (self->selection);
+  self->table_view = view;
   gtk_widget_add_css_class (view, "data-table");
-  g_signal_connect (view, "activate", G_CALLBACK (on_row_activate), self);
-  add_column (GTK_COLUMN_VIEW (view), "UTC", COL_UTC, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "Call", COL_CALL, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "Band", COL_BAND, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "MHz", COL_FREQ, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "Mode", COL_MODE, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "RST", COL_RST, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "Name", COL_NAME, FALSE);
-  add_column (GTK_COLUMN_VIEW (view), "Comment", COL_COMMENT, TRUE);
+  gtk_column_view_set_single_click_activate (GTK_COLUMN_VIEW (view), FALSE);
+  gtk_column_view_set_show_row_separators (GTK_COLUMN_VIEW (view), TRUE);
+  gtk_widget_set_tooltip_text (
+      view,
+      "Double-click a cell to edit. Right-click a row to delete.");
+  /* Preferred widths keep short fields readable; Name/Comment expand. */
+  add_column (GTK_COLUMN_VIEW (view), "UTC", COL_UTC, 128, FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "Call", COL_CALL, 100, FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "Band", COL_BAND, 64, FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "MHz", COL_FREQ, 92, FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "Mode", COL_MODE, 88, FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "RST", COL_RST, 96, FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "Name", COL_NAME, 120, TRUE, self);
+  add_column (GTK_COLUMN_VIEW (view), "Comment", COL_COMMENT, 160, TRUE, self);
+
+  GtkGesture *rb = GTK_GESTURE (gtk_gesture_click_new ());
+  gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (rb), GDK_BUTTON_SECONDARY);
+  g_signal_connect (rb, "pressed", G_CALLBACK (on_table_right_click), self);
+  gtk_widget_add_controller (view, GTK_EVENT_CONTROLLER (rb));
 
   GtkWidget *scroller = gtk_scrolled_window_new ();
   gtk_widget_set_vexpand (scroller, TRUE);
   gtk_widget_set_hexpand (scroller, TRUE);
   gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), view);
   gtk_scrolled_window_set_min_content_height (GTK_SCROLLED_WINDOW (scroller),
-                                              180);
+                                              280);
 
   self->search = gtk_search_entry_new ();
   gtk_search_entry_set_placeholder_text (GTK_SEARCH_ENTRY (self->search),
@@ -2115,23 +2547,8 @@ build_qso_table (LogflWindow *self)
   g_signal_connect_swapped (self->search, "search-changed",
                             G_CALLBACK (on_search_changed), self);
 
-  self->edit_btn =
-      gtk_button_new_from_icon_name ("document-edit-symbolic");
-  gtk_widget_set_tooltip_text (self->edit_btn,
-                               "Edit selected QSO in the entry row "
-                               "(double-click QSYs)");
-  g_signal_connect (self->edit_btn, "clicked",
-                    G_CALLBACK (on_edit_clicked), self);
-
-  self->delete_btn = gtk_button_new_from_icon_name ("user-trash-symbolic");
-  gtk_widget_set_tooltip_text (self->delete_btn, "Delete selected QSO");
-  g_signal_connect (self->delete_btn, "clicked",
-                    G_CALLBACK (on_delete_clicked), self);
-
   GtkWidget *tools = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_box_append (GTK_BOX (tools), self->search);
-  gtk_box_append (GTK_BOX (tools), self->edit_btn);
-  gtk_box_append (GTK_BOX (tools), self->delete_btn);
 
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
   gtk_widget_set_vexpand (box, TRUE);
@@ -2144,8 +2561,8 @@ static void
 logfl_window_init (LogflWindow *self)
 {
   gtk_window_set_title (GTK_WINDOW (self), "Log for Linux");
-  /* Entry + macros + QSO table in one window. */
-  gtk_window_set_default_size (GTK_WINDOW (self), 1100, 700);
+  /* Entry + macros + QSO table — wide enough for fixed column prefs. */
+  gtk_window_set_default_size (GTK_WINDOW (self), 1200, 760);
   g_action_map_add_action_entries (G_ACTION_MAP (self), win_actions,
                                    G_N_ELEMENTS (win_actions), self);
 
@@ -2228,12 +2645,6 @@ logfl_window_init (LogflWindow *self)
   g_signal_connect_swapped (self->log_btn, "clicked",
                             G_CALLBACK (log_qso), self);
 
-  self->cancel_edit_btn = gtk_button_new_with_label ("Cancel");
-  gtk_widget_set_valign (self->cancel_edit_btn, GTK_ALIGN_END);
-  gtk_widget_set_visible (self->cancel_edit_btn, FALSE);
-  g_signal_connect_swapped (self->cancel_edit_btn, "clicked",
-                            G_CALLBACK (cancel_edit_qso), self);
-
   GtkWidget *fields = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_box_append (GTK_BOX (fields), labeled ("Call", self->call));
   gtk_box_append (GTK_BOX (fields), labeled ("RST s", self->rst_s));
@@ -2243,7 +2654,6 @@ logfl_window_init (LogflWindow *self)
   gtk_box_append (GTK_BOX (fields), labeled ("MHz", self->freq));
   gtk_box_append (GTK_BOX (fields), labeled ("Name", self->name));
   gtk_box_append (GTK_BOX (fields), labeled ("Comment", self->comment));
-  gtk_box_append (GTK_BOX (fields), self->cancel_edit_btn);
   gtk_box_append (GTK_BOX (fields), self->log_btn);
 
   /* Worked-B4 stays with the entry row (depends on call/band/mode). */

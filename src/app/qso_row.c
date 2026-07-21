@@ -44,3 +44,20 @@ logfl_qso_row_qso (LogflQsoRow *row)
 {
   return row->qso;
 }
+
+LogflQso *
+logfl_qso_row_qso_mut (LogflQsoRow *row)
+{
+  return row->qso;
+}
+
+void
+logfl_qso_row_replace (LogflQsoRow *row, LogflQso *qso)
+{
+  g_return_if_fail (LOGFL_IS_QSO_ROW (row));
+  g_return_if_fail (qso != NULL);
+  if (row->qso == qso)
+    return;
+  g_clear_pointer (&row->qso, logfl_qso_free);
+  row->qso = qso;
+}

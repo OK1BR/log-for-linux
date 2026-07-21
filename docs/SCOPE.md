@@ -128,30 +128,32 @@ importing someone's log and exporting it again must never silently drop data.
   same call+band+mode duplicate asks first (default Cancel). Table is a
   QSO table lives **in the main window under the macro strip** —
   virtualized GtkColumnView (newest first), search with 250 ms debounce,
-  edit + destructive-confirm delete; footer holds UTC + TCI status.
+  inline cell edit + right-click delete (confirm); footer holds UTC + TCI
+  status.
   ADIF import/export via GtkFileDialog + GFile I/O with a result toast;
   import dedup is exact-timestamp only; QSO+calls counters in both window
   subtitles. Store open failure surfaces a dialog instead of aborting.
 - **M4 — TCI integration. CODE LANDED 2026-07-21 (offline gate green).**
   Connect to `sdr-for-linux` (`ws://127.0.0.1:40001`), entry row pre-fills
-  freq/mode from the live VFO, double-click on a logged QSO → QSY.
+  freq/mode from the live VFO. Table-driven QSY was tried and dropped
+  (2026-07-21): not useful enough for a toolbar control; double-click is
+  reserved for inline cell edit.
   Gate: `log-tci-test` — mock TCI server (skimmer house pattern); live check
   against the real radio when available.
   Done as `src/engine/tci_client.c` (libwebsockets, text plane only — no IQ):
-  handshake to `ready;`, track `vfo`/`modulation`/`device`/`protocol`, explicit
-  `tune()` for QSY, mode map into the logbook dropdown (cw→CW, usb/lsb→SSB,
-  digu/digl→FT8, …). UI (`win.c`): background connect + 5 s reconnect, status
-  line next to the UTC clock, auto-prefill of MHz/band/mode from the radio,
-  double-click / activate on a table row QSYs when frequency is set. TCI
-  host/port (and station callsign) live in Preferences → GKeyFile
+  handshake to `ready;`, track `vfo`/`modulation`/`device`/`protocol`,
+  `tune()` kept in the engine API for possible later use, mode map into the
+  logbook dropdown (cw→CW, usb/lsb→SSB, digu/digl→FT8, …). UI (`win.c`):
+  background connect + 5 s reconnect, status line next to the UTC clock,
+  auto-prefill of MHz/band/mode from the radio. TCI host/port (and station
+  callsign) live in Preferences → GKeyFile
   `~/.config/log-for-linux/settings.ini` (`src/app/settings.c`, skimmer/sdr
   house style: `AdwPreferencesDialog`, save on dialog close; host/port change
   reconnects immediately). Entry window has an N1MM-inspired **macro bar v1**
   (F1–F8 + Esc stop): fixed CQ/EXCH/TU/MY/HIS/AGN/QRZ/STOP with `{MYCALL}`
   `{CALL}` `{RST}` expansion; CW text via TCI `cw_macros` to sdr-for-linux
   when connected. Full editable macros / Run·S&P / ESM → **M5**. The logbook
-  never changes radio state except explicit user QSY and those
-  operator-triggered CW macros.
+  never changes radio state except operator-triggered CW macros.
 - **M5 — macros v2 (contest-style messaging). IMPLEMENTED 2026-07-21
   (offline gate green).** Grew the F-key strip into a messaging layer
   (inspired by N1MM+, not a clone). Done:
@@ -184,15 +186,19 @@ importing someone's log and exporting it again must never silently drop data.
   (`lotwreport.adi`) and mark QSLs; eQSL upload + inbox; Club Log upload.
   Per-QSO sent/confirmed state per service, retry-safe (idempotent re-upload).
   Gate: `log-qsl-test` over mocked endpoints; live check with a small batch.
-- **Edit saved QSO. IMPLEMENTED 2026-07-21.** Decided 2026-07-21 (Richard):
-  v1 originally only add/delete; correcting a logged QSO is first-class.
-  UI: pencil on the QSO table loads the row into the entry strip (`Save QSO`
-  / `Cancel`); double-click still QSYs. Engine path is `logfl_store_get` +
-  `logfl_store_update` so extras, QSL flags, original `ts`, grid/QTH/power
-  and station fields stay intact while call/RST/band/mode/freq/name/comment
-  can be fixed. TCI prefill is frozen while editing. Needed to correct early
-  QSOs that were saved with `freq` NULL (band only) before the MHz
-  prefill/TCI fallback landed.
+- **Edit saved QSO. IMPLEMENTED 2026-07-21; inline-only 2026-07-21.**
+  Decided 2026-07-21 (Richard): correcting a logged QSO is first-class;
+  entry strip stays for **new** QSOs only (no pencil / load-into-entry).
+  UI: no row selection/highlight (GtkNoSelection) so a single click does
+  not flash or fight editing; double-click on a cell opens an inline
+  `GtkEntry`. Fields: UTC, call, band, MHz, mode[/submode], RST
+  (`sent/rcvd`), name, comment; Enter commits (label updates immediately),
+  Esc cancels; focus-out / scroll-away commit. Delete is right-click →
+  “Delete QSO…” (confirm, targets the clicked row). No table QSY. Engine
+  path is `logfl_store_get` + `logfl_store_update` so extras, QSL flags,
+  grid/QTH/power and station fields stay intact when a single cell is
+  changed. Also covers fixing early QSOs saved with `freq` NULL (band only)
+  before the MHz prefill/TCI fallback landed.
 - **Freq must be exact in SQL (caught 2026-07-21).** Schema always had
   `freq REAL`; the UI used to leave the MHz entry empty (placeholder only),
   so `bind_qso` stored NULL and only `band` survived. Fix direction: typed
@@ -205,8 +211,8 @@ importing someone's log and exporting it again must never silently drop data.
 
 ## Safety / etiquette
 
-The logbook never transmits and never changes radio state except an explicit
-user QSY (M4 double-click). Nothing leaves the machine without an explicit
+The logbook never transmits and never changes radio state except
+operator-triggered CW macros via TCI. Nothing leaves the machine without an explicit
 action or an explicitly enabled sync service; callbook/QSL credentials live in
 the secret service, not in config files. Richard's global rule applies: consent
 before any major or irreversible step — a destructive log operation (mass

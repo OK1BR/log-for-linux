@@ -57,12 +57,23 @@ Mark each item when verified on a real desktop session.
 - [ ] Clearing search restores full list
 - [ ] Typing quickly does not stutter (250 ms debounce)
 
+## Edit (inline cells)
+
+- [ ] Single-click does **not** select/highlight a row
+- [ ] Double-click a **Call** cell → edit, Enter commits, value stays after reload/search
+- [ ] Esc while editing a cell cancels (value reverts)
+- [ ] UTC cell: `DD.MM.YY HH:MM` accepted; garbage shows toast and reverts
+- [ ] MHz cell: empty clears freq; valid number stores
+- [ ] RST cell: `599/599` form; placeholders `—` mean unset
+- [ ] No pencil / entry-strip edit — entry row is for new QSOs only
+
 ## Delete
 
-- [ ] Trash with no selection does nothing
-- [ ] Selected row → confirm dialog; default = Cancel
+- [ ] Right-click a table row → context menu “Delete QSO…”
+- [ ] Confirm dialog; default = Cancel
 - [ ] Confirm Delete removes row; counters update
-- [ ] Second trash click while dialog open is ignored
+- [ ] Second delete while dialog open is ignored
+- [ ] No trash toolbar icon
 
 ## ADIF
 

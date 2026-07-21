@@ -8,10 +8,11 @@ GTK4/libadwaita front-end, plain C, meson. Replaces the earlier Rust
 prototype (BRlog).
 
 > **Status:** M0–M6 offline gates green (store, ADIF, UI, TCI, macros v2,
-> **WSJT-X UDP**). M3 manual UI gate: [`docs/M3-CHECKLIST.md`](docs/M3-CHECKLIST.md).
-> TCI → `sdr-for-linux` `ws://127.0.0.1:40001`. WSJT-X/JTDX UDP on
-> `127.0.0.1:2237` (QSO Logged + worked-B4 highlight). Scope:
-> [`docs/SCOPE.md`](docs/SCOPE.md).
+> **WSJT-X UDP**). QSO table: **double-click edits cell**, right-click
+> delete (no row select). M3 manual UI gate:
+> [`docs/M3-CHECKLIST.md`](docs/M3-CHECKLIST.md). TCI → `sdr-for-linux`
+> `ws://127.0.0.1:40001` (VFO prefill + CW macros). WSJT-X/JTDX UDP on
+> `127.0.0.1:2237`. Scope: [`docs/SCOPE.md`](docs/SCOPE.md).
 
 ## Build
 
