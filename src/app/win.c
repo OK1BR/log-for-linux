@@ -63,8 +63,7 @@ struct _LogflWindow {
   GtkWidget *log_btn;          /* "Log QSO" / "Save QSO" on main window */
   GtkWidget *cancel_edit_btn;  /* visible only while editing */
   GtkWidget *macro_btns[LOGFL_MACRO_N_KEYS];
-  GtkWidget *bank_run_btn;
-  GtkWidget *bank_snp_btn;
+  GtkWidget *bank_btn;         /* header: single Run/S&P icon (cycles) */
   GtkWidget *esm_hint;         /* short ESM status under macro bar */
 
   guint clock_id;
@@ -1083,44 +1082,45 @@ on_macro_right_click (GtkGestureClick *gesture, gint n_press, gdouble x,
 }
 
 static void
+refresh_bank_btn (LogflWindow *self)
+{
+  if (!self->bank_btn)
+    return;
+  gboolean snp = self->settings.macro_bank == LOGFL_MACRO_BANK_SNP;
+  /* Run = continuous CQ; S&P = search for stations. */
+  gtk_button_set_icon_name (GTK_BUTTON (self->bank_btn),
+                            snp ? "edit-find-symbolic"
+                                : "media-playlist-consecutive-symbolic");
+  gtk_widget_set_tooltip_text (
+      self->bank_btn,
+      snp ? "S&P message bank — click for Run"
+          : "Run message bank — click for S&P");
+}
+
+static void
 set_macro_bank (LogflWindow *self, LogflMacroBankId bank)
 {
   if (self->settings.macro_bank == bank)
     {
-      /* Keep toggle visuals consistent. */
-      if (self->bank_run_btn)
-        gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->bank_run_btn),
-                                      bank == LOGFL_MACRO_BANK_RUN);
-      if (self->bank_snp_btn)
-        gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->bank_snp_btn),
-                                      bank == LOGFL_MACRO_BANK_SNP);
+      refresh_bank_btn (self);
       return;
     }
   self->settings.macro_bank = bank;
   logfl_settings_save (&self->settings);
   refresh_macro_bar (self);
-  if (self->bank_run_btn)
-    gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->bank_run_btn),
-                                  bank == LOGFL_MACRO_BANK_RUN);
-  if (self->bank_snp_btn)
-    gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->bank_snp_btn),
-                                  bank == LOGFL_MACRO_BANK_SNP);
+  refresh_bank_btn (self);
 }
 
 static void
-on_bank_run_toggled (GtkToggleButton *btn, gpointer user_data)
+on_bank_btn_clicked (GtkButton *btn, gpointer user_data)
 {
+  (void) btn;
   LogflWindow *self = user_data;
-  if (gtk_toggle_button_get_active (btn))
-    set_macro_bank (self, LOGFL_MACRO_BANK_RUN);
-}
-
-static void
-on_bank_snp_toggled (GtkToggleButton *btn, gpointer user_data)
-{
-  LogflWindow *self = user_data;
-  if (gtk_toggle_button_get_active (btn))
-    set_macro_bank (self, LOGFL_MACRO_BANK_SNP);
+  LogflMacroBankId next =
+      self->settings.macro_bank == LOGFL_MACRO_BANK_RUN
+          ? LOGFL_MACRO_BANK_SNP
+          : LOGFL_MACRO_BANK_RUN;
+  set_macro_bank (self, next);
 }
 
 static void
@@ -1256,34 +1256,17 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
   return FALSE;
 }
 
-/* Linked Run / S&P toggles for the header bar (between log and menu). */
+/* Single header icon: Run ↔ S&P, icon changes with the active bank. */
 static GtkWidget *
-build_bank_header_toggle (LogflWindow *self)
+build_bank_header_btn (LogflWindow *self)
 {
-  self->bank_run_btn = gtk_toggle_button_new_with_label ("Run");
-  self->bank_snp_btn = gtk_toggle_button_new_with_label ("S&P");
-  gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (self->bank_snp_btn),
-                               GTK_TOGGLE_BUTTON (self->bank_run_btn));
-  gtk_toggle_button_set_active (
-      GTK_TOGGLE_BUTTON (self->bank_run_btn),
-      self->settings.macro_bank == LOGFL_MACRO_BANK_RUN);
-  gtk_toggle_button_set_active (
-      GTK_TOGGLE_BUTTON (self->bank_snp_btn),
-      self->settings.macro_bank == LOGFL_MACRO_BANK_SNP);
-  gtk_widget_set_tooltip_text (self->bank_run_btn,
-                               "Run message bank (F1–F8 + free row)");
-  gtk_widget_set_tooltip_text (self->bank_snp_btn,
-                               "Search & Pounce message bank (F1–F8 + free row)");
-  g_signal_connect (self->bank_run_btn, "toggled",
-                    G_CALLBACK (on_bank_run_toggled), self);
-  g_signal_connect (self->bank_snp_btn, "toggled",
-                    G_CALLBACK (on_bank_snp_toggled), self);
-
-  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-  gtk_widget_add_css_class (box, "linked");
-  gtk_box_append (GTK_BOX (box), self->bank_run_btn);
-  gtk_box_append (GTK_BOX (box), self->bank_snp_btn);
-  return box;
+  self->bank_btn = gtk_button_new_from_icon_name (
+      "media-playlist-consecutive-symbolic");
+  gtk_widget_set_valign (self->bank_btn, GTK_ALIGN_CENTER);
+  g_signal_connect (self->bank_btn, "clicked",
+                    G_CALLBACK (on_bank_btn_clicked), self);
+  refresh_bank_btn (self);
+  return self->bank_btn;
 }
 
 static GtkWidget *
@@ -2076,9 +2059,9 @@ logfl_window_init (LogflWindow *self)
   g_object_unref (menu);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), menu_btn);
 
-  /* Between list icon and menu — compact linked Run / S&P for macros. */
+  /* Between list icon and menu — one icon cycles Run / S&P banks. */
   adw_header_bar_pack_end (ADW_HEADER_BAR (header),
-                           build_bank_header_toggle (self));
+                           build_bank_header_btn (self));
 
   GtkWidget *log_open_btn =
       gtk_button_new_from_icon_name ("view-list-symbolic");
