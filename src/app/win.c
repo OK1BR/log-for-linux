@@ -1914,7 +1914,7 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
    * zones prefill the sent exchange of zone-based contests (CQ WW, IARU). */
   AdwPreferencesGroup *zgrp = ADW_PREFERENCES_GROUP (g_object_new (
       ADW_TYPE_PREFERENCES_GROUP,
-      "title", "Location & zones",
+      "title", "Location &amp; zones",
       "description",
       "Locator is stamped on new QSOs (MY_GRIDSQUARE); zones prefill the "
       "sent exchange of zone-based contests. 0 = unset.",
@@ -2299,97 +2299,421 @@ act_contest_switch (GSimpleAction *action, GVariant *param,
 
 /* --- new contest dialog -------------------------------------------------- */
 
-/* Prefill ADIF id, my-exchange and the definition from a preset. The sent
- * exchange comes from Preferences → Station when the template is
- * zone-based (CQZ/ITUZ); otherwise the hint placeholder stays. */
+/* Structured editor — no raw definition text anywhere (2026-07-27,
+ * Richard). Each received field is a row: label + a plain-language kind
+ * that fixes the engine type and the ADIF routing behind the scenes. */
+
+/* One received-exchange field in the editor. */
+typedef struct {
+  GtkWidget *expander;         /* AdwExpanderRow in the RX group */
+  GtkWidget *label_row;        /* AdwEntryRow */
+  GtkWidget *kind_row;         /* AdwComboRow over exch_kinds */
+  GtkWidget *req_row;          /* AdwSwitchRow */
+} ExchFieldEdit;
+
+/* A known preset IS the contest specification (2026-07-27, Richard): the
+ * dialog then asks only for the operator's own value (year of licence,
+ * district, zone — prefilled where Preferences or a previous year's
+ * contest knows it) and nothing else. The full field editor exists solely
+ * for the Custom preset. */
+typedef struct {
+  LogflWindow *win;
+  AdwDialog *dlg;
+  GtkWidget *name_row, *preset_row, *adif_row;
+  AdwPreferencesGroup *my_group; /* preset mode: the one thing to fill */
+  GtkWidget *my_row;
+  AdwPreferencesGroup *rx_group; /* custom mode only */
+  GPtrArray *fields;             /* ExchFieldEdit*, display order */
+  AdwPreferencesGroup *tx_group; /* custom mode only */
+  GtkWidget *tx_serial_row, *cust_my_row, *preview_row;
+} ContestEditor;
+
+/* What the copied value IS, in operator language. Each choice pins the
+ * engine field type and both ADIF targets. */
+static const struct {
+  const char *ui;
+  LogflExchFieldType type;
+  const char *adif_num, *adif_text;
+} exch_kinds[] = {
+  { "Serial number",    LOGFL_EXCH_SERIAL, "SRX",  "SRX_STRING" },
+  { "Serial / text",    LOGFL_EXCH_AUTO,   "SRX",  "SRX_STRING" },
+  { "Text",             LOGFL_EXCH_TEXT,   "SRX",  "SRX_STRING" },
+  { "CQ zone",          LOGFL_EXCH_NUMBER, "CQZ",  "SRX_STRING" },
+  { "ITU zone / HQ",    LOGFL_EXCH_AUTO,   "ITUZ", "SRX_STRING" },
+  { "Continent",        LOGFL_EXCH_TEXT,   "SRX",  "CONT" },
+  { "State / province", LOGFL_EXCH_TEXT,   "SRX",  "STATE" },
+  { "Locator",          LOGFL_EXCH_TEXT,   "SRX",  "GRIDSQUARE" },
+};
+
+static const char *
+exch_type_keyword (LogflExchFieldType t)
+{
+  switch (t)
+    {
+    case LOGFL_EXCH_SERIAL: return "serial";
+    case LOGFL_EXCH_NUMBER: return "number";
+    case LOGFL_EXCH_TEXT:   return "text";
+    case LOGFL_EXCH_AUTO:   return "auto";
+    }
+  return "auto";
+}
+
+static guint
+exch_kind_for_field (const LogflExchField *f)
+{
+  for (guint i = 0; i < G_N_ELEMENTS (exch_kinds); i++)
+    if (exch_kinds[i].type == f->type
+        && g_strcmp0 (exch_kinds[i].adif_num, f->adif_num) == 0
+        && g_strcmp0 (exch_kinds[i].adif_text, f->adif_text) == 0)
+      return i;
+  for (guint i = 0; i < G_N_ELEMENTS (exch_kinds); i++)
+    if (exch_kinds[i].type == f->type)
+      return i;
+  return 1;                    /* Serial / text — the safe generic */
+}
+
 static void
-contest_preset_fill (AdwDialog *dlg, guint idx)
+editor_update_preview (ContestEditor *ed)
+{
+  gboolean serial =
+      adw_switch_row_get_active (ADW_SWITCH_ROW (ed->tx_serial_row));
+  const char *my = gtk_editable_get_text (GTK_EDITABLE (ed->cust_my_row));
+  GString *s = g_string_new ("599");
+  if (serial)
+    g_string_append (s, " 001");
+  if (my && *my)
+    g_string_append_printf (s, " %s", my);
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (ed->preview_row), s->str);
+  g_string_free (s, TRUE);
+}
+
+static void
+editor_field_retitle (ExchFieldEdit *fe)
+{
+  const char *l = gtk_editable_get_text (GTK_EDITABLE (fe->label_row));
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (fe->expander),
+                                 l && *l ? l : "Field");
+  guint k = adw_combo_row_get_selected (ADW_COMBO_ROW (fe->kind_row));
+  if (k < G_N_ELEMENTS (exch_kinds))
+    adw_expander_row_set_subtitle (ADW_EXPANDER_ROW (fe->expander),
+                                   exch_kinds[k].ui);
+}
+
+static void
+on_editor_field_kind (GObject *row, GParamSpec *pspec, gpointer user_data)
+{
+  (void) row;
+  (void) pspec;
+  editor_field_retitle (user_data);
+}
+
+static void
+on_editor_field_remove (GtkButton *btn, gpointer user_data)
+{
+  ContestEditor *ed = user_data;
+  ExchFieldEdit *fe = g_object_get_data (G_OBJECT (btn), "fe");
+  adw_preferences_group_remove (ed->rx_group, fe->expander);
+  g_ptr_array_remove (ed->fields, fe);
+}
+
+static void
+editor_add_field (ContestEditor *ed, const char *label, guint kind,
+                  gboolean required)
+{
+  ExchFieldEdit *fe = g_new0 (ExchFieldEdit, 1);
+
+  fe->expander = adw_expander_row_new ();
+  adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (fe->expander),
+                                      FALSE);
+
+  GtkWidget *del = gtk_button_new_from_icon_name ("user-trash-symbolic");
+  gtk_widget_add_css_class (del, "flat");
+  gtk_widget_set_valign (del, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text (del, "Remove field");
+  g_object_set_data (G_OBJECT (del), "fe", fe);
+  g_signal_connect (del, "clicked", G_CALLBACK (on_editor_field_remove), ed);
+  adw_expander_row_add_suffix (ADW_EXPANDER_ROW (fe->expander), del);
+
+  fe->label_row = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (fe->label_row),
+                                 "Label");
+  gtk_editable_set_text (GTK_EDITABLE (fe->label_row),
+                         label ? label : "");
+  g_signal_connect_swapped (fe->label_row, "changed",
+                            G_CALLBACK (editor_field_retitle), fe);
+  adw_expander_row_add_row (ADW_EXPANDER_ROW (fe->expander), fe->label_row);
+
+  const char *kind_names[G_N_ELEMENTS (exch_kinds) + 1];
+  for (guint i = 0; i < G_N_ELEMENTS (exch_kinds); i++)
+    kind_names[i] = exch_kinds[i].ui;
+  kind_names[G_N_ELEMENTS (exch_kinds)] = NULL;
+  GtkStringList *sl = gtk_string_list_new (kind_names);
+  fe->kind_row = g_object_new (ADW_TYPE_COMBO_ROW, "title", "Kind", NULL);
+  adw_combo_row_set_model (ADW_COMBO_ROW (fe->kind_row),
+                           G_LIST_MODEL (sl));
+  g_object_unref (sl);
+  adw_combo_row_set_selected (ADW_COMBO_ROW (fe->kind_row),
+                              MIN (kind, G_N_ELEMENTS (exch_kinds) - 1));
+  g_signal_connect (fe->kind_row, "notify::selected",
+                    G_CALLBACK (on_editor_field_kind), fe);
+  adw_expander_row_add_row (ADW_EXPANDER_ROW (fe->expander), fe->kind_row);
+
+  fe->req_row = adw_switch_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (fe->req_row),
+                                 "Required");
+  adw_switch_row_set_active (ADW_SWITCH_ROW (fe->req_row), required);
+  adw_expander_row_add_row (ADW_EXPANDER_ROW (fe->expander), fe->req_row);
+
+  adw_preferences_group_add (ed->rx_group, fe->expander);
+  g_ptr_array_add (ed->fields, fe);
+  editor_field_retitle (fe);
+}
+
+static void
+on_editor_add_field (GtkButton *btn, gpointer user_data)
+{
+  (void) btn;
+  editor_add_field (user_data, "Exch", 1, FALSE);
+}
+
+static void
+editor_clear_fields (ContestEditor *ed)
+{
+  for (guint i = 0; i < ed->fields->len; i++)
+    {
+      ExchFieldEdit *fe = ed->fields->pdata[i];
+      adw_preferences_group_remove (ed->rx_group, fe->expander);
+    }
+  g_ptr_array_set_size (ed->fields, 0);
+}
+
+static gboolean
+preset_is_custom (const LogflContestPreset *p)
+{
+  return g_strcmp0 (p->name, "Custom") == 0;
+}
+
+/* Last year's value for the same contest (matched on ADIF id) — the year
+ * of licence or district does not change, so prefill it. */
+static char *
+last_my_exch_for_adif (LogflWindow *self, const char *adif_id)
+{
+  if (!adif_id || !*adif_id || !self->store)
+    return NULL;
+  GPtrArray *l = logfl_store_contest_list (self->store, NULL);
+  char *out = NULL;
+  for (guint i = 0; l && i < l->len && !out; i++)
+    {
+      const LogflContest *c = l->pdata[i];
+      if (g_strcmp0 (c->adif_id, adif_id) == 0 && c->my_exch && *c->my_exch)
+        out = g_strdup (c->my_exch);
+    }
+  g_clear_pointer (&l, g_ptr_array_unref);
+  return out;
+}
+
+/* Switch the dialog into the chosen preset: known contest → name prefill
+ * plus at most ONE entry (the operator's own value); Custom → the full
+ * field editor. */
+static void
+editor_apply_preset (ContestEditor *ed, guint idx)
 {
   guint n = 0;
   const LogflContestPreset *p = logfl_contest_presets (&n);
   if (idx >= n)
     return;
-  LogflWindow *self = g_object_get_data (G_OBJECT (dlg), "win");
-  GtkWidget *adif = g_object_get_data (G_OBJECT (dlg), "adif");
-  GtkWidget *my = g_object_get_data (G_OBJECT (dlg), "myexch");
-  GtkTextView *def = g_object_get_data (G_OBJECT (dlg), "def");
-  gtk_editable_set_text (GTK_EDITABLE (adif),
-                         p[idx].adif_id ? p[idx].adif_id : "");
-  gtk_entry_set_placeholder_text (GTK_ENTRY (my),
-                                  p[idx].my_exch_hint ? p[idx].my_exch_hint
-                                                      : "");
+  gboolean custom = preset_is_custom (&p[idx]);
 
-  char zone[8] = "";
-  GError *err = NULL;
-  LogflExchDef *d = logfl_exch_def_parse (p[idx].exch_def, &err);
-  g_clear_error (&err);
-  if (self && d && d->fields->len)
+  gtk_widget_set_visible (ed->adif_row, custom);
+  gtk_widget_set_visible (GTK_WIDGET (ed->rx_group), custom);
+  gtk_widget_set_visible (GTK_WIDGET (ed->tx_group), custom);
+  gtk_widget_set_visible (GTK_WIDGET (ed->my_group),
+                          !custom && p[idx].my_exch_hint != NULL);
+
+  if (custom)
     {
-      const LogflExchField *f = d->fields->pdata[0];
-      if (g_strcmp0 (f->adif_num, "CQZ") == 0 && self->settings.station_cqz)
-        g_snprintf (zone, sizeof zone, "%u", self->settings.station_cqz);
-      else if (g_strcmp0 (f->adif_num, "ITUZ") == 0
-               && self->settings.station_ituz)
-        g_snprintf (zone, sizeof zone, "%u", self->settings.station_ituz);
+      gtk_editable_set_text (GTK_EDITABLE (ed->name_row), "");
+      gtk_editable_set_text (GTK_EDITABLE (ed->adif_row), "");
+      GError *err = NULL;
+      LogflExchDef *d = logfl_exch_def_parse (p[idx].exch_def, &err);
+      g_clear_error (&err);
+      editor_clear_fields (ed);
+      if (d)
+        {
+          for (guint i = 0; i < d->fields->len; i++)
+            {
+              const LogflExchField *f = d->fields->pdata[i];
+              editor_add_field (ed, f->label, exch_kind_for_field (f),
+                                f->required);
+            }
+          adw_switch_row_set_active (ADW_SWITCH_ROW (ed->tx_serial_row),
+                                     d->tx_serial);
+        }
+      logfl_exch_def_free (d);
+      editor_update_preview (ed);
+      return;
     }
-  logfl_exch_def_free (d);
-  gtk_editable_set_text (GTK_EDITABLE (my), zone);
 
-  gtk_text_buffer_set_text (gtk_text_view_get_buffer (def),
-                            p[idx].exch_def, -1);
+  /* Known contest: prefill "<preset> <year>" and the one own value. */
+  GDateTime *now = g_date_time_new_now_utc ();
+  char *name = g_strdup_printf ("%s %d", p[idx].name,
+                                g_date_time_get_year (now));
+  g_date_time_unref (now);
+  gtk_editable_set_text (GTK_EDITABLE (ed->name_row), name);
+  g_free (name);
+
+  if (p[idx].my_exch_hint)
+    {
+      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ed->my_row),
+                                     p[idx].my_exch_hint);
+      char prefill[8] = "";
+      GError *err = NULL;
+      LogflExchDef *d = logfl_exch_def_parse (p[idx].exch_def, &err);
+      g_clear_error (&err);
+      if (d && d->fields->len)
+        {
+          const LogflExchField *f = d->fields->pdata[0];
+          if (g_strcmp0 (f->adif_num, "CQZ") == 0
+              && ed->win->settings.station_cqz)
+            g_snprintf (prefill, sizeof prefill, "%u",
+                        ed->win->settings.station_cqz);
+          else if (g_strcmp0 (f->adif_num, "ITUZ") == 0
+                   && ed->win->settings.station_ituz)
+            g_snprintf (prefill, sizeof prefill, "%u",
+                        ed->win->settings.station_ituz);
+        }
+      logfl_exch_def_free (d);
+      if (*prefill)
+        gtk_editable_set_text (GTK_EDITABLE (ed->my_row), prefill);
+      else
+        {
+          char *prev = last_my_exch_for_adif (ed->win, p[idx].adif_id);
+          gtk_editable_set_text (GTK_EDITABLE (ed->my_row),
+                                 prev ? prev : "");
+          g_free (prev);
+        }
+    }
 }
 
 static void
-on_contest_preset_changed (GObject *dd, GParamSpec *pspec, gpointer user_data)
+on_editor_preset_changed (GObject *row, GParamSpec *pspec, gpointer user_data)
 {
   (void) pspec;
-  contest_preset_fill (user_data,
-                       gtk_drop_down_get_selected (GTK_DROP_DOWN (dd)));
+  editor_apply_preset (user_data,
+                       adw_combo_row_get_selected (ADW_COMBO_ROW (row)));
 }
 
 static void
-on_contest_new_response (GObject *source, GAsyncResult *res,
-                         gpointer user_data)
+on_editor_create (GtkButton *btn, gpointer user_data)
 {
-  LogflWindow *self = user_data;
-  AdwAlertDialog *dlg = ADW_ALERT_DIALOG (source);
-  const char *resp = adw_alert_dialog_choose_finish (dlg, res);
-  if (!g_str_equal (resp, "create"))
-    return;
+  (void) btn;
+  ContestEditor *ed = user_data;
+  LogflWindow *self = ed->win;
 
-  GtkWidget *name = g_object_get_data (G_OBJECT (dlg), "name");
-  GtkWidget *adif = g_object_get_data (G_OBJECT (dlg), "adif");
-  GtkWidget *my = g_object_get_data (G_OBJECT (dlg), "myexch");
-  GtkTextView *defv = g_object_get_data (G_OBJECT (dlg), "def");
+  guint n = 0;
+  const LogflContestPreset *p = logfl_contest_presets (&n);
+  guint idx = adw_combo_row_get_selected (ADW_COMBO_ROW (ed->preset_row));
+  if (idx >= n)
+    idx = 0;
+  gboolean custom = preset_is_custom (&p[idx]);
 
-  const char *nm = entry_text (name);
+  char *nm = g_strstrip (
+      g_strdup (gtk_editable_get_text (GTK_EDITABLE (ed->name_row))));
   if (!*nm)
     {
-      toast (self, "Contest not created — it needs a name");
+      toast (self, "The contest needs a name");
+      g_free (nm);
       return;
     }
 
-  GtkTextBuffer *buf = gtk_text_view_get_buffer (defv);
-  GtkTextIter a, b;
-  gtk_text_buffer_get_bounds (buf, &a, &b);
-  char *def_text = gtk_text_buffer_get_text (buf, &a, &b, FALSE);
+  char *def_text = NULL;
+  char *adif = NULL;
+  char *my = NULL;
+
+  if (!custom)
+    {
+      /* The preset is the specification — copy it verbatim; the operator
+       * supplies at most their own value. */
+      if (p[idx].my_exch_hint)
+        {
+          my = g_strstrip (g_strdup (
+              gtk_editable_get_text (GTK_EDITABLE (ed->my_row))));
+          if (!*my)
+            {
+              toast (self, "Fill in: %s", p[idx].my_exch_hint);
+              g_free (my);
+              g_free (nm);
+              return;
+            }
+        }
+      def_text = g_strdup (p[idx].exch_def);
+      adif = g_strdup (p[idx].adif_id ? p[idx].adif_id : "");
+    }
+  else
+    {
+      if (!ed->fields->len)
+        {
+          toast (self, "Add at least one received field");
+          g_free (nm);
+          return;
+        }
+
+      /* Serialize the editor — same GKeyFile shape the engine parses. */
+      GKeyFile *kf = g_key_file_new ();
+      g_key_file_set_boolean (kf, "exchange", "tx_serial",
+          adw_switch_row_get_active (ADW_SWITCH_ROW (ed->tx_serial_row)));
+      GString *list = g_string_new (NULL);
+      for (guint i = 0; i < ed->fields->len; i++)
+        g_string_append_printf (list, "f%u;", i + 1);
+      g_key_file_set_value (kf, "exchange", "fields", list->str);
+      g_string_free (list, TRUE);
+      for (guint i = 0; i < ed->fields->len; i++)
+        {
+          ExchFieldEdit *fe = ed->fields->pdata[i];
+          char group[16];
+          g_snprintf (group, sizeof group, "field:f%u", i + 1);
+          const char *label =
+              gtk_editable_get_text (GTK_EDITABLE (fe->label_row));
+          guint k =
+              adw_combo_row_get_selected (ADW_COMBO_ROW (fe->kind_row));
+          k = MIN (k, G_N_ELEMENTS (exch_kinds) - 1);
+          g_key_file_set_string (kf, group, "label",
+                                 label && *label ? label : "Exch");
+          g_key_file_set_string (kf, group, "type",
+                                 exch_type_keyword (exch_kinds[k].type));
+          g_key_file_set_string (kf, group, "adif_num",
+                                 exch_kinds[k].adif_num);
+          g_key_file_set_string (kf, group, "adif_text",
+                                 exch_kinds[k].adif_text);
+          g_key_file_set_boolean (kf, group, "required",
+              adw_switch_row_get_active (ADW_SWITCH_ROW (fe->req_row)));
+        }
+      def_text = g_key_file_to_data (kf, NULL, NULL);
+      g_key_file_free (kf);
+
+      GError *perr = NULL;
+      LogflExchDef *parsed = logfl_exch_def_parse (def_text, &perr);
+      if (!parsed)
+        {
+          toast (self, "Contest not created — bad exchange definition: %s",
+                 perr ? perr->message : "?");
+          g_clear_error (&perr);
+          g_free (def_text);
+          g_free (nm);
+          return;
+        }
+      logfl_exch_def_free (parsed);
+      adif = g_strdup (
+          gtk_editable_get_text (GTK_EDITABLE (ed->adif_row)));
+      my = g_strdup (
+          gtk_editable_get_text (GTK_EDITABLE (ed->cust_my_row)));
+    }
 
   GError *err = NULL;
-  LogflExchDef *parsed = logfl_exch_def_parse (def_text, &err);
-  if (!parsed)
-    {
-      toast (self, "Contest not created — bad exchange definition: %s",
-             err ? err->message : "?");
-      g_clear_error (&err);
-      g_free (def_text);
-      return;
-    }
-  logfl_exch_def_free (parsed);
-
   LogflContest *c = logfl_contest_new ();
-  c->name = g_strdup (nm);
-  c->adif_id = g_strdup (entry_text (adif));
-  c->my_exch = g_strdup (entry_text (my));
+  c->name = nm;
+  c->adif_id = adif;
+  c->my_exch = my;
   c->exch_def = def_text;
   if (!logfl_store_contest_add (self->store, c, &err))
     {
@@ -2400,6 +2724,16 @@ on_contest_new_response (GObject *source, GAsyncResult *res,
     }
   contest_set_active (self, c->id);
   logfl_contest_free (c);
+  adw_dialog_close (ed->dlg);
+}
+
+static void
+on_editor_closed (AdwDialog *dlg, gpointer user_data)
+{
+  (void) dlg;
+  ContestEditor *ed = user_data;
+  g_ptr_array_unref (ed->fields);
+  g_free (ed);
 }
 
 static void
@@ -2414,69 +2748,121 @@ act_contest_new (GSimpleAction *action, GVariant *param, gpointer user_data)
       return;
     }
 
+  ContestEditor *ed = g_new0 (ContestEditor, 1);
+  ed->win = self;
+  ed->fields = g_ptr_array_new_with_free_func (g_free);
+
+  ed->dlg = adw_dialog_new ();
+  adw_dialog_set_title (ed->dlg, "New contest");
+  adw_dialog_set_content_width (ed->dlg, 480);
+  adw_dialog_set_content_height (ed->dlg, 640);
+
+  GtkWidget *hdr = adw_header_bar_new ();
+  adw_header_bar_set_show_start_title_buttons (ADW_HEADER_BAR (hdr), FALSE);
+  adw_header_bar_set_show_end_title_buttons (ADW_HEADER_BAR (hdr), FALSE);
+  GtkWidget *cancel = gtk_button_new_with_label ("Cancel");
+  g_signal_connect_swapped (cancel, "clicked", G_CALLBACK (adw_dialog_close),
+                            ed->dlg);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (hdr), cancel);
+  GtkWidget *create = gtk_button_new_with_label ("Create");
+  gtk_widget_add_css_class (create, "suggested-action");
+  g_signal_connect (create, "clicked", G_CALLBACK (on_editor_create), ed);
+  adw_header_bar_pack_end (ADW_HEADER_BAR (hdr), create);
+
+  AdwPreferencesPage *page =
+      ADW_PREFERENCES_PAGE (adw_preferences_page_new ());
+
+  /* Contest identity. */
+  AdwPreferencesGroup *cgrp = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP, "title", "Contest", NULL));
+  ed->name_row = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ed->name_row), "Name");
+  adw_preferences_group_add (cgrp, ed->name_row);
+
   guint n = 0;
   const LogflContestPreset *presets = logfl_contest_presets (&n);
   const char **names = g_new0 (const char *, n + 1);
   for (guint i = 0; i < n; i++)
     names[i] = presets[i].name;
-
-  AdwDialog *dlg = adw_alert_dialog_new ("New contest", NULL);
-
-  GtkWidget *name = gtk_entry_new ();
-  gtk_entry_set_placeholder_text (GTK_ENTRY (name), "CQ WW CW 2026");
-  gtk_widget_set_hexpand (name, TRUE);
-  GtkWidget *preset_dd = gtk_drop_down_new_from_strings (names);
+  GtkStringList *sl = gtk_string_list_new (names);
   g_free (names);
-  GtkWidget *adif = gtk_entry_new ();
-  gtk_widget_set_hexpand (adif, TRUE);
-  GtkWidget *my = gtk_entry_new ();
-  gtk_widget_set_hexpand (my, TRUE);
+  ed->preset_row = g_object_new (ADW_TYPE_COMBO_ROW, "title", "Preset",
+                                 NULL);
+  adw_combo_row_set_model (ADW_COMBO_ROW (ed->preset_row),
+                           G_LIST_MODEL (sl));
+  g_object_unref (sl);
+  adw_preferences_group_add (cgrp, ed->preset_row);
 
-  GtkWidget *defv = gtk_text_view_new ();
-  gtk_text_view_set_monospace (GTK_TEXT_VIEW (defv), TRUE);
-  gtk_text_view_set_left_margin (GTK_TEXT_VIEW (defv), 6);
-  gtk_text_view_set_right_margin (GTK_TEXT_VIEW (defv), 6);
-  gtk_text_view_set_top_margin (GTK_TEXT_VIEW (defv), 4);
-  gtk_text_view_set_bottom_margin (GTK_TEXT_VIEW (defv), 4);
-  GtkWidget *scroller = gtk_scrolled_window_new ();
-  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), defv);
-  gtk_scrolled_window_set_min_content_height (GTK_SCROLLED_WINDOW (scroller),
-                                              150);
-  gtk_widget_add_css_class (scroller, "card");
+  ed->adif_row = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ed->adif_row),
+                                 "ADIF CONTEST_ID");
+  adw_preferences_group_add (cgrp, ed->adif_row);
+  adw_preferences_page_add (page, cgrp);
 
-  GtkWidget *row1 = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-  gtk_box_append (GTK_BOX (row1), labeled ("Name", name));
-  gtk_box_append (GTK_BOX (row1), labeled ("Preset", preset_dd));
-  GtkWidget *row2 = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-  gtk_box_append (GTK_BOX (row2), labeled ("ADIF CONTEST_ID", adif));
-  gtk_box_append (GTK_BOX (row2), labeled ("My exchange", my));
+  /* Preset mode: the one thing the operator supplies (row title carries
+   * the preset's plain-language description of what that is). */
+  ed->my_group = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP, "title", "My exchange", NULL));
+  ed->my_row = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ed->my_row),
+                                 "My exchange");
+  adw_preferences_group_add (ed->my_group, ed->my_row);
+  adw_preferences_page_add (page, ed->my_group);
 
-  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
-  gtk_box_append (GTK_BOX (box), row1);
-  gtk_box_append (GTK_BOX (box), row2);
-  gtk_box_append (GTK_BOX (box),
-                  labeled ("Exchange definition (received fields → ADIF)",
-                           scroller));
-  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), box);
+  /* Custom mode: received exchange fields; + lives in the group header. */
+  ed->rx_group = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Received exchange",
+      "description", "Fields copied from the other station, in order "
+                     "(besides RST).",
+      NULL));
+  GtkWidget *add = gtk_button_new_from_icon_name ("list-add-symbolic");
+  gtk_widget_add_css_class (add, "flat");
+  gtk_widget_set_tooltip_text (add, "Add field");
+  g_signal_connect (add, "clicked", G_CALLBACK (on_editor_add_field), ed);
+  adw_preferences_group_set_header_suffix (ed->rx_group, add);
+  adw_preferences_page_add (page, ed->rx_group);
 
-  g_object_set_data (G_OBJECT (dlg), "win", self);
-  g_object_set_data (G_OBJECT (dlg), "name", name);
-  g_object_set_data (G_OBJECT (dlg), "adif", adif);
-  g_object_set_data (G_OBJECT (dlg), "myexch", my);
-  g_object_set_data (G_OBJECT (dlg), "def", defv);
-  g_signal_connect (preset_dd, "notify::selected",
-                    G_CALLBACK (on_contest_preset_changed), dlg);
-  contest_preset_fill (dlg, 0);
+  /* Custom mode: sent exchange. */
+  ed->tx_group = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Sent exchange",
+      "description", "The serial prefills and counts up on its own; the "
+                     "static part goes out with every QSO.",
+      NULL));
+  ed->tx_serial_row = adw_switch_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ed->tx_serial_row),
+                                 "Serial number");
+  g_signal_connect_swapped (ed->tx_serial_row, "notify::active",
+                            G_CALLBACK (editor_update_preview), ed);
+  adw_preferences_group_add (ed->tx_group, ed->tx_serial_row);
+  ed->cust_my_row = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ed->cust_my_row),
+                                 "My exchange");
+  g_signal_connect_swapped (ed->cust_my_row, "changed",
+                            G_CALLBACK (editor_update_preview), ed);
+  adw_preferences_group_add (ed->tx_group, ed->cust_my_row);
+  ed->preview_row = adw_action_row_new ();
+  adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (ed->preview_row),
+                                      FALSE);
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ed->preview_row),
+                                 "You send");
+  gtk_widget_add_css_class (ed->preview_row, "property");
+  adw_preferences_group_add (ed->tx_group, ed->preview_row);
+  adw_preferences_page_add (page, ed->tx_group);
 
-  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg),
-                                  "cancel", "Cancel", "create", "Create",
-                                  NULL);
-  adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg), "create",
-                                            ADW_RESPONSE_SUGGESTED);
-  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "create");
-  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dlg), "cancel");
-  adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
-                           on_contest_new_response, self);
+  GtkWidget *tbv = adw_toolbar_view_new ();
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), hdr);
+  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (tbv), GTK_WIDGET (page));
+  adw_dialog_set_child (ed->dlg, tbv);
+
+  g_signal_connect (ed->preset_row, "notify::selected",
+                    G_CALLBACK (on_editor_preset_changed), ed);
+  g_signal_connect (ed->dlg, "closed", G_CALLBACK (on_editor_closed), ed);
+  editor_apply_preset (ed, 0);
+
+  adw_dialog_present (ed->dlg, GTK_WIDGET (self));
+  gtk_widget_grab_focus (ed->name_row);
 }
 
 /* --- manage / delete ----------------------------------------------------- */
@@ -3674,7 +4060,7 @@ logfl_window_init (LogflWindow *self)
   adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->contest_btn);
 
   /* Entry row. */
-  self->call = mk_entry (self, 10, "OK1…");
+  self->call = mk_entry (self, 10, NULL);
   g_signal_connect_swapped (self->call, "changed",
                             G_CALLBACK (update_wb4), self);
   self->rst_s = mk_entry (self, 4, NULL);
