@@ -13,29 +13,43 @@ static void
 test_expand_tokens (void)
 {
   char *s = logfl_macro_expand ("CQ {MYCALL} {MYCALL} TEST", "OK1BR",
-                                "W1AW", "599");
+                                "W1AW", "599", NULL, NULL);
   g_assert_cmpstr (s, ==, "CQ OK1BR OK1BR TEST");
   g_free (s);
 
-  s = logfl_macro_expand ("{CALL} {RST}", "OK1BR", "OK2ABC", "579");
+  s = logfl_macro_expand ("{CALL} {RST}", "OK1BR", "OK2ABC", "579",
+                          NULL, NULL);
   g_assert_cmpstr (s, ==, "OK2ABC 579");
   g_free (s);
 
-  s = logfl_macro_expand ("! de {MYCALL}", "OK1BR", "DL1AA", NULL);
+  s = logfl_macro_expand ("! de {MYCALL}", "OK1BR", "DL1AA", NULL,
+                          NULL, NULL);
   g_assert_cmpstr (s, ==, "DL1AA de OK1BR");
   g_free (s);
 
   /* Empty his call collapses double spaces; strip edges. */
-  s = logfl_macro_expand ("{CALL} {RST} {MYCALL}", "OK1BR", "", "599");
+  s = logfl_macro_expand ("{CALL} {RST} {MYCALL}", "OK1BR", "", "599",
+                          NULL, NULL);
   g_assert_cmpstr (s, ==, "599 OK1BR");
   g_free (s);
 
-  s = logfl_macro_expand (NULL, "OK1BR", "X", "1");
+  s = logfl_macro_expand (NULL, "OK1BR", "X", "1", NULL, NULL);
   g_assert_cmpstr (s, ==, "");
   g_free (s);
 
   /* Blank RST falls back to 599. */
-  s = logfl_macro_expand ("{RST}", "A", "B", "");
+  s = logfl_macro_expand ("{RST}", "A", "B", "", NULL, NULL);
+  g_assert_cmpstr (s, ==, "599");
+  g_free (s);
+
+  /* Contest tokens: sent serial + static exchange; empty outside a
+   * contest, collapsing like the other tokens. */
+  s = logfl_macro_expand ("{RST} {NR} {EXCH}", "OK1BR", "W1AW", "599",
+                          "001", "15");
+  g_assert_cmpstr (s, ==, "599 001 15");
+  g_free (s);
+  s = logfl_macro_expand ("{RST} {NR} {EXCH}", "OK1BR", "W1AW", "599",
+                          NULL, NULL);
   g_assert_cmpstr (s, ==, "599");
   g_free (s);
 }

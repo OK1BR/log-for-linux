@@ -26,7 +26,7 @@ typedef enum {
   LOGFL_STORE_ERROR_INVALID,   /* missing call/band/mode/ts */
 } LogflStoreError;
 
-#define LOGFL_STORE_SCHEMA_VERSION 1
+#define LOGFL_STORE_SCHEMA_VERSION 2
 
 typedef struct _LogflStore LogflStore;
 
@@ -49,6 +49,9 @@ typedef struct {
   char  *lotw_qsl_rcvd, *lotw_qsl_sent;
   char  *eqsl_qsl_rcvd, *eqsl_qsl_sent;
   char  *station_callsign, *my_gridsquare;
+  gint64 contest_ref;          /* contest.id, 0 = not part of a contest (v2) */
+  gint64 stx, srx;             /* contest serials sent/received, 0 = unset */
+  char  *stx_string, *srx_string; /* contest exchange sent/received (text) */
   char  *extras;               /* unmodeled ADIF fields, verbatim (M2) */
 } LogflQso;
 
@@ -72,13 +75,18 @@ LogflQso *logfl_store_get    (LogflStore *s, gint64 id, GError **error);
 
 /* List newest-first. All filter fields optional: text is a case-insensitive
  * substring over call/name/qth/comment; band/mode match exactly (normalized).
- * limit 0 = unlimited. Returns a GPtrArray of LogflQso* (free-func set). */
+ * limit 0 = unlimited. contest scopes the list: ALL (default, no filter),
+ * NONE (only QSOs outside any contest — the main-log view) or a contest id.
+ * Returns a GPtrArray of LogflQso* (free-func set). */
+#define LOGFL_QUERY_CONTEST_ALL   0
+#define LOGFL_QUERY_CONTEST_NONE  (-1)
 typedef struct {
   const char *text;
   const char *band;
   const char *mode;
   guint       limit;
   guint       offset;
+  gint64      contest;
 } LogflStoreQuery;
 
 GPtrArray *logfl_store_list (LogflStore *s, const LogflStoreQuery *q,
@@ -113,6 +121,57 @@ typedef struct {
 
 gboolean logfl_store_stats (LogflStore *s, LogflStoreStats *out,
                             GError **error);
+
+/* --- contests (schema v2) ----------------------------------------------
+ *
+ * A contest is a named log section with its own exchange template
+ * (serialized LogflExchDef, see contest.h) and the operator's static sent
+ * exchange. QSOs point at it via contest_ref; the QSOs stay part of the
+ * canonical log (worked-B4 and ADIF export always see them). */
+typedef struct {
+  gint64 id;                   /* 0 = not stored yet */
+  char  *name;                 /* e.g. "CQ WW CW 2026" */
+  char  *adif_id;              /* ADIF CONTEST_ID for export; NULL = none */
+  char  *exch_def;             /* serialized exchange definition */
+  char  *my_exch;              /* static sent exchange (zone, district, …) */
+  gint64 created;              /* unix UTC; 0 on add = now */
+} LogflContest;
+
+LogflContest *logfl_contest_new  (void);
+LogflContest *logfl_contest_copy (const LogflContest *c);
+void          logfl_contest_free (LogflContest *c);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (LogflContest, logfl_contest_free)
+
+/* CRUD. add requires name + exch_def and sets c->id (and c->created when 0).
+ * list is newest-first. delete removes the contest and either deletes its
+ * QSOs too (delete_qsos) or unlinks them into the main log; n_qsos (optional)
+ * reports how many QSOs that touched. */
+gboolean      logfl_store_contest_add    (LogflStore *s, LogflContest *c,
+                                          GError **error);
+gboolean      logfl_store_contest_update (LogflStore *s, LogflContest *c,
+                                          GError **error);
+LogflContest *logfl_store_contest_get    (LogflStore *s, gint64 id,
+                                          GError **error);
+GPtrArray    *logfl_store_contest_list   (LogflStore *s, GError **error);
+gboolean      logfl_store_contest_delete (LogflStore *s, gint64 id,
+                                          gboolean delete_qsos,
+                                          guint *n_qsos, GError **error);
+
+/* Stats scoped to one contest (subtitle, delete-confirm counts). */
+gboolean logfl_store_contest_stats (LogflStore *s, gint64 contest_id,
+                                    LogflStoreStats *out, GError **error);
+
+/* Next sent serial for a contest: max(stx) of its QSOs + 1 (so a deleted
+ * QSO never causes a serial to be handed out twice). */
+gboolean logfl_store_serial_next (LogflStore *s, gint64 contest_id,
+                                  guint *next, GError **error);
+
+/* Contest dup: same call+band+mode already logged in this contest,
+ * regardless of time. */
+gboolean logfl_store_contest_dup_check (LogflStore *s, gint64 contest_id,
+                                        const char *call, const char *band,
+                                        const char *mode,
+                                        gboolean *is_dup, GError **error);
 
 /* Explicit transaction for bulk work (ADIF import). Nesting not supported. */
 gboolean logfl_store_tx_begin    (LogflStore *s, GError **error);

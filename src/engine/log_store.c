@@ -17,8 +17,9 @@ struct _LogflStore {
   "ts, call, band, freq, mode, submode, rst_sent, rst_rcvd, " \
   "gridsquare, name, qth, tx_pwr, comment, " \
   "qsl_rcvd, qsl_sent, lotw_qsl_rcvd, lotw_qsl_sent, " \
-  "eqsl_qsl_rcvd, eqsl_qsl_sent, station_callsign, my_gridsquare, extras"
-#define QSO_N_COLS 22
+  "eqsl_qsl_rcvd, eqsl_qsl_sent, station_callsign, my_gridsquare, " \
+  "contest_ref, stx, srx, stx_string, srx_string, extras"
+#define QSO_N_COLS 27
 
 static const char *schema_v1 =
   "CREATE TABLE qso ("
@@ -42,6 +43,24 @@ static const char *schema_v1 =
   "CREATE INDEX idx_qso_ts ON qso (ts DESC);"
   "CREATE INDEX idx_qso_call ON qso (call);"
   "CREATE INDEX idx_qso_call_band_mode ON qso (call, band, mode);";
+
+/* v2: contest management — the contest table plus per-QSO contest linkage
+ * and the ADIF-aligned exchange columns (STX/SRX[_STRING]). */
+static const char *schema_v2 =
+  "CREATE TABLE contest ("
+  "  id INTEGER PRIMARY KEY,"
+  "  name TEXT NOT NULL,"
+  "  adif_id TEXT,"
+  "  exch_def TEXT NOT NULL,"
+  "  my_exch TEXT,"
+  "  created INTEGER NOT NULL"
+  ");"
+  "ALTER TABLE qso ADD COLUMN contest_ref INTEGER REFERENCES contest(id);"
+  "ALTER TABLE qso ADD COLUMN stx INTEGER;"
+  "ALTER TABLE qso ADD COLUMN srx INTEGER;"
+  "ALTER TABLE qso ADD COLUMN stx_string TEXT;"
+  "ALTER TABLE qso ADD COLUMN srx_string TEXT;"
+  "CREATE INDEX idx_qso_contest ON qso (contest_ref);";
 
 GQuark
 logfl_store_error_quark (void)
@@ -83,6 +102,11 @@ logfl_qso_copy (const LogflQso *q)
   c->eqsl_qsl_sent = g_strdup (q->eqsl_qsl_sent);
   c->station_callsign = g_strdup (q->station_callsign);
   c->my_gridsquare = g_strdup (q->my_gridsquare);
+  c->contest_ref = q->contest_ref;
+  c->stx = q->stx;
+  c->srx = q->srx;
+  c->stx_string = g_strdup (q->stx_string);
+  c->srx_string = g_strdup (q->srx_string);
   c->extras = g_strdup (q->extras);
   return c;
 }
@@ -110,6 +134,8 @@ logfl_qso_free (LogflQso *q)
   g_free (q->eqsl_qsl_sent);
   g_free (q->station_callsign);
   g_free (q->my_gridsquare);
+  g_free (q->stx_string);
+  g_free (q->srx_string);
   g_free (q->extras);
   g_free (q);
 }
@@ -212,6 +238,20 @@ bind_qso (sqlite3_stmt *st, int first, const LogflQso *q)
   bind_str (st, i++, q->eqsl_qsl_sent);
   bind_str (st, i++, q->station_callsign);
   bind_str (st, i++, q->my_gridsquare);
+  if (q->contest_ref > 0)
+    sqlite3_bind_int64 (st, i++, q->contest_ref);
+  else
+    sqlite3_bind_null (st, i++);
+  if (q->stx > 0)
+    sqlite3_bind_int64 (st, i++, q->stx);
+  else
+    sqlite3_bind_null (st, i++);
+  if (q->srx > 0)
+    sqlite3_bind_int64 (st, i++, q->srx);
+  else
+    sqlite3_bind_null (st, i++);
+  bind_str (st, i++, q->stx_string);
+  bind_str (st, i++, q->srx_string);
   bind_str (st, i++, q->extras);
 }
 
@@ -247,6 +287,11 @@ row_to_qso (sqlite3_stmt *st)
   q->eqsl_qsl_sent = col_str (st, i++);
   q->station_callsign = col_str (st, i++);
   q->my_gridsquare = col_str (st, i++);
+  q->contest_ref = sqlite3_column_int64 (st, i++);   /* NULL reads as 0 */
+  q->stx = sqlite3_column_int64 (st, i++);
+  q->srx = sqlite3_column_int64 (st, i++);
+  q->stx_string = col_str (st, i++);
+  q->srx_string = col_str (st, i++);
   q->extras = col_str (st, i++);
   return q;
 }
@@ -275,9 +320,12 @@ store_migrate (sqlite3 *db, GError **error)
 
   if (!exec_simple (db, "BEGIN IMMEDIATE;", error))
     return FALSE;
-  if (v == 0 && !exec_simple (db, schema_v1, error))
+  if (v < 1 && !exec_simple (db, schema_v1, error))
     goto rollback;
-  if (!exec_simple (db, "PRAGMA user_version = 1;", error))
+  if (v < 2 && !exec_simple (db, schema_v2, error))
+    goto rollback;
+  if (!exec_simple (db, "PRAGMA user_version = "
+                        G_STRINGIFY (LOGFL_STORE_SCHEMA_VERSION) ";", error))
     goto rollback;
   return exec_simple (db, "COMMIT;", error);
 
@@ -336,7 +384,7 @@ logfl_store_add (LogflStore *s, LogflQso *q, GError **error)
   sqlite3_stmt *st = NULL;
   if (sqlite3_prepare_v2 (s->db,
         "INSERT INTO qso (" QSO_COLS ") VALUES "
-        "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);",
+        "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);",
         -1, &st, NULL) != SQLITE_OK)
     return sql_fail (s->db, "insert", error);
   bind_qso (st, 1, q);
@@ -367,7 +415,8 @@ logfl_store_update (LogflStore *s, LogflQso *q, GError **error)
         "qth=?11, tx_pwr=?12, comment=?13, qsl_rcvd=?14, qsl_sent=?15, "
         "lotw_qsl_rcvd=?16, lotw_qsl_sent=?17, eqsl_qsl_rcvd=?18, "
         "eqsl_qsl_sent=?19, station_callsign=?20, my_gridsquare=?21, "
-        "extras=?22 WHERE id=?23;",
+        "contest_ref=?22, stx=?23, srx=?24, stx_string=?25, srx_string=?26, "
+        "extras=?27 WHERE id=?28;",
         -1, &st, NULL) != SQLITE_OK)
     return sql_fail (s->db, "update", error);
   bind_qso (st, 1, q);
@@ -450,6 +499,10 @@ logfl_store_list (LogflStore *s, const LogflStoreQuery *query, GError **error)
     g_string_append (sql, " AND band = ?2");
   if (mode)
     g_string_append (sql, " AND mode = ?3");
+  if (q->contest == LOGFL_QUERY_CONTEST_NONE)
+    g_string_append (sql, " AND contest_ref IS NULL");
+  else if (q->contest > 0)
+    g_string_append (sql, " AND contest_ref = ?6");
   g_string_append (sql, " ORDER BY ts DESC, id DESC");
   if (q->limit || q->offset)
     g_string_append (sql, " LIMIT ?4 OFFSET ?5");
@@ -472,6 +525,8 @@ logfl_store_list (LogflStore *s, const LogflStoreQuery *query, GError **error)
       sqlite3_bind_int64 (st, 4, q->limit ? (gint64) q->limit : -1);
       sqlite3_bind_int64 (st, 5, q->offset);
     }
+  if (q->contest > 0)
+    sqlite3_bind_int64 (st, 6, q->contest);
 
   out = g_ptr_array_new_with_free_func ((GDestroyNotify) logfl_qso_free);
   int rc;
@@ -598,6 +653,318 @@ logfl_store_stats (LogflStore *s, LogflStoreStats *out, GError **error)
     }
   sqlite3_finalize (st);
   return ok ? TRUE : sql_fail (s->db, "stats", error);
+}
+
+/* --- contests (v2) ------------------------------------------------------ */
+
+LogflContest *
+logfl_contest_new (void)
+{
+  return g_new0 (LogflContest, 1);
+}
+
+LogflContest *
+logfl_contest_copy (const LogflContest *c)
+{
+  LogflContest *d = logfl_contest_new ();
+  d->id = c->id;
+  d->created = c->created;
+  d->name = g_strdup (c->name);
+  d->adif_id = g_strdup (c->adif_id);
+  d->exch_def = g_strdup (c->exch_def);
+  d->my_exch = g_strdup (c->my_exch);
+  return d;
+}
+
+void
+logfl_contest_free (LogflContest *c)
+{
+  if (!c)
+    return;
+  g_free (c->name);
+  g_free (c->adif_id);
+  g_free (c->exch_def);
+  g_free (c->my_exch);
+  g_free (c);
+}
+
+static gboolean
+contest_normalize (LogflContest *c, GError **error)
+{
+  if (c->name)
+    g_strstrip (c->name);
+  if (!c->name || !*c->name || !c->exch_def || !*c->exch_def)
+    {
+      g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
+                   "contest needs a name and an exchange definition");
+      return FALSE;
+    }
+  if (c->created <= 0)
+    c->created = g_get_real_time () / G_USEC_PER_SEC;
+  return TRUE;
+}
+
+static void
+bind_contest (sqlite3_stmt *st, const LogflContest *c)
+{
+  bind_str (st, 1, c->name);
+  bind_str (st, 2, c->adif_id);
+  bind_str (st, 3, c->exch_def);
+  bind_str (st, 4, c->my_exch);
+  sqlite3_bind_int64 (st, 5, c->created);
+}
+
+/* Reads a row of "SELECT id, name, adif_id, exch_def, my_exch, created". */
+static LogflContest *
+row_to_contest (sqlite3_stmt *st)
+{
+  LogflContest *c = logfl_contest_new ();
+  c->id = sqlite3_column_int64 (st, 0);
+  c->name = col_str (st, 1);
+  c->adif_id = col_str (st, 2);
+  c->exch_def = col_str (st, 3);
+  c->my_exch = col_str (st, 4);
+  c->created = sqlite3_column_int64 (st, 5);
+  return c;
+}
+
+gboolean
+logfl_store_contest_add (LogflStore *s, LogflContest *c, GError **error)
+{
+  if (!contest_normalize (c, error))
+    return FALSE;
+
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2 (s->db,
+        "INSERT INTO contest (name, adif_id, exch_def, my_exch, created)"
+        " VALUES (?1,?2,?3,?4,?5);", -1, &st, NULL) != SQLITE_OK)
+    return sql_fail (s->db, "contest-add", error);
+  bind_contest (st, c);
+  gboolean ok = sqlite3_step (st) == SQLITE_DONE;
+  sqlite3_finalize (st);
+  if (!ok)
+    return sql_fail (s->db, "contest-add", error);
+  c->id = sqlite3_last_insert_rowid (s->db);
+  return TRUE;
+}
+
+gboolean
+logfl_store_contest_update (LogflStore *s, LogflContest *c, GError **error)
+{
+  if (c->id <= 0)
+    {
+      g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
+                   "update needs a stored contest (id)");
+      return FALSE;
+    }
+  if (!contest_normalize (c, error))
+    return FALSE;
+
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2 (s->db,
+        "UPDATE contest SET name=?1, adif_id=?2, exch_def=?3, my_exch=?4, "
+        "created=?5 WHERE id=?6;", -1, &st, NULL) != SQLITE_OK)
+    return sql_fail (s->db, "contest-update", error);
+  bind_contest (st, c);
+  sqlite3_bind_int64 (st, 6, c->id);
+  gboolean ok = sqlite3_step (st) == SQLITE_DONE;
+  sqlite3_finalize (st);
+  if (!ok)
+    return sql_fail (s->db, "contest-update", error);
+  if (sqlite3_changes (s->db) != 1)
+    {
+      g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_NOT_FOUND,
+                   "no contest with id %" G_GINT64_FORMAT, c->id);
+      return FALSE;
+    }
+  return TRUE;
+}
+
+LogflContest *
+logfl_store_contest_get (LogflStore *s, gint64 id, GError **error)
+{
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2 (s->db,
+        "SELECT id, name, adif_id, exch_def, my_exch, created"
+        " FROM contest WHERE id=?1;", -1, &st, NULL) != SQLITE_OK)
+    {
+      sql_fail (s->db, "contest-get", error);
+      return NULL;
+    }
+  sqlite3_bind_int64 (st, 1, id);
+  LogflContest *c = NULL;
+  if (sqlite3_step (st) == SQLITE_ROW)
+    c = row_to_contest (st);
+  sqlite3_finalize (st);
+  if (!c)
+    g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_NOT_FOUND,
+                 "no contest with id %" G_GINT64_FORMAT, id);
+  return c;
+}
+
+GPtrArray *
+logfl_store_contest_list (LogflStore *s, GError **error)
+{
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2 (s->db,
+        "SELECT id, name, adif_id, exch_def, my_exch, created"
+        " FROM contest ORDER BY created DESC, id DESC;",
+        -1, &st, NULL) != SQLITE_OK)
+    {
+      sql_fail (s->db, "contest-list", error);
+      return NULL;
+    }
+  GPtrArray *out =
+    g_ptr_array_new_with_free_func ((GDestroyNotify) logfl_contest_free);
+  int rc;
+  while ((rc = sqlite3_step (st)) == SQLITE_ROW)
+    g_ptr_array_add (out, row_to_contest (st));
+  sqlite3_finalize (st);
+  if (rc != SQLITE_DONE)
+    {
+      sql_fail (s->db, "contest-list", error);
+      g_clear_pointer (&out, g_ptr_array_unref);
+    }
+  return out;
+}
+
+gboolean
+logfl_store_contest_delete (LogflStore *s, gint64 id, gboolean delete_qsos,
+                            guint *n_qsos, GError **error)
+{
+  if (n_qsos)
+    *n_qsos = 0;
+  if (!exec_simple (s->db, "BEGIN IMMEDIATE;", error))
+    return FALSE;
+
+  sqlite3_stmt *st = NULL;
+  const char *sql = delete_qsos
+    ? "DELETE FROM qso WHERE contest_ref=?1;"
+    : "UPDATE qso SET contest_ref=NULL WHERE contest_ref=?1;";
+  if (sqlite3_prepare_v2 (s->db, sql, -1, &st, NULL) != SQLITE_OK)
+    {
+      sql_fail (s->db, "contest-delete", error);
+      goto rollback;
+    }
+  sqlite3_bind_int64 (st, 1, id);
+  gboolean ok = sqlite3_step (st) == SQLITE_DONE;
+  sqlite3_finalize (st);
+  if (!ok)
+    {
+      sql_fail (s->db, "contest-delete", error);
+      goto rollback;
+    }
+  if (n_qsos)
+    *n_qsos = (guint) sqlite3_changes (s->db);
+
+  if (sqlite3_prepare_v2 (s->db, "DELETE FROM contest WHERE id=?1;",
+                          -1, &st, NULL) != SQLITE_OK)
+    {
+      sql_fail (s->db, "contest-delete", error);
+      goto rollback;
+    }
+  sqlite3_bind_int64 (st, 1, id);
+  ok = sqlite3_step (st) == SQLITE_DONE;
+  sqlite3_finalize (st);
+  if (!ok)
+    {
+      sql_fail (s->db, "contest-delete", error);
+      goto rollback;
+    }
+  if (sqlite3_changes (s->db) != 1)
+    {
+      g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_NOT_FOUND,
+                   "no contest with id %" G_GINT64_FORMAT, id);
+      goto rollback;
+    }
+  return exec_simple (s->db, "COMMIT;", error);
+
+rollback:
+  sqlite3_exec (s->db, "ROLLBACK;", NULL, NULL, NULL);
+  return FALSE;
+}
+
+gboolean
+logfl_store_contest_stats (LogflStore *s, gint64 contest_id,
+                           LogflStoreStats *out, GError **error)
+{
+  memset (out, 0, sizeof *out);
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2 (s->db,
+        "SELECT count(*), count(DISTINCT call),"
+        " ifnull(min(ts), 0), ifnull(max(ts), 0)"
+        " FROM qso WHERE contest_ref=?1;", -1, &st, NULL) != SQLITE_OK)
+    return sql_fail (s->db, "contest-stats", error);
+  sqlite3_bind_int64 (st, 1, contest_id);
+  gboolean ok = sqlite3_step (st) == SQLITE_ROW;
+  if (ok)
+    {
+      out->n_qso = (guint) sqlite3_column_int64 (st, 0);
+      out->n_calls = (guint) sqlite3_column_int64 (st, 1);
+      out->first_ts = sqlite3_column_int64 (st, 2);
+      out->last_ts = sqlite3_column_int64 (st, 3);
+    }
+  sqlite3_finalize (st);
+  return ok ? TRUE : sql_fail (s->db, "contest-stats", error);
+}
+
+gboolean
+logfl_store_serial_next (LogflStore *s, gint64 contest_id,
+                         guint *next, GError **error)
+{
+  *next = 1;
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2 (s->db,
+        "SELECT ifnull(max(stx), 0) + 1 FROM qso WHERE contest_ref=?1;",
+        -1, &st, NULL) != SQLITE_OK)
+    return sql_fail (s->db, "serial-next", error);
+  sqlite3_bind_int64 (st, 1, contest_id);
+  gboolean ok = sqlite3_step (st) == SQLITE_ROW;
+  if (ok)
+    *next = (guint) sqlite3_column_int64 (st, 0);
+  sqlite3_finalize (st);
+  return ok ? TRUE : sql_fail (s->db, "serial-next", error);
+}
+
+gboolean
+logfl_store_contest_dup_check (LogflStore *s, gint64 contest_id,
+                               const char *call, const char *band,
+                               const char *mode,
+                               gboolean *is_dup, GError **error)
+{
+  *is_dup = FALSE;
+  char *ncall = norm_dup (call, TRUE);
+  char *nband = norm_dup (band, FALSE);
+  char *nmode = norm_dup (mode, TRUE);
+  gboolean ok = FALSE;
+
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2 (s->db,
+        "SELECT EXISTS (SELECT 1 FROM qso WHERE contest_ref=?1"
+        " AND call=?2 AND band=?3 AND mode=?4);",
+        -1, &st, NULL) != SQLITE_OK)
+    {
+      sql_fail (s->db, "contest-dup", error);
+      goto out;
+    }
+  sqlite3_bind_int64 (st, 1, contest_id);
+  bind_str (st, 2, ncall);
+  bind_str (st, 3, nband);
+  bind_str (st, 4, nmode);
+  if (sqlite3_step (st) == SQLITE_ROW)
+    {
+      *is_dup = sqlite3_column_int (st, 0) != 0;
+      ok = TRUE;
+    }
+  else
+    sql_fail (s->db, "contest-dup", error);
+
+out:
+  sqlite3_finalize (st);
+  g_free (ncall);
+  g_free (nband);
+  g_free (nmode);
+  return ok;
 }
 
 /* --- transactions ------------------------------------------------------- */

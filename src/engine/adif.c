@@ -151,6 +151,23 @@ set_str (char **slot, const char *val)
   *slot = g_strdup (val);
 }
 
+/* ADIF Integer for the serial columns: digits-only and positive goes to
+ * the column; anything else stays verbatim in extras. */
+static gboolean
+serial_value (const char *v, gint64 *out)
+{
+  if (!*v)
+    return FALSE;
+  for (const char *c = v; *c; c++)
+    if (!g_ascii_isdigit (*c))
+      return FALSE;
+  gint64 n = g_ascii_strtoll (v, NULL, 10);
+  if (n <= 0)
+    return FALSE;
+  *out = n;
+  return TRUE;
+}
+
 static void
 rec_field (RecBuild *r, const AdifTag *tag)
 {
@@ -205,6 +222,14 @@ rec_field (RecBuild *r, const AdifTag *tag)
     set_str (&q->station_callsign, v);
   else if (g_str_equal (tag->name, "MY_GRIDSQUARE"))
     set_str (&q->my_gridsquare, v);
+  else if (g_str_equal (tag->name, "STX") && serial_value (v, &q->stx))
+    ;
+  else if (g_str_equal (tag->name, "SRX") && serial_value (v, &q->srx))
+    ;
+  else if (g_str_equal (tag->name, "STX_STRING"))
+    set_str (&q->stx_string, v);
+  else if (g_str_equal (tag->name, "SRX_STRING"))
+    set_str (&q->srx_string, v);
   else
     /* Unmodeled field — preserve verbatim (normalized to our own shape,
      * uppercase name and byte length, which is what export writes). */
@@ -393,6 +418,16 @@ put_num (GString *out, const char *tag, double v)
   put_str (out, tag, buf);
 }
 
+static void
+put_int (GString *out, const char *tag, gint64 v)
+{
+  if (v <= 0)
+    return;
+  char buf[32];
+  g_snprintf (buf, sizeof buf, "%" G_GINT64_FORMAT, v);
+  put_str (out, tag, buf);
+}
+
 char *
 logfl_adif_export_data (LogflStore *s, const LogflStoreQuery *query,
                         guint *n_exported, GError **error)
@@ -400,6 +435,25 @@ logfl_adif_export_data (LogflStore *s, const LogflStoreQuery *query,
   GPtrArray *list = logfl_store_list (s, query, error);
   if (!list)
     return NULL;
+
+  /* CONTEST_ID comes from the linked contest's adif_id. */
+  GPtrArray *contests = logfl_store_contest_list (s, error);
+  if (!contests)
+    {
+      g_ptr_array_unref (list);
+      return NULL;
+    }
+  GHashTable *contest_adif =
+    g_hash_table_new_full (g_int64_hash, g_int64_equal, g_free, g_free);
+  for (guint i = 0; i < contests->len; i++)
+    {
+      const LogflContest *c = contests->pdata[i];
+      if (c->adif_id && *c->adif_id)
+        g_hash_table_insert (contest_adif,
+                             g_memdup2 (&c->id, sizeof c->id),
+                             g_strdup (c->adif_id));
+    }
+  g_ptr_array_unref (contests);
 
   GString *out = g_string_new ("log-for-linux ADIF export\n");
   put_str (out, "ADIF_VER", "3.1.4");
@@ -442,6 +496,13 @@ logfl_adif_export_data (LogflStore *s, const LogflStoreQuery *query,
       put_str (out, "EQSL_QSL_SENT", q->eqsl_qsl_sent);
       put_str (out, "STATION_CALLSIGN", q->station_callsign);
       put_str (out, "MY_GRIDSQUARE", q->my_gridsquare);
+      if (q->contest_ref > 0)
+        put_str (out, "CONTEST_ID",
+                 g_hash_table_lookup (contest_adif, &q->contest_ref));
+      put_int (out, "STX", q->stx);
+      put_str (out, "STX_STRING", q->stx_string);
+      put_int (out, "SRX", q->srx);
+      put_str (out, "SRX_STRING", q->srx_string);
       if (q->extras && *q->extras)
         g_string_append (out, q->extras);
       g_string_append (out, "<EOR>\n");
@@ -449,6 +510,7 @@ logfl_adif_export_data (LogflStore *s, const LogflStoreQuery *query,
 
   if (n_exported)
     *n_exported = list->len;
+  g_hash_table_unref (contest_adif);
   g_ptr_array_unref (list);
   return g_string_free (out, FALSE);
 }

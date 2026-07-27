@@ -56,10 +56,12 @@ void logfl_macro_set_set_key (LogflMacroSet *set, LogflMacroBankId bank,
 /* TRUE for the dedicated STOP slot (last of row 2). Empty free keys are not. */
 gboolean logfl_macro_index_is_stop (guint idx);
 
-/* Expand {MYCALL}, {CALL}, {RST}, and bare '!'. Caller frees. Empty tokens
+/* Expand {MYCALL}, {CALL}, {RST}, {NR} (sent contest serial, "001" form),
+ * {EXCH} (static sent exchange) and bare '!'. Caller frees. Empty tokens
  * collapse double spaces. NULL tmpl → empty string. */
 char *logfl_macro_expand (const char *tmpl, const char *mycall,
-                          const char *his_call, const char *rst);
+                          const char *his_call, const char *rst,
+                          const char *nr, const char *exch);
 
 /* --- ESM: Enter sends message ------------------------------------------- */
 

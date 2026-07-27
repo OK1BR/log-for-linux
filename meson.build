@@ -33,6 +33,7 @@ engine_sources = [
   'src/engine/tci_client.c',   # M4: TCI client (VFO/mode, explicit QSY)
   'src/engine/macros.c',       # M5: F-key expand, Run/S&P banks, ESM
   'src/engine/wsjtx_udp.c',    # M6: WSJT-X / JTDX UDP (QSO Logged, highlight)
+  'src/engine/contest.c',      # M9: contest exchange templates + presets
 ]
 engine_deps = [glib_dep, gio_dep, sqlite_dep, lws_dep]
 
@@ -96,6 +97,15 @@ log_udp_test = executable('log-udp-test',
   link_with : engine_lib,
 )
 test('udp', log_udp_test, timeout : 30)
+
+# M9: contests — exchange templates, v1→v2 migration, scoping, delete, ADIF.
+log_contest_test = executable('log-contest-test',
+  ['src/contest_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('contest', log_contest_test, timeout : 30)
 
 # --- App --------------------------------------------------------------------
 executable('log-for-linux',

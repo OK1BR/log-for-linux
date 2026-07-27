@@ -107,7 +107,8 @@ logfl_macro_index_is_stop (guint idx)
 
 char *
 logfl_macro_expand (const char *tmpl, const char *mycall,
-                    const char *his_call, const char *rst)
+                    const char *his_call, const char *rst,
+                    const char *nr, const char *exch)
 {
   if (!tmpl)
     return g_strdup ("");
@@ -118,6 +119,10 @@ logfl_macro_expand (const char *tmpl, const char *mycall,
     his_call = "";
   if (!rst || !*rst)
     rst = "599";
+  if (!nr)
+    nr = "";
+  if (!exch)
+    exch = "";
 
   GString *out = g_string_new (NULL);
   for (const char *p = tmpl; *p;)
@@ -136,6 +141,16 @@ logfl_macro_expand (const char *tmpl, const char *mycall,
         {
           g_string_append (out, rst);
           p += strlen ("{RST}");
+        }
+      else if (g_str_has_prefix (p, "{NR}"))
+        {
+          g_string_append (out, nr);
+          p += strlen ("{NR}");
+        }
+      else if (g_str_has_prefix (p, "{EXCH}"))
+        {
+          g_string_append (out, exch);
+          p += strlen ("{EXCH}");
         }
       else if (*p == '!')
         {
