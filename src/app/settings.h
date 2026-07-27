@@ -20,6 +20,9 @@ typedef struct {
   char   *tci_host;            /* sdr-for-linux WebSocket host               */
   guint16 tci_port;            /* default 40001                              */
   char   *station_callsign;    /* STATION_CALLSIGN stamped on new QSOs       */
+  char   *station_grid;        /* my locator → MY_GRIDSQUARE on new QSOs     */
+  guint   station_cqz;         /* my CQ (DX) zone, 0 = unset (OK = 15)       */
+  guint   station_ituz;        /* my ITU zone, 0 = unset (OK = 28)           */
   gboolean esm_enabled;        /* M5: Enter advances ESM instead of log      */
   LogflMacroBankId macro_bank; /* Run or S&P                                 */
   LogflMacroSet macros;        /* F1–F8 + free row + STOP (16) per bank      */

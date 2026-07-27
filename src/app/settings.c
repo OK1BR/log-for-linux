@@ -75,9 +75,13 @@ logfl_settings_init_defaults (LogflSettings *s)
   g_return_if_fail (s != NULL);
   g_free (s->tci_host);
   g_free (s->station_callsign);
+  g_free (s->station_grid);
   s->tci_host = g_strdup (LOGFL_TCI_DEFAULT_HOST);
   s->tci_port = LOGFL_TCI_DEFAULT_PORT;
   s->station_callsign = g_strdup ("OK1BR");
+  s->station_grid = g_strdup ("");
+  s->station_cqz = 15;
+  s->station_ituz = 28;
   s->esm_enabled = FALSE;
   s->macro_bank = LOGFL_MACRO_BANK_RUN;
   logfl_macro_set_init_defaults (&s->macros);
@@ -120,6 +124,25 @@ logfl_settings_load (LogflSettings *s)
         }
       else
         g_free (call);
+
+      char *grid = g_key_file_get_string (kf, "station", "locator", NULL);
+      if (grid)
+        {
+          g_free (s->station_grid);
+          s->station_grid = g_strstrip (grid);
+        }
+      if (g_key_file_has_key (kf, "station", "cq_zone", NULL))
+        {
+          int z = g_key_file_get_integer (kf, "station", "cq_zone", NULL);
+          if (z >= 0 && z <= 40)
+            s->station_cqz = (guint) z;
+        }
+      if (g_key_file_has_key (kf, "station", "itu_zone", NULL))
+        {
+          int z = g_key_file_get_integer (kf, "station", "itu_zone", NULL);
+          if (z >= 0 && z <= 90)
+            s->station_ituz = (guint) z;
+        }
 
       if (g_key_file_has_key (kf, "contest", "esm", NULL))
         s->esm_enabled = g_key_file_get_boolean (kf, "contest", "esm", NULL);
@@ -177,6 +200,10 @@ logfl_settings_save (const LogflSettings *s)
                           s->tci_port ? s->tci_port : LOGFL_TCI_DEFAULT_PORT);
   g_key_file_set_string (kf, "station", "callsign",
                          s->station_callsign ? s->station_callsign : "");
+  g_key_file_set_string (kf, "station", "locator",
+                         s->station_grid ? s->station_grid : "");
+  g_key_file_set_integer (kf, "station", "cq_zone", (int) s->station_cqz);
+  g_key_file_set_integer (kf, "station", "itu_zone", (int) s->station_ituz);
 
   g_key_file_set_boolean (kf, "contest", "esm", s->esm_enabled);
   g_key_file_set_string (kf, "contest", "bank",
@@ -209,6 +236,9 @@ logfl_settings_clear (LogflSettings *s)
     return;
   g_clear_pointer (&s->tci_host, g_free);
   g_clear_pointer (&s->station_callsign, g_free);
+  g_clear_pointer (&s->station_grid, g_free);
+  s->station_cqz = 0;
+  s->station_ituz = 0;
   s->tci_port = 0;
   s->esm_enabled = FALSE;
   s->macro_bank = LOGFL_MACRO_BANK_RUN;

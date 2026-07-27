@@ -686,6 +686,11 @@ apply_entry_to_qso (LogflWindow *self, LogflQso *q)
       self->settings.station_callsign && *self->settings.station_callsign
           ? self->settings.station_callsign
           : "OK1BR");
+  g_free (q->my_gridsquare);
+  q->my_gridsquare =
+      self->settings.station_grid && *self->settings.station_grid
+          ? g_strdup (self->settings.station_grid)
+          : NULL;
 
   /* Active contest: link the QSO and route the exchange per template.
    * The Sent entry wins over the auto values — the operator may have sent
@@ -1695,6 +1700,9 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
   GtkWidget *host_row = g_object_get_data (G_OBJECT (dlg), "tci-host");
   GtkWidget *port_row = g_object_get_data (G_OBJECT (dlg), "tci-port");
   GtkWidget *call_row = g_object_get_data (G_OBJECT (dlg), "station-call");
+  GtkWidget *grid_row = g_object_get_data (G_OBJECT (dlg), "station-grid");
+  GtkWidget *cqz_row = g_object_get_data (G_OBJECT (dlg), "station-cqz");
+  GtkWidget *ituz_row = g_object_get_data (G_OBJECT (dlg), "station-ituz");
   GtkWidget *esm_row = g_object_get_data (G_OBJECT (dlg), "esm");
   GtkWidget *wsjtx_en_row = g_object_get_data (G_OBJECT (dlg), "wsjtx-en");
   GtkWidget *wsjtx_port_row = g_object_get_data (G_OBJECT (dlg), "wsjtx-port");
@@ -1706,6 +1714,10 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
     port = LOGFL_TCI_DEFAULT_PORT;
   const char *c = gtk_editable_get_text (GTK_EDITABLE (call_row));
   char *call = g_strstrip (g_strdup (c ? c : ""));
+  const char *gtxt = gtk_editable_get_text (GTK_EDITABLE (grid_row));
+  char *grid = g_strstrip (g_strdup (gtxt ? gtxt : ""));
+  guint cqz = (guint) adw_spin_row_get_value (ADW_SPIN_ROW (cqz_row));
+  guint ituz = (guint) adw_spin_row_get_value (ADW_SPIN_ROW (ituz_row));
   gboolean esm = esm_row
                      ? adw_switch_row_get_active (ADW_SWITCH_ROW (esm_row))
                      : FALSE;
@@ -1722,7 +1734,10 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
       g_strcmp0 (host, self->settings.tci_host) != 0 ||
       (guint16) port != self->settings.tci_port;
   gboolean call_changed =
-      g_strcmp0 (call, self->settings.station_callsign) != 0;
+      g_strcmp0 (call, self->settings.station_callsign) != 0 ||
+      g_strcmp0 (grid, self->settings.station_grid) != 0 ||
+      cqz != self->settings.station_cqz ||
+      ituz != self->settings.station_ituz;
   gboolean esm_changed = esm != self->settings.esm_enabled;
   gboolean wsjtx_changed =
       wsjtx_en != self->settings.wsjtx_enabled ||
@@ -1735,6 +1750,10 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
       self->settings.tci_port = (guint16) port;
       g_free (self->settings.station_callsign);
       self->settings.station_callsign = call;
+      g_free (self->settings.station_grid);
+      self->settings.station_grid = grid;
+      self->settings.station_cqz = cqz;
+      self->settings.station_ituz = ituz;
       self->settings.esm_enabled = esm;
       self->settings.wsjtx_enabled = wsjtx_en;
       self->settings.wsjtx_port = (guint16) wsjtx_port;
@@ -1751,6 +1770,7 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
     {
       g_free (host);
       g_free (call);
+      g_free (grid);
     }
 
   if (self->prefs_macros_dirty)
@@ -1889,6 +1909,33 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
       self->settings.station_callsign ? self->settings.station_callsign : "");
   adw_preferences_group_add (sgrp, call_row);
   adw_preferences_page_add (p_station, sgrp);
+
+  /* Location & zones — locator lands on new QSOs as MY_GRIDSQUARE; the
+   * zones prefill the sent exchange of zone-based contests (CQ WW, IARU). */
+  AdwPreferencesGroup *zgrp = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Location & zones",
+      "description",
+      "Locator is stamped on new QSOs (MY_GRIDSQUARE); zones prefill the "
+      "sent exchange of zone-based contests. 0 = unset.",
+      NULL));
+  GtkWidget *grid_row = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (grid_row), "Locator");
+  gtk_editable_set_text (
+      GTK_EDITABLE (grid_row),
+      self->settings.station_grid ? self->settings.station_grid : "");
+  adw_preferences_group_add (zgrp, grid_row);
+  GtkWidget *cqz_row = adw_spin_row_new_with_range (0, 40, 1);
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (cqz_row),
+                                 "CQ (DX) zone");
+  adw_spin_row_set_value (ADW_SPIN_ROW (cqz_row), self->settings.station_cqz);
+  adw_preferences_group_add (zgrp, cqz_row);
+  GtkWidget *ituz_row = adw_spin_row_new_with_range (0, 90, 1);
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (ituz_row), "ITU zone");
+  adw_spin_row_set_value (ADW_SPIN_ROW (ituz_row),
+                          self->settings.station_ituz);
+  adw_preferences_group_add (zgrp, ituz_row);
+  adw_preferences_page_add (p_station, zgrp);
   adw_preferences_dialog_add (ADW_PREFERENCES_DIALOG (dlg), p_station);
 
   /* --- TCI (client → sdr-for-linux server) ----------------------------- */
@@ -2019,6 +2066,9 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
   g_object_set_data (G_OBJECT (dlg), "tci-host", host_row);
   g_object_set_data (G_OBJECT (dlg), "tci-port", port_row);
   g_object_set_data (G_OBJECT (dlg), "station-call", call_row);
+  g_object_set_data (G_OBJECT (dlg), "station-grid", grid_row);
+  g_object_set_data (G_OBJECT (dlg), "station-cqz", cqz_row);
+  g_object_set_data (G_OBJECT (dlg), "station-ituz", ituz_row);
   g_object_set_data (G_OBJECT (dlg), "esm", esm_row);
   g_object_set_data (G_OBJECT (dlg), "wsjtx-en", wsjtx_en);
   g_object_set_data (G_OBJECT (dlg), "wsjtx-port", wsjtx_port);
@@ -2249,7 +2299,9 @@ act_contest_switch (GSimpleAction *action, GVariant *param,
 
 /* --- new contest dialog -------------------------------------------------- */
 
-/* Prefill ADIF id, my-exchange hint and the definition from a preset. */
+/* Prefill ADIF id, my-exchange and the definition from a preset. The sent
+ * exchange comes from Preferences → Station when the template is
+ * zone-based (CQZ/ITUZ); otherwise the hint placeholder stays. */
 static void
 contest_preset_fill (AdwDialog *dlg, guint idx)
 {
@@ -2257,6 +2309,7 @@ contest_preset_fill (AdwDialog *dlg, guint idx)
   const LogflContestPreset *p = logfl_contest_presets (&n);
   if (idx >= n)
     return;
+  LogflWindow *self = g_object_get_data (G_OBJECT (dlg), "win");
   GtkWidget *adif = g_object_get_data (G_OBJECT (dlg), "adif");
   GtkWidget *my = g_object_get_data (G_OBJECT (dlg), "myexch");
   GtkTextView *def = g_object_get_data (G_OBJECT (dlg), "def");
@@ -2265,6 +2318,23 @@ contest_preset_fill (AdwDialog *dlg, guint idx)
   gtk_entry_set_placeholder_text (GTK_ENTRY (my),
                                   p[idx].my_exch_hint ? p[idx].my_exch_hint
                                                       : "");
+
+  char zone[8] = "";
+  GError *err = NULL;
+  LogflExchDef *d = logfl_exch_def_parse (p[idx].exch_def, &err);
+  g_clear_error (&err);
+  if (self && d && d->fields->len)
+    {
+      const LogflExchField *f = d->fields->pdata[0];
+      if (g_strcmp0 (f->adif_num, "CQZ") == 0 && self->settings.station_cqz)
+        g_snprintf (zone, sizeof zone, "%u", self->settings.station_cqz);
+      else if (g_strcmp0 (f->adif_num, "ITUZ") == 0
+               && self->settings.station_ituz)
+        g_snprintf (zone, sizeof zone, "%u", self->settings.station_ituz);
+    }
+  logfl_exch_def_free (d);
+  gtk_editable_set_text (GTK_EDITABLE (my), zone);
+
   gtk_text_buffer_set_text (gtk_text_view_get_buffer (def),
                             p[idx].exch_def, -1);
 }
@@ -2389,6 +2459,7 @@ act_contest_new (GSimpleAction *action, GVariant *param, gpointer user_data)
                            scroller));
   adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), box);
 
+  g_object_set_data (G_OBJECT (dlg), "win", self);
   g_object_set_data (G_OBJECT (dlg), "name", name);
   g_object_set_data (G_OBJECT (dlg), "adif", adif);
   g_object_set_data (G_OBJECT (dlg), "myexch", my);
