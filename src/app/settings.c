@@ -83,6 +83,7 @@ logfl_settings_init_defaults (LogflSettings *s)
   logfl_macro_set_init_defaults (&s->macros);
   s->wsjtx_enabled = TRUE;
   s->wsjtx_port = LOGFL_WSJTX_DEFAULT_PORT;
+  s->active_contest = 0;
 }
 
 void
@@ -134,6 +135,12 @@ logfl_settings_load (LogflSettings *s)
           g_free (bank);
         }
 
+      if (g_key_file_has_key (kf, "contest", "active", NULL))
+        {
+          gint64 id = g_key_file_get_int64 (kf, "contest", "active", NULL);
+          s->active_contest = id > 0 ? id : 0;
+        }
+
       load_macros (kf, &s->macros);
 
       if (g_key_file_has_key (kf, "wsjtx", "enabled", NULL))
@@ -175,6 +182,7 @@ logfl_settings_save (const LogflSettings *s)
   g_key_file_set_string (kf, "contest", "bank",
                          s->macro_bank == LOGFL_MACRO_BANK_SNP ? "snp"
                                                                : "run");
+  g_key_file_set_int64 (kf, "contest", "active", s->active_contest);
   save_macros (kf, &s->macros);
 
   g_key_file_set_boolean (kf, "wsjtx", "enabled", s->wsjtx_enabled);

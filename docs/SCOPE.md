@@ -212,9 +212,48 @@ importing someone's log and exporting it again must never silently drop data.
   MHz → live TCI VFO at log time → band mid-point fallback; band change
   seeds MHz when empty; TCI still overwrites with the real VFO. Existing
   NULL rows need edit-QSO or a one-shot repair later.
+- **M9 — contest management. Decided 2026-07-27 (Richard), pulled ahead of
+  M7/M8.** Contests as first-class log sections: create/delete/switch, each
+  contest with its own exchange template.
+  Decisions (2026-07-27):
+  1. **One DB, `qso.contest_ref`** (NULL = main log) — contest QSOs stay in
+     the canonical store (worked-B4/DXCC/LoTW see them); switching is a
+     filter. Rejected: per-contest DB files (N1MM style) — would fragment
+     worked-B4 and the canonical store.
+  2. **Deleting a contest asks what to do with its QSOs**: delete them too,
+     or unlink them into the main log (dialog with both options + counts).
+  3. **Templates are generic, presets are a starting point**: a template
+     lists received-exchange fields (serial / number / text / auto), each
+     mapped onto ADIF (SRX, SRX_STRING, CQZ, ITUZ, …; unmodeled targets ride
+     in extras as real ADIF tags). A contest copies its definition at
+     creation — editing presets never rewrites history. Presets: CQ WW,
+     CQ WPX, IARU HF, OK/OM DX, Custom; more added over time as needed
+     (national/event contests).
+  4. **Main log view = non-contest QSOs only** (`contest_ref` NULL); a
+     contest's QSOs are visible when switched into it. Worked-B4 and stats
+     stay global. ADIF export always exports everything by default.
+  Engine (landed 2026-07-27): schema v2 migration (contest table +
+  contest_ref/stx/srx/stx_string/srx_string), contest CRUD, per-contest
+  serial (`max(stx)+1`), whole-contest dup check (call+band+mode), list
+  scoping (all/main/contest), `contest.c` exchange templates (GKeyFile
+  serialization) + `logfl_exch_apply` routing, ADIF: STX/SRX[_STRING]
+  modeled as columns, CONTEST_ID written from the linked contest's
+  `adif_id`; imported CONTEST_ID stays verbatim in extras (no auto-created
+  contests — deliberate). Macros grew {NR} (sent serial, "001" form) and
+  {EXCH} (static sent exchange).
+  Gate: `log-contest-test` — definitions round-trip, presets, routing,
+  v1→v2 migration, CRUD, serial/dup/scoping, delete semantics, ADIF
+  round trip.
+  UI: header switcher (Main log / contests / New contest… / Manage…),
+  new-contest dialog (name, preset, editable fields, my exchange, ADIF id),
+  entry row grows template fields + next-serial display, per-contest dup
+  warning, exchange column in the table, active contest persisted in
+  settings.ini (`contest.active`). WSJT-X auto-logged QSOs always land in
+  the main log (FT8 contest support would come later, deliberately).
 - **Later** — DXCC/awards tracking (cty.dat entity resolver, worked/confirmed
-  matrices per band/mode), contest mode (serials, Cabrillo export), and — only
-  if ever revisited — the skimmer cluster client.
+  matrices per band/mode), contest scoring/multipliers + Cabrillo export,
+  linking imported CONTEST_ID QSOs to contests, and — only if ever
+  revisited — the skimmer cluster client.
 
 ## Safety / etiquette
 

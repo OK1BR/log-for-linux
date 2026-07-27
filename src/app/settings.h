@@ -25,6 +25,7 @@ typedef struct {
   LogflMacroSet macros;        /* F1–F8 + free row + STOP (16) per bank      */
   gboolean wsjtx_enabled;      /* M6: listen for WSJT-X / JTDX UDP           */
   guint16  wsjtx_port;         /* default 2237                               */
+  gint64   active_contest;     /* contest.id the UI is switched to; 0 = main */
 } LogflSettings;
 
 /* Fill defaults (heap strings + macro banks). Safe on a zeroed struct. */

@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "adif.h"
+#include "contest.h"
 #include "engine.h"
 #include "log_store.h"
 #include "macros.h"
@@ -42,8 +43,8 @@ static const char *bands[] = {
 static const char *modes[] = { "CW", "SSB", "FT8", "FT4", "RTTY", "PSK31",
                                "FM", "AM", NULL };
 
-enum { COL_UTC, COL_CALL, COL_BAND, COL_FREQ, COL_MODE, COL_RST,
-       COL_NAME, COL_COMMENT };
+enum { COL_UTC, COL_CALL, COL_BAND, COL_FREQ, COL_MODE, COL_RST_S,
+       COL_RST_R, COL_NAME, COL_COMMENT, COL_STX, COL_EXCH };
 
 struct _LogflWindow {
   AdwApplicationWindow parent_instance;
@@ -85,12 +86,29 @@ struct _LogflWindow {
   LogflEsmPhase esm_phase;     /* M5 Enter-sends-message state */
   gboolean esm_force_log;      /* ESM LOG step → bypass ESM on Enter */
   gboolean prefs_macros_dirty; /* macro edits in Preferences await ini save */
+
+  /* M9 contests. */
+  LogflContest *contest;       /* active contest; NULL = main log view */
+  LogflExchDef *exch_def;      /* parsed template of the active contest */
+  GtkWidget *exch_box;         /* entry-row slot holding template fields */
+  GPtrArray *exch_entries;     /* GtkEntry* per template field (unowned) */
+  GtkWidget *serial_value;     /* "Sent" entry, prefilled with the next
+                                * serial (or static exchange) — editable */
+  GtkWidget *contest_btn;      /* header switcher (menu button) */
+  GtkColumnViewColumn *col_stx, *col_exch; /* contest-only table columns */
+  GtkColumnViewColumn *col_name, *col_comment; /* hidden while in contest */
+  guint next_serial;           /* next sent serial (0 = no serial contest) */
+  gint64 pending_contest_delete; /* contest id in the open delete confirm */
 };
 
 G_DEFINE_FINAL_TYPE (LogflWindow, logfl_window, ADW_TYPE_APPLICATION_WINDOW)
 
 static void refresh_esm_hint (LogflWindow *self);
 static GtkWidget *labeled (const char *caption, GtkWidget *child);
+static void contest_ui_refresh (LogflWindow *self);
+static void refresh_serial (LogflWindow *self);
+static GtkWidget *mk_entry (LogflWindow *self, int width_chars,
+                            const char *placeholder);
 
 /* --- small helpers ------------------------------------------------------ */
 
@@ -146,6 +164,31 @@ entry_text (GtkWidget *e)
 
 /* --- data reload -------------------------------------------------------- */
 
+/* Subtitle mirrors the active view: contest name + its counters when
+ * switched into a contest, whole-log counters otherwise. */
+static void
+update_subtitle (LogflWindow *self)
+{
+  if (!self->store)
+    return;
+  LogflStoreStats st;
+  char *sub = NULL;
+  if (self->contest)
+    {
+      if (logfl_store_contest_stats (self->store, self->contest->id, &st,
+                                     NULL))
+        sub = g_strdup_printf ("%s — %u QSO · %u calls",
+                               self->contest->name, st.n_qso, st.n_calls);
+    }
+  else if (logfl_store_stats (self->store, &st, NULL))
+    sub = g_strdup_printf ("%u QSO · %u calls", st.n_qso, st.n_calls);
+  if (sub)
+    {
+      adw_window_title_set_subtitle (self->title, sub);
+      g_free (sub);
+    }
+}
+
 static void
 reload (LogflWindow *self)
 {
@@ -161,7 +204,10 @@ reload (LogflWindow *self)
   const char *text = (self->search && entry_text (self->search)[0])
                          ? entry_text (self->search)
                          : NULL;
-  LogflStoreQuery q = { .text = text };
+  /* Main view = QSOs outside any contest; a contest view = its QSOs only. */
+  LogflStoreQuery q = { .text = text,
+                        .contest = self->contest ? self->contest->id
+                                                 : LOGFL_QUERY_CONTEST_NONE };
   GPtrArray *list = logfl_store_list (self->store, &q, &err);
 
   if (self->rows)
@@ -180,13 +226,7 @@ reload (LogflWindow *self)
     }
   g_ptr_array_unref (list);
 
-  LogflStoreStats st;
-  if (logfl_store_stats (self->store, &st, NULL))
-    {
-      char *sub = g_strdup_printf ("%u QSO · %u calls", st.n_qso, st.n_calls);
-      adw_window_title_set_subtitle (self->title, sub);
-      g_free (sub);
-    }
+  update_subtitle (self);
 }
 
 static gboolean
@@ -458,11 +498,21 @@ update_wb4 (LogflWindow *self)
 
   gtk_widget_remove_css_class (l, "success");
   gtk_widget_remove_css_class (l, "warning");
+  gtk_widget_remove_css_class (l, "error");
   if (!self->store || strlen (call) < 2)
     {
       gtk_label_set_text (GTK_LABEL (l), "");
       return;
     }
+
+  /* In a contest the question is "is this a dup HERE" — same call+band+mode
+   * already in this contest, any time. Worked-B4 stays the global answer. */
+  gboolean contest_dup = FALSE;
+  if (self->contest)
+    logfl_store_contest_dup_check (self->store, self->contest->id, call,
+                                   dd_selected (self->band_dd, bands),
+                                   dd_selected (self->mode_dd, modes),
+                                   &contest_dup, NULL);
 
   LogflWorkedB4 wb;
   if (!logfl_store_worked_b4 (self->store, call,
@@ -478,10 +528,11 @@ update_wb4 (LogflWindow *self)
   GDateTime *dt = g_date_time_new_from_unix_utc (wb.last_ts);
   char *when = g_date_time_format (dt, "%d.%m.%Y");
   char *txt = g_strdup_printf (
-      "B4: %u× · this band %u× · band+mode %u× · last %s",
+      "%sB4: %u× · this band %u× · band+mode %u× · last %s",
+      contest_dup ? "DUP in contest · " : "",
       wb.n_total, wb.n_band, wb.n_band_mode, when);
   gtk_label_set_text (GTK_LABEL (l), txt);
-  gtk_widget_add_css_class (l, "warning");
+  gtk_widget_add_css_class (l, contest_dup ? "error" : "warning");
   g_free (txt);
   g_free (when);
   g_date_time_unref (dt);
@@ -582,6 +633,8 @@ clear_entry_row (LogflWindow *self)
   gtk_editable_set_text (GTK_EDITABLE (self->call), "");
   gtk_editable_set_text (GTK_EDITABLE (self->name), "");
   gtk_editable_set_text (GTK_EDITABLE (self->comment), "");
+  for (guint i = 0; self->exch_entries && i < self->exch_entries->len; i++)
+    gtk_editable_set_text (GTK_EDITABLE (self->exch_entries->pdata[i]), "");
   gtk_label_set_text (GTK_LABEL (self->wb4_label), "");
   gtk_widget_grab_focus (self->call);
 }
@@ -633,6 +686,42 @@ apply_entry_to_qso (LogflWindow *self, LogflQso *q)
       self->settings.station_callsign && *self->settings.station_callsign
           ? self->settings.station_callsign
           : "OK1BR");
+
+  /* Active contest: link the QSO and route the exchange per template.
+   * The Sent entry wins over the auto values — the operator may have sent
+   * a different serial (or exchange) than the prefill. */
+  if (self->contest && self->exch_def)
+    {
+      q->contest_ref = self->contest->id;
+      guint n = self->exch_entries->len;
+      const char **vals = g_new0 (const char *, n + 1);
+      for (guint i = 0; i < n; i++)
+        vals[i] = entry_text (self->exch_entries->pdata[i]);
+
+      char *sent = self->serial_value
+                       ? g_strstrip (g_strdup (entry_text (self->serial_value)))
+                       : g_strdup ("");
+      if (self->exch_def->tx_serial)
+        {
+          guint serial = self->next_serial;
+          if (*sent)
+            {
+              gboolean digits = TRUE;
+              for (const char *c = sent; *c; c++)
+                if (!g_ascii_isdigit (*c))
+                  digits = FALSE;
+              if (digits)
+                serial = (guint) g_ascii_strtoull (sent, NULL, 10);
+            }
+          logfl_exch_apply (self->exch_def, vals, n, self->contest->my_exch,
+                            serial, q);
+        }
+      else
+        logfl_exch_apply (self->exch_def, vals, n,
+                          *sent ? sent : self->contest->my_exch, 0, q);
+      g_free (sent);
+      g_free (vals);
+    }
 }
 
 static void
@@ -647,6 +736,7 @@ do_add_pending (LogflWindow *self)
         self->esm_phase = LOGFL_ESM_PHASE_TU;
       clear_entry_row (self);
       reload (self);
+      refresh_serial (self);
       refresh_esm_hint (self);
     }
   else
@@ -697,9 +787,15 @@ log_qso (LogflWindow *self)
   LogflQso *q = logfl_qso_new ();
   apply_entry_to_qso (self, q);
 
+  /* Contest rules: one QSO per call+band+mode for the whole contest;
+   * outside a contest the ±5 min window applies. */
   gboolean dup = FALSE;
-  logfl_store_dup_check (self->store, q->call, q->band, q->mode, q->ts,
-                         DUP_WINDOW_S, &dup, NULL);
+  if (self->contest)
+    logfl_store_contest_dup_check (self->store, self->contest->id, q->call,
+                                   q->band, q->mode, &dup, NULL);
+  else
+    logfl_store_dup_check (self->store, q->call, q->band, q->mode, q->ts,
+                           DUP_WINDOW_S, &dup, NULL);
   self->pending = q;
   if (!dup)
     {
@@ -708,9 +804,14 @@ log_qso (LogflWindow *self)
     }
 
   AdwDialog *dlg = adw_alert_dialog_new ("Duplicate?", NULL);
-  adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
-      "%s was already logged on %s/%s within ±%d min.",
-      q->call, q->band, q->mode, DUP_WINDOW_S / 60);
+  if (self->contest)
+    adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
+        "%s was already worked in %s on %s/%s.",
+        q->call, self->contest->name, q->band, q->mode);
+  else
+    adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
+        "%s was already logged on %s/%s within ±%d min.",
+        q->call, q->band, q->mode, DUP_WINDOW_S / 60);
   adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg),
                                   "cancel", "Cancel", "log", "Log anyway",
                                   NULL);
@@ -773,8 +874,24 @@ macro_run (LogflWindow *self, guint idx)
       self->settings.station_callsign && *self->settings.station_callsign
           ? self->settings.station_callsign
           : "OK1BR";
+  /* {NR}/{EXCH} follow the Sent entry — what the operator sees is what
+   * the keyer sends. */
+  const char *sent_txt = self->contest && self->serial_value
+                             ? entry_text (self->serial_value)
+                             : NULL;
+  const char *exch = self->contest ? self->contest->my_exch : NULL;
+  char *nr = NULL;
+  if (self->contest && self->exch_def && self->exch_def->tx_serial)
+    nr = sent_txt && *sent_txt
+             ? g_strdup (sent_txt)
+             : (self->next_serial
+                    ? logfl_exch_serial_format (self->next_serial)
+                    : NULL);
+  else if (sent_txt && *sent_txt)
+    exch = sent_txt;
   char *msg = logfl_macro_expand (k->tmpl, mycall, entry_text (self->call),
-                                  entry_text (self->rst_s));
+                                  entry_text (self->rst_s), nr, exch);
+  g_free (nr);
   if (!msg || !*msg)
     {
       g_free (msg);
@@ -864,7 +981,8 @@ macro_edit_dialog (LogflWindow *self, guint idx)
   else
     adw_alert_dialog_format_body (
         ADW_ALERT_DIALOG (dlg),
-        "Tokens: {MYCALL} {CALL} {RST}  ·  empty text = unused free slot");
+        "Tokens: {MYCALL} {CALL} {RST} {NR} {EXCH}"
+        "  ·  empty text = unused free slot");
 
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
   GtkWidget *cap_e = gtk_entry_new ();
@@ -1225,6 +1343,8 @@ on_delete_response (GObject *source, GAsyncResult *res, gpointer user_data)
     {
       toast (self, "QSO deleted");
       reload (self);
+      /* Deleting the highest contest serial hands its number out again. */
+      refresh_serial (self);
     }
   else
     {
@@ -1801,7 +1921,8 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
       ADW_TYPE_PREFERENCES_GROUP,
       "title", "Macro banks",
       "description",
-      "Tokens: {MYCALL} {CALL} {RST} — ! is short for {CALL}. "
+      "Tokens: {MYCALL} {CALL} {RST} {NR} {EXCH} — ! is short for {CALL}, "
+      "{NR}/{EXCH} are the contest serial and my sent exchange. "
       "Empty CW text = unused slot.",
       NULL));
   GtkWidget *mstack = gtk_stack_new ();
@@ -1904,6 +2025,512 @@ act_about (GSimpleAction *action, GVariant *param, gpointer user_data)
   adw_dialog_present (dlg, GTK_WIDGET (self));
 }
 
+/* --- contests (M9) ------------------------------------------------------ */
+
+/* Next sent serial for the active contest → cached + shown in the entry
+ * row. 0 when the contest has no serial (or no contest is active). */
+static void
+refresh_serial (LogflWindow *self)
+{
+  self->next_serial = 0;
+  if (self->store && self->contest && self->exch_def
+      && self->exch_def->tx_serial)
+    {
+      guint n = 1;
+      if (logfl_store_serial_next (self->store, self->contest->id, &n, NULL))
+        self->next_serial = n;
+    }
+  if (self->serial_value)
+    {
+      char *s;
+      if (self->next_serial)
+        s = logfl_exch_serial_format (self->next_serial);
+      else if (self->contest && self->contest->my_exch
+               && *self->contest->my_exch)
+        s = g_strdup (self->contest->my_exch);
+      else
+        s = g_strdup ("");
+      gtk_editable_set_text (GTK_EDITABLE (self->serial_value), s);
+      g_free (s);
+    }
+}
+
+/* Rebuild the entry-row exchange fields from the active template. */
+static void
+rebuild_exch_fields (LogflWindow *self)
+{
+  if (!self->exch_box)
+    return;
+  GtkWidget *c;
+  while ((c = gtk_widget_get_first_child (self->exch_box)) != NULL)
+    gtk_box_remove (GTK_BOX (self->exch_box), c);
+  if (self->exch_entries)
+    g_ptr_array_set_size (self->exch_entries, 0);
+  self->serial_value = NULL;
+
+  gtk_widget_set_visible (self->exch_box, self->exch_def != NULL);
+  if (!self->exch_def)
+    return;
+
+  /* What goes out next: the serial, or the static exchange for contests
+   * without one. Prefilled but editable — a mis-sent number can be fixed
+   * before logging; the prefill refreshes after every logged QSO. */
+  self->serial_value = mk_entry (self, 6, NULL);
+  gtk_widget_add_css_class (self->serial_value, "numeric");
+  gtk_box_append (GTK_BOX (self->exch_box),
+                  labeled ("Sent", self->serial_value));
+  for (guint i = 0; i < self->exch_def->fields->len; i++)
+    {
+      const LogflExchField *f = self->exch_def->fields->pdata[i];
+      GtkWidget *e = mk_entry (self, 7, NULL);
+      if (f->required)
+        gtk_widget_set_tooltip_text (e, "Contest exchange (required)");
+      gtk_box_append (GTK_BOX (self->exch_box), labeled (f->label, e));
+      g_ptr_array_add (self->exch_entries, e);
+    }
+}
+
+static void
+rebuild_contest_menu (LogflWindow *self)
+{
+  if (!self->contest_btn)
+    return;
+
+  GMenu *menu = g_menu_new ();
+  GMenu *sw = g_menu_new ();
+  GMenuItem *it = g_menu_item_new ("Main log", NULL);
+  g_menu_item_set_action_and_target_value (it, "win.contest-switch",
+                                           g_variant_new_int64 (0));
+  g_menu_append_item (sw, it);
+  g_object_unref (it);
+  if (self->store)
+    {
+      GPtrArray *l = logfl_store_contest_list (self->store, NULL);
+      for (guint i = 0; l && i < l->len; i++)
+        {
+          const LogflContest *c = l->pdata[i];
+          it = g_menu_item_new (c->name, NULL);
+          g_menu_item_set_action_and_target_value (
+              it, "win.contest-switch", g_variant_new_int64 (c->id));
+          g_menu_append_item (sw, it);
+          g_object_unref (it);
+        }
+      g_clear_pointer (&l, g_ptr_array_unref);
+    }
+  g_menu_append_section (menu, NULL, G_MENU_MODEL (sw));
+  g_object_unref (sw);
+
+  GMenu *mgmt = g_menu_new ();
+  g_menu_append (mgmt, "_New contest…", "win.contest-new");
+  g_menu_append (mgmt, "_Manage contests…", "win.contest-manage");
+  g_menu_append_section (menu, NULL, G_MENU_MODEL (mgmt));
+  g_object_unref (mgmt);
+
+  gtk_menu_button_set_menu_model (GTK_MENU_BUTTON (self->contest_btn),
+                                  G_MENU_MODEL (menu));
+  g_object_unref (menu);
+}
+
+static void
+contest_ui_refresh (LogflWindow *self)
+{
+  if (self->contest_btn)
+    gtk_menu_button_set_label (GTK_MENU_BUTTON (self->contest_btn),
+                               self->contest ? self->contest->name
+                                             : "Main log");
+  rebuild_contest_menu (self);
+  rebuild_exch_fields (self);
+  refresh_serial (self);
+  /* Contest operating: Name/Comment are dead weight in the entry row —
+   * hide their labeled wrappers while a contest is active. */
+  if (self->name && gtk_widget_get_parent (self->name))
+    gtk_widget_set_visible (gtk_widget_get_parent (self->name),
+                            self->contest == NULL);
+  if (self->comment && gtk_widget_get_parent (self->comment))
+    gtk_widget_set_visible (gtk_widget_get_parent (self->comment),
+                            self->contest == NULL);
+  if (self->col_stx)
+    gtk_column_view_column_set_visible (self->col_stx,
+                                        self->contest != NULL);
+  if (self->col_exch)
+    {
+      gtk_column_view_column_set_visible (self->col_exch,
+                                          self->contest != NULL);
+      /* With Name/Comment gone, Rcvd takes the leftover width. */
+      gtk_column_view_column_set_expand (self->col_exch,
+                                         self->contest != NULL);
+    }
+  if (self->col_name)
+    gtk_column_view_column_set_visible (self->col_name,
+                                        self->contest == NULL);
+  if (self->col_comment)
+    gtk_column_view_column_set_visible (self->col_comment,
+                                        self->contest == NULL);
+  update_wb4 (self);
+}
+
+/* Load contest id into self (template parsed); no UI refresh, no save.
+ * A broken template drops back to the main log rather than half-working. */
+static void
+contest_load (LogflWindow *self, gint64 id)
+{
+  g_clear_pointer (&self->contest, logfl_contest_free);
+  g_clear_pointer (&self->exch_def, logfl_exch_def_free);
+  if (id <= 0 || !self->store)
+    return;
+
+  GError *err = NULL;
+  self->contest = logfl_store_contest_get (self->store, id, &err);
+  if (!self->contest)
+    {
+      g_clear_error (&err);
+      return;
+    }
+  self->exch_def = logfl_exch_def_parse (self->contest->exch_def, &err);
+  if (!self->exch_def)
+    {
+      if (self->toasts)
+        toast (self, "Broken exchange template in %s: %s",
+               self->contest->name, err ? err->message : "?");
+      g_clear_error (&err);
+      g_clear_pointer (&self->contest, logfl_contest_free);
+    }
+}
+
+static void
+contest_set_active (LogflWindow *self, gint64 id)
+{
+  contest_load (self, id);
+  self->settings.active_contest = self->contest ? self->contest->id : 0;
+  logfl_settings_save (&self->settings);
+  contest_ui_refresh (self);
+  reload (self);
+  toast_short (self, "%s", self->contest ? self->contest->name : "Main log");
+}
+
+static void
+act_contest_switch (GSimpleAction *action, GVariant *param,
+                    gpointer user_data)
+{
+  (void) action;
+  contest_set_active (LOGFL_WINDOW (user_data), g_variant_get_int64 (param));
+}
+
+/* --- new contest dialog -------------------------------------------------- */
+
+/* Prefill ADIF id, my-exchange hint and the definition from a preset. */
+static void
+contest_preset_fill (AdwDialog *dlg, guint idx)
+{
+  guint n = 0;
+  const LogflContestPreset *p = logfl_contest_presets (&n);
+  if (idx >= n)
+    return;
+  GtkWidget *adif = g_object_get_data (G_OBJECT (dlg), "adif");
+  GtkWidget *my = g_object_get_data (G_OBJECT (dlg), "myexch");
+  GtkTextView *def = g_object_get_data (G_OBJECT (dlg), "def");
+  gtk_editable_set_text (GTK_EDITABLE (adif),
+                         p[idx].adif_id ? p[idx].adif_id : "");
+  gtk_entry_set_placeholder_text (GTK_ENTRY (my),
+                                  p[idx].my_exch_hint ? p[idx].my_exch_hint
+                                                      : "");
+  gtk_text_buffer_set_text (gtk_text_view_get_buffer (def),
+                            p[idx].exch_def, -1);
+}
+
+static void
+on_contest_preset_changed (GObject *dd, GParamSpec *pspec, gpointer user_data)
+{
+  (void) pspec;
+  contest_preset_fill (user_data,
+                       gtk_drop_down_get_selected (GTK_DROP_DOWN (dd)));
+}
+
+static void
+on_contest_new_response (GObject *source, GAsyncResult *res,
+                         gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  AdwAlertDialog *dlg = ADW_ALERT_DIALOG (source);
+  const char *resp = adw_alert_dialog_choose_finish (dlg, res);
+  if (!g_str_equal (resp, "create"))
+    return;
+
+  GtkWidget *name = g_object_get_data (G_OBJECT (dlg), "name");
+  GtkWidget *adif = g_object_get_data (G_OBJECT (dlg), "adif");
+  GtkWidget *my = g_object_get_data (G_OBJECT (dlg), "myexch");
+  GtkTextView *defv = g_object_get_data (G_OBJECT (dlg), "def");
+
+  const char *nm = entry_text (name);
+  if (!*nm)
+    {
+      toast (self, "Contest not created — it needs a name");
+      return;
+    }
+
+  GtkTextBuffer *buf = gtk_text_view_get_buffer (defv);
+  GtkTextIter a, b;
+  gtk_text_buffer_get_bounds (buf, &a, &b);
+  char *def_text = gtk_text_buffer_get_text (buf, &a, &b, FALSE);
+
+  GError *err = NULL;
+  LogflExchDef *parsed = logfl_exch_def_parse (def_text, &err);
+  if (!parsed)
+    {
+      toast (self, "Contest not created — bad exchange definition: %s",
+             err ? err->message : "?");
+      g_clear_error (&err);
+      g_free (def_text);
+      return;
+    }
+  logfl_exch_def_free (parsed);
+
+  LogflContest *c = logfl_contest_new ();
+  c->name = g_strdup (nm);
+  c->adif_id = g_strdup (entry_text (adif));
+  c->my_exch = g_strdup (entry_text (my));
+  c->exch_def = def_text;
+  if (!logfl_store_contest_add (self->store, c, &err))
+    {
+      toast (self, "Contest not created: %s", err->message);
+      g_clear_error (&err);
+      logfl_contest_free (c);
+      return;
+    }
+  contest_set_active (self, c->id);
+  logfl_contest_free (c);
+}
+
+static void
+act_contest_new (GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+  (void) action;
+  (void) param;
+  LogflWindow *self = user_data;
+  if (!self->store)
+    {
+      toast (self, "Log store is not open");
+      return;
+    }
+
+  guint n = 0;
+  const LogflContestPreset *presets = logfl_contest_presets (&n);
+  const char **names = g_new0 (const char *, n + 1);
+  for (guint i = 0; i < n; i++)
+    names[i] = presets[i].name;
+
+  AdwDialog *dlg = adw_alert_dialog_new ("New contest", NULL);
+
+  GtkWidget *name = gtk_entry_new ();
+  gtk_entry_set_placeholder_text (GTK_ENTRY (name), "CQ WW CW 2026");
+  gtk_widget_set_hexpand (name, TRUE);
+  GtkWidget *preset_dd = gtk_drop_down_new_from_strings (names);
+  g_free (names);
+  GtkWidget *adif = gtk_entry_new ();
+  gtk_widget_set_hexpand (adif, TRUE);
+  GtkWidget *my = gtk_entry_new ();
+  gtk_widget_set_hexpand (my, TRUE);
+
+  GtkWidget *defv = gtk_text_view_new ();
+  gtk_text_view_set_monospace (GTK_TEXT_VIEW (defv), TRUE);
+  gtk_text_view_set_left_margin (GTK_TEXT_VIEW (defv), 6);
+  gtk_text_view_set_right_margin (GTK_TEXT_VIEW (defv), 6);
+  gtk_text_view_set_top_margin (GTK_TEXT_VIEW (defv), 4);
+  gtk_text_view_set_bottom_margin (GTK_TEXT_VIEW (defv), 4);
+  GtkWidget *scroller = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), defv);
+  gtk_scrolled_window_set_min_content_height (GTK_SCROLLED_WINDOW (scroller),
+                                              150);
+  gtk_widget_add_css_class (scroller, "card");
+
+  GtkWidget *row1 = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_box_append (GTK_BOX (row1), labeled ("Name", name));
+  gtk_box_append (GTK_BOX (row1), labeled ("Preset", preset_dd));
+  GtkWidget *row2 = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_box_append (GTK_BOX (row2), labeled ("ADIF CONTEST_ID", adif));
+  gtk_box_append (GTK_BOX (row2), labeled ("My exchange", my));
+
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
+  gtk_box_append (GTK_BOX (box), row1);
+  gtk_box_append (GTK_BOX (box), row2);
+  gtk_box_append (GTK_BOX (box),
+                  labeled ("Exchange definition (received fields → ADIF)",
+                           scroller));
+  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), box);
+
+  g_object_set_data (G_OBJECT (dlg), "name", name);
+  g_object_set_data (G_OBJECT (dlg), "adif", adif);
+  g_object_set_data (G_OBJECT (dlg), "myexch", my);
+  g_object_set_data (G_OBJECT (dlg), "def", defv);
+  g_signal_connect (preset_dd, "notify::selected",
+                    G_CALLBACK (on_contest_preset_changed), dlg);
+  contest_preset_fill (dlg, 0);
+
+  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg),
+                                  "cancel", "Cancel", "create", "Create",
+                                  NULL);
+  adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg), "create",
+                                            ADW_RESPONSE_SUGGESTED);
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "create");
+  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dlg), "cancel");
+  adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
+                           on_contest_new_response, self);
+}
+
+/* --- manage / delete ----------------------------------------------------- */
+
+static void
+on_contest_delete_response (GObject *source, GAsyncResult *res,
+                            gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  const char *resp =
+      adw_alert_dialog_choose_finish (ADW_ALERT_DIALOG (source), res);
+  gint64 id = self->pending_contest_delete;
+  self->pending_contest_delete = 0;
+  gboolean purge = g_str_equal (resp, "purge");
+  if (id <= 0 || (!purge && !g_str_equal (resp, "keep")))
+    return;
+
+  guint n = 0;
+  GError *err = NULL;
+  if (!logfl_store_contest_delete (self->store, id, purge, &n, &err))
+    {
+      toast (self, "Delete failed: %s", err->message);
+      g_clear_error (&err);
+      return;
+    }
+  if (purge)
+    toast (self, "Contest deleted with %u QSO", n);
+  else
+    toast (self, "Contest deleted — %u QSO kept in the main log", n);
+
+  if (self->contest && self->contest->id == id)
+    contest_set_active (self, 0);   /* refreshes UI + reload + settings */
+  else
+    {
+      contest_ui_refresh (self);
+      reload (self);
+    }
+}
+
+static void
+confirm_contest_delete (LogflWindow *self, gint64 id, const char *name)
+{
+  LogflStoreStats st = { 0 };
+  logfl_store_contest_stats (self->store, id, &st, NULL);
+  self->pending_contest_delete = id;
+
+  AdwDialog *dlg = adw_alert_dialog_new ("Delete contest?", NULL);
+  adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
+      "“%s” holds %u QSO. Keep them in the main log, or delete them too?",
+      name, st.n_qso);
+  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg),
+                                  "cancel", "Cancel",
+                                  "keep", "Delete, keep QSOs",
+                                  "purge", "Delete with QSOs", NULL);
+  adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg), "purge",
+                                            ADW_RESPONSE_DESTRUCTIVE);
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "cancel");
+  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dlg), "cancel");
+  adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
+                           on_contest_delete_response, self);
+}
+
+static void
+on_contest_row_delete (GtkButton *btn, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  gint64 *idp = g_object_get_data (G_OBJECT (btn), "cid");
+  const char *cname = g_object_get_data (G_OBJECT (btn), "cname");
+  AdwDialog *mgr = g_object_get_data (G_OBJECT (btn), "mgr");
+  if (!idp)
+    return;
+  /* Copy before closing the manager — closing tears the button down. */
+  gint64 id = *idp;
+  char *nm = g_strdup (cname ? cname : "?");
+  if (mgr)
+    adw_dialog_close (mgr);
+  confirm_contest_delete (self, id, nm);
+  g_free (nm);
+}
+
+static void
+act_contest_manage (GSimpleAction *action, GVariant *param,
+                    gpointer user_data)
+{
+  (void) action;
+  (void) param;
+  LogflWindow *self = user_data;
+  if (!self->store)
+    {
+      toast (self, "Log store is not open");
+      return;
+    }
+  GError *err = NULL;
+  GPtrArray *l = logfl_store_contest_list (self->store, &err);
+  if (!l)
+    {
+      toast (self, "Cannot list contests: %s", err->message);
+      g_clear_error (&err);
+      return;
+    }
+
+  AdwDialog *dlg = adw_alert_dialog_new ("Contests", NULL);
+  if (l->len == 0)
+    adw_alert_dialog_set_body (ADW_ALERT_DIALOG (dlg), "No contests yet.");
+  else
+    {
+      GtkWidget *list = gtk_list_box_new ();
+      gtk_list_box_set_selection_mode (GTK_LIST_BOX (list),
+                                       GTK_SELECTION_NONE);
+      gtk_widget_add_css_class (list, "boxed-list");
+      for (guint i = 0; i < l->len; i++)
+        {
+          const LogflContest *c = l->pdata[i];
+          GtkWidget *row = adw_action_row_new ();
+          adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row),
+                                              FALSE);
+          adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), c->name);
+
+          LogflStoreStats st = { 0 };
+          logfl_store_contest_stats (self->store, c->id, &st, NULL);
+          GDateTime *dt = g_date_time_new_from_unix_utc (c->created);
+          char *when = dt ? g_date_time_format (dt, "%d.%m.%Y") : NULL;
+          char *sub = g_strdup_printf ("%u QSO · created %s", st.n_qso,
+                                       when ? when : "?");
+          adw_action_row_set_subtitle (ADW_ACTION_ROW (row), sub);
+          g_free (sub);
+          g_free (when);
+          if (dt)
+            g_date_time_unref (dt);
+
+          GtkWidget *del =
+              gtk_button_new_from_icon_name ("user-trash-symbolic");
+          gtk_widget_add_css_class (del, "flat");
+          gtk_widget_set_valign (del, GTK_ALIGN_CENTER);
+          gtk_widget_set_tooltip_text (del, "Delete contest…");
+          g_object_set_data_full (G_OBJECT (del), "cid",
+                                  g_memdup2 (&c->id, sizeof c->id), g_free);
+          g_object_set_data_full (G_OBJECT (del), "cname",
+                                  g_strdup (c->name), g_free);
+          g_object_set_data (G_OBJECT (del), "mgr", dlg);
+          g_signal_connect (del, "clicked",
+                            G_CALLBACK (on_contest_row_delete), self);
+          adw_action_row_add_suffix (ADW_ACTION_ROW (row), del);
+          gtk_list_box_append (GTK_LIST_BOX (list), row);
+        }
+      adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), list);
+    }
+  g_ptr_array_unref (l);
+
+  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg),
+                                  "close", "Close", NULL);
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "close");
+  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dlg), "close");
+  adw_dialog_present (dlg, GTK_WIDGET (self));
+}
+
 /* --- QSO table (inline cell edit via GtkEditableLabel) ----------------- */
 
 /* Display string for a column (caller frees). Matches what the cell shows. */
@@ -1930,33 +2557,35 @@ cell_display_text (int col, const LogflQso *q)
         return g_strdup_printf ("%s/%s",
                                 q->mode ? q->mode : "", q->submode);
       return g_strdup (q->mode ? q->mode : "");
-    case COL_RST:
-      return g_strdup_printf ("%s/%s",
-                              q->rst_sent && *q->rst_sent ? q->rst_sent : "—",
-                              q->rst_rcvd && *q->rst_rcvd ? q->rst_rcvd : "—");
+    case COL_RST_S:
+      return g_strdup (q->rst_sent ? q->rst_sent : "");
+    case COL_RST_R:
+      return g_strdup (q->rst_rcvd ? q->rst_rcvd : "");
     case COL_NAME:
       return g_strdup (q->name ? q->name : "");
     case COL_COMMENT:
       return g_strdup (q->comment ? q->comment : "");
+    case COL_STX:
+      if (q->stx > 0)
+        return logfl_exch_serial_format ((guint) q->stx);
+      return g_strdup (q->stx_string ? q->stx_string : "");
+    case COL_EXCH:
+      if (q->srx > 0 && q->srx_string && *q->srx_string)
+        return g_strdup_printf ("%" G_GINT64_FORMAT " %s",
+                                q->srx, q->srx_string);
+      if (q->srx > 0)
+        return logfl_exch_serial_format ((guint) q->srx);
+      return g_strdup (q->srx_string ? q->srx_string : "");
     default:
       return g_strdup ("");
     }
 }
 
-/* Text to prefill the cell entry with. Same as the display except RST,
- * where the "—/—" placeholder dashes would have to be deleted by hand —
- * edit the raw values instead. */
+/* Text to prefill the cell entry with — the display string is the raw
+ * value for every column. */
 static char *
 cell_edit_text (int col, const LogflQso *q)
 {
-  if (col == COL_RST)
-    {
-      const char *s = q->rst_sent ? q->rst_sent : "";
-      const char *r = q->rst_rcvd ? q->rst_rcvd : "";
-      if (!*s && !*r)
-        return g_strdup ("");
-      return g_strdup_printf ("%s/%s", s, r);
-    }
   return cell_display_text (col, q);
 }
 
@@ -2100,24 +2729,14 @@ apply_cell_to_qso (LogflQso *q, int col, const char *raw, GError **error)
           }
         break;
       }
-    case COL_RST:
-      {
-        char *slash = strchr (text, '/');
-        char *sent = text;
-        char *rcvd = NULL;
-        if (slash)
-          {
-            *slash = '\0';
-            rcvd = slash + 1;
-            g_strstrip (sent);
-            g_strstrip (rcvd);
-          }
-        g_free (q->rst_sent);
-        g_free (q->rst_rcvd);
-        q->rst_sent = rst_part_empty (sent) ? NULL : g_strdup (sent);
-        q->rst_rcvd = rst_part_empty (rcvd) ? NULL : g_strdup (rcvd);
-        break;
-      }
+    case COL_RST_S:
+      g_free (q->rst_sent);
+      q->rst_sent = rst_part_empty (text) ? NULL : g_strdup (text);
+      break;
+    case COL_RST_R:
+      g_free (q->rst_rcvd);
+      q->rst_rcvd = rst_part_empty (text) ? NULL : g_strdup (text);
+      break;
     case COL_NAME:
       g_free (q->name);
       q->name = *text ? g_steal_pointer (&text) : NULL;
@@ -2191,13 +2810,7 @@ commit_cell_edit (LogflWindow *self, LogflQsoRow *row, int col,
   if (out_changed)
     *out_changed = TRUE;
 
-  LogflStoreStats st;
-  if (logfl_store_stats (self->store, &st, NULL))
-    {
-      char *sub = g_strdup_printf ("%u QSO · %u calls", st.n_qso, st.n_calls);
-      adw_window_title_set_subtitle (self->title, sub);
-      g_free (sub);
-    }
+  update_subtitle (self);
   return TRUE;
 }
 
@@ -2413,6 +3026,11 @@ on_cell_click (GtkGestureClick *gesture, gint n_press, gdouble x, gdouble y,
     return;
   if (cell_is_editing (box))
     return;
+  /* Contest exchange columns are display-only (v1) — edits would need the
+   * template routing to run backwards. */
+  int col = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (box), "logfl-col"));
+  if (col == COL_STX || col == COL_EXCH)
+    return;
   gtk_gesture_set_state (GTK_GESTURE (gesture), GTK_EVENT_SEQUENCE_CLAIMED);
   cell_begin_edit (box);
 }
@@ -2522,8 +3140,9 @@ col_unbind (GtkSignalListItemFactory *factory, GObject *object,
   g_object_set_data (G_OBJECT (box), "logfl-row", NULL);
 }
 
-/* fixed_w > 0: preferred column width (px). expand: share leftover space. */
-static void
+/* fixed_w > 0: preferred column width (px). expand: share leftover space.
+ * Returns the column (borrowed — the view owns it). */
+static GtkColumnViewColumn *
 add_column (GtkColumnView *view, const char *title, int col,
             int fixed_w, gboolean expand, LogflWindow *self)
 {
@@ -2539,6 +3158,7 @@ add_column (GtkColumnView *view, const char *title, int col,
   gtk_column_view_column_set_expand (c, expand);
   gtk_column_view_append_column (view, c);
   g_object_unref (c);
+  return c;
 }
 
 /* App-wide CSS for the QSO table: airier rows, compact inline entry so
@@ -2664,6 +3284,16 @@ logfl_window_dispose (GObject *obj)
   self->search = NULL;
   self->table_view = NULL;
   self->cell_edit_box = NULL;
+  self->exch_box = NULL;
+  self->serial_value = NULL;
+  self->contest_btn = NULL;
+  self->col_stx = NULL;
+  self->col_exch = NULL;
+  self->col_name = NULL;
+  self->col_comment = NULL;
+  g_clear_pointer (&self->contest, logfl_contest_free);
+  g_clear_pointer (&self->exch_def, logfl_exch_def_free);
+  g_clear_pointer (&self->exch_entries, g_ptr_array_unref);
   /* Drop our refs; the column view may still hold one on selection until
    * the widget tree is torn down. */
   g_clear_object (&self->selection);
@@ -2685,6 +3315,10 @@ static const GActionEntry win_actions[] = {
   { .name = "export", .activate = act_export },
   { .name = "preferences", .activate = act_preferences },
   { .name = "about", .activate = act_about },
+  { .name = "contest-switch", .parameter_type = "x",
+    .activate = act_contest_switch },
+  { .name = "contest-new", .activate = act_contest_new },
+  { .name = "contest-manage", .activate = act_contest_manage },
 };
 
 /* Resolve LogflQsoRow under view coordinates. Only the cell boxes carry
@@ -2765,15 +3399,27 @@ build_qso_table (LogflWindow *self)
   gtk_widget_set_tooltip_text (
       view,
       "Click a cell to edit. Right-click a row to delete.");
-  /* Preferred widths keep short fields readable; Name/Comment expand. */
+  /* Preferred widths keep short fields readable; Name/Comment expand.
+   * Column order mirrors the entry row (Band/Mode/MHz first), with UTC
+   * leading as the timeline. */
   add_column (GTK_COLUMN_VIEW (view), "UTC", COL_UTC, 128, FALSE, self);
-  add_column (GTK_COLUMN_VIEW (view), "Call", COL_CALL, 100, FALSE, self);
   add_column (GTK_COLUMN_VIEW (view), "Band", COL_BAND, 64, FALSE, self);
-  add_column (GTK_COLUMN_VIEW (view), "MHz", COL_FREQ, 108, FALSE, self);
   add_column (GTK_COLUMN_VIEW (view), "Mode", COL_MODE, 88, FALSE, self);
-  add_column (GTK_COLUMN_VIEW (view), "RST", COL_RST, 96, FALSE, self);
-  add_column (GTK_COLUMN_VIEW (view), "Name", COL_NAME, 120, TRUE, self);
-  add_column (GTK_COLUMN_VIEW (view), "Comment", COL_COMMENT, 160, TRUE, self);
+  add_column (GTK_COLUMN_VIEW (view), "MHz", COL_FREQ, 108, FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "Call", COL_CALL, 100, FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "RST s", COL_RST_S, 64, FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "RST r", COL_RST_R, 64, FALSE, self);
+  /* Contest columns — shown only while switched into a contest. */
+  self->col_stx = add_column (GTK_COLUMN_VIEW (view), "Sent", COL_STX,
+                              72, FALSE, self);
+  self->col_exch = add_column (GTK_COLUMN_VIEW (view), "Rcvd", COL_EXCH,
+                               96, FALSE, self);
+  gtk_column_view_column_set_visible (self->col_stx, FALSE);
+  gtk_column_view_column_set_visible (self->col_exch, FALSE);
+  self->col_name = add_column (GTK_COLUMN_VIEW (view), "Name", COL_NAME,
+                               120, TRUE, self);
+  self->col_comment = add_column (GTK_COLUMN_VIEW (view), "Comment",
+                                  COL_COMMENT, 160, TRUE, self);
 
   GtkGesture *rb = GTK_GESTURE (gtk_gesture_click_new ());
   gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (rb), GDK_BUTTON_SECONDARY);
@@ -2832,6 +3478,16 @@ logfl_window_init (LogflWindow *self)
       g_idle_add (show_store_open_error, self);
     }
 
+  /* M9: restore the active contest; a stale id (deleted elsewhere) falls
+   * back to the main log. */
+  self->exch_entries = g_ptr_array_new ();
+  contest_load (self, self->settings.active_contest);
+  if (self->settings.active_contest && !self->contest)
+    {
+      self->settings.active_contest = 0;
+      logfl_settings_save (&self->settings);
+    }
+
   /* Header: title · Run/S&P icon · hamburger (pack_end is right-to-left). */
   GtkWidget *header = adw_header_bar_new ();
   self->title = ADW_WINDOW_TITLE (adw_window_title_new ("Log for Linux",
@@ -2853,6 +3509,13 @@ logfl_window_init (LogflWindow *self)
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), menu_btn);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header),
                            build_bank_header_btn (self));
+
+  /* M9: contest switcher lives left of the title. */
+  self->contest_btn = gtk_menu_button_new ();
+  gtk_menu_button_set_label (GTK_MENU_BUTTON (self->contest_btn), "Main log");
+  gtk_widget_set_tooltip_text (self->contest_btn,
+                               "Switch between the main log and contests");
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), self->contest_btn);
 
   /* Entry row. */
   self->call = mk_entry (self, 10, "OK1…");
@@ -2892,13 +3555,20 @@ logfl_window_init (LogflWindow *self)
   g_signal_connect_swapped (self->log_btn, "clicked",
                             G_CALLBACK (log_qso), self);
 
+  /* M9: template exchange fields (rebuilt on contest switch). */
+  self->exch_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_widget_set_visible (self->exch_box, FALSE);
+
+  /* Band/Mode/MHz lead in every view (2026-07-27, Richard) — the radio
+   * state first, then the QSO being copied. */
   GtkWidget *fields = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-  gtk_box_append (GTK_BOX (fields), labeled ("Call", self->call));
-  gtk_box_append (GTK_BOX (fields), labeled ("RST s", self->rst_s));
-  gtk_box_append (GTK_BOX (fields), labeled ("RST r", self->rst_r));
   gtk_box_append (GTK_BOX (fields), labeled ("Band", self->band_dd));
   gtk_box_append (GTK_BOX (fields), labeled ("Mode", self->mode_dd));
   gtk_box_append (GTK_BOX (fields), labeled ("MHz", self->freq));
+  gtk_box_append (GTK_BOX (fields), labeled ("Call", self->call));
+  gtk_box_append (GTK_BOX (fields), labeled ("RST s", self->rst_s));
+  gtk_box_append (GTK_BOX (fields), labeled ("RST r", self->rst_r));
+  gtk_box_append (GTK_BOX (fields), self->exch_box);
   gtk_box_append (GTK_BOX (fields), labeled ("Name", self->name));
   gtk_box_append (GTK_BOX (fields), labeled ("Comment", self->comment));
   gtk_box_append (GTK_BOX (fields), self->log_btn);
@@ -2974,6 +3644,7 @@ logfl_window_init (LogflWindow *self)
 
   self->clock_id = g_timeout_add_seconds (1, clock_tick, self);
   clock_tick (self);
+  contest_ui_refresh (self);
   reload (self);
   /* M4: connect to sdr-for-linux TCI in a background thread (non-blocking). */
   g_idle_add (tci_connect_kick, self);
