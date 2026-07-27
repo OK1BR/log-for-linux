@@ -291,6 +291,14 @@ static const LogflContestPreset presets[] = {
     "[exchange]\ntx_serial=false\nfields=exch;\n"
     "[field:exch]\nlabel=Nr/District\ntype=auto\nrequired=true\n",
     "district (e.g. APA)" },
+  /* Exchange is the two-digit year of the operator's FIRST licence
+   * (euhf.s5cc.eu rules) — text, so "01" (= 2001) keeps its zero and the
+   * multiplier string survives verbatim. Once per band and mode = exactly
+   * the app's contest dup rule. */
+  { "EUHFC", "EU-HF",
+    "[exchange]\ntx_serial=false\nfields=year;\n"
+    "[field:year]\nlabel=Year\ntype=text\nrequired=true\n",
+    "two-digit year of first licence (e.g. 99)" },
   { "Custom", NULL,
     "[exchange]\ntx_serial=false\nfields=exch;\n"
     "[field:exch]\nlabel=Exch\ntype=auto\nrequired=false\n",

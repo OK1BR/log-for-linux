@@ -181,6 +181,23 @@ test_presets (void)
   g_assert_cmpstr (f->adif_num, ==, "CQZ");
   g_assert_false (def->tx_serial);
   logfl_exch_def_free (def);
+
+  /* EUHFC: the year of first licence is TEXT — "01" (2001) must keep its
+   * leading zero instead of turning into a serial. */
+  gboolean euhfc = FALSE;
+  for (guint i = 0; i < n; i++)
+    if (g_strcmp0 (p[i].name, "EUHFC") == 0)
+      {
+        euhfc = TRUE;
+        g_assert_cmpstr (p[i].adif_id, ==, "EU-HF");
+        def = logfl_exch_def_parse (p[i].exch_def, &err);
+        g_assert_no_error (err);
+        f = def->fields->pdata[0];
+        g_assert_cmpint (f->type, ==, LOGFL_EXCH_TEXT);
+        g_assert_false (def->tx_serial);
+        logfl_exch_def_free (def);
+      }
+  g_assert_true (euhfc);
 }
 
 static void
