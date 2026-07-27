@@ -1194,6 +1194,37 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
    * F1 must not key CW from a dialog entry and Esc must close the dialog. */
   if (adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (self)))
     return FALSE;
+  /* Tab cycles only the hot entry fields: Call → RST s → RST r → Sent →
+   * exchange (2026-07-27, Richard). Band/Mode/MHz/Name/Comment stay out
+   * of the chain — mouse territory. Elsewhere Tab keeps its default. */
+  if ((keyval == GDK_KEY_Tab || keyval == GDK_KEY_ISO_Left_Tab)
+      && !self->cell_edit_box)
+    {
+      GtkWidget *chain[16];
+      guint n = 0;
+      chain[n++] = self->call;
+      chain[n++] = self->rst_s;
+      chain[n++] = self->rst_r;
+      if (self->contest && self->serial_value)
+        chain[n++] = self->serial_value;
+      for (guint i = 0;
+           self->contest && self->exch_entries
+             && i < self->exch_entries->len && n < G_N_ELEMENTS (chain);
+           i++)
+        chain[n++] = self->exch_entries->pdata[i];
+
+      GtkWidget *focus = gtk_window_get_focus (GTK_WINDOW (self));
+      if (focus)
+        for (guint i = 0; i < n; i++)
+          if (focus == chain[i] || gtk_widget_is_ancestor (focus, chain[i]))
+            {
+              gboolean back = keyval == GDK_KEY_ISO_Left_Tab
+                              || (state & GDK_SHIFT_MASK) != 0;
+              gtk_widget_grab_focus (chain[back ? (i + n - 1) % n
+                                                : (i + 1) % n]);
+              return TRUE;
+            }
+    }
   if (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F8)
     {
       /* Do not fire macros while typing in a cell. */
@@ -2566,16 +2597,28 @@ cell_display_text (int col, const LogflQso *q)
     case COL_COMMENT:
       return g_strdup (q->comment ? q->comment : "");
     case COL_STX:
-      if (q->stx > 0)
-        return logfl_exch_serial_format ((guint) q->stx);
-      return g_strdup (q->stx_string ? q->stx_string : "");
+      {
+        /* Serial and text part both shown — the cell is editable and what
+         * it displays is exactly what a commit stores. */
+        char *nr = q->stx > 0
+                       ? logfl_exch_serial_format ((guint) q->stx) : NULL;
+        const char *txt = q->stx_string ? q->stx_string : "";
+        char *s = g_strdup_printf ("%s%s%s", nr ? nr : "",
+                                   nr && *txt ? " " : "", txt);
+        g_free (nr);
+        return s;
+      }
     case COL_EXCH:
-      if (q->srx > 0 && q->srx_string && *q->srx_string)
-        return g_strdup_printf ("%" G_GINT64_FORMAT " %s",
-                                q->srx, q->srx_string);
-      if (q->srx > 0)
-        return logfl_exch_serial_format ((guint) q->srx);
-      return g_strdup (q->srx_string ? q->srx_string : "");
+      {
+        char *nr = q->srx > 0
+                       ? g_strdup_printf ("%" G_GINT64_FORMAT, q->srx)
+                       : NULL;
+        const char *txt = q->srx_string ? q->srx_string : "";
+        char *s = g_strdup_printf ("%s%s%s", nr ? nr : "",
+                                   nr && *txt ? " " : "", txt);
+        g_free (nr);
+        return s;
+      }
     default:
       return g_strdup ("");
     }
@@ -2587,6 +2630,45 @@ static char *
 cell_edit_text (int col, const LogflQso *q)
 {
   return cell_display_text (col, q);
+}
+
+/* Exchange cell text → serial + uppercased text remainder. WYSIWYG: the
+ * first digits-only token becomes the serial, everything else joins the
+ * text part; either output may end up unset. */
+static void
+parse_exch_cell (const char *raw, gint64 *serial, char **text_out)
+{
+  *serial = 0;
+  g_clear_pointer (text_out, g_free);
+  char **tok = g_strsplit_set (raw, " \t", -1);
+  GString *rest = g_string_new (NULL);
+  for (char **t = tok; *t; t++)
+    {
+      if (!**t)
+        continue;
+      gboolean digits = TRUE;
+      for (const char *c = *t; *c; c++)
+        if (!g_ascii_isdigit (*c))
+          {
+            digits = FALSE;
+            break;
+          }
+      if (digits && *serial == 0)
+        *serial = g_ascii_strtoll (*t, NULL, 10);
+      else
+        {
+          if (rest->len)
+            g_string_append_c (rest, ' ');
+          char *up = g_ascii_strup (*t, -1);
+          g_string_append (rest, up);
+          g_free (up);
+        }
+    }
+  g_strfreev (tok);
+  if (rest->len)
+    *text_out = g_string_free (rest, FALSE);
+  else
+    g_string_free (rest, TRUE);
 }
 
 /* True if s is empty or a placeholder dash (ASCII or em dash). */
@@ -2745,6 +2827,12 @@ apply_cell_to_qso (LogflQso *q, int col, const char *raw, GError **error)
       g_free (q->comment);
       q->comment = *text ? g_steal_pointer (&text) : NULL;
       break;
+    case COL_STX:
+      parse_exch_cell (text, &q->stx, &q->stx_string);
+      break;
+    case COL_EXCH:
+      parse_exch_cell (text, &q->srx, &q->srx_string);
+      break;
     default:
       g_free (text);
       return TRUE;
@@ -2811,6 +2899,8 @@ commit_cell_edit (LogflWindow *self, LogflQsoRow *row, int col,
     *out_changed = TRUE;
 
   update_subtitle (self);
+  /* Editing the highest sent serial moves the next-serial prefill. */
+  refresh_serial (self);
   return TRUE;
 }
 
@@ -3025,11 +3115,6 @@ on_cell_click (GtkGestureClick *gesture, gint n_press, gdouble x, gdouble y,
   if (!g_object_get_data (G_OBJECT (box), "logfl-row"))
     return;
   if (cell_is_editing (box))
-    return;
-  /* Contest exchange columns are display-only (v1) — edits would need the
-   * template routing to run backwards. */
-  int col = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (box), "logfl-col"));
-  if (col == COL_STX || col == COL_EXCH)
     return;
   gtk_gesture_set_state (GTK_GESTURE (gesture), GTK_EVENT_SEQUENCE_CLAIMED);
   cell_begin_edit (box);
