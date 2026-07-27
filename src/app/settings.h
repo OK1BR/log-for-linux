@@ -29,6 +29,10 @@ typedef struct {
   gboolean wsjtx_enabled;      /* M6: listen for WSJT-X / JTDX UDP           */
   guint16  wsjtx_port;         /* default 2237                               */
   gint64   active_contest;     /* contest.id the UI is switched to; 0 = main */
+  /* Cabrillo export header prefill ([cabrillo] in the ini). */
+  char *cab_operator, *cab_band, *cab_mode, *cab_power, *cab_transmitter;
+  char *cab_assisted;          /* "" = omit the tag */
+  char *cab_name, *cab_email, *cab_location, *cab_club;
 } LogflSettings;
 
 /* Fill defaults (heap strings + macro banks). Safe on a zeroed struct. */

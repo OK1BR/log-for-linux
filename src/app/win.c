@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "adif.h"
+#include "cabrillo.h"
 #include "contest.h"
 #include "engine.h"
 #include "log_store.h"
@@ -3019,6 +3020,333 @@ act_contest_manage (GSimpleAction *action, GVariant *param,
   adw_dialog_present (dlg, GTK_WIDGET (self));
 }
 
+/* --- Cabrillo export (M9) ------------------------------------------------ */
+
+/* Header values captured from the dialog; they outlive it because the
+ * file chooser finishes asynchronously. */
+typedef struct {
+  LogflWindow *win;
+  gint64 contest_id;
+  char *contest, *callsign;
+  char *op, *band, *mode, *power, *tx, *assisted;
+  char *name, *email, *location, *club, *grid;
+} CabExport;
+
+/* The CATEGORY-* tags take only the values the Cabrillo v3 spec lists
+ * (wwrof.org) — offered as dropdowns, never free text. "—" = omit. */
+static const char *const CAB_OPERATOR_VALUES[] =
+  { "SINGLE-OP", "MULTI-OP", "CHECKLOG", NULL };
+static const char *const CAB_BAND_VALUES[] =
+  { "ALL", "160M", "80M", "40M", "20M", "15M", "10M", "6M", "4M", "2M",
+    "222", "432", "902", "1.2G", "2.3G", "3.4G", "5.7G", "10G", "24G",
+    "47G", "75G", "122G", "134G", "241G", "Light", "VHF-3-BAND",
+    "VHF-FM-ONLY", NULL };
+static const char *const CAB_POWER_VALUES[] =
+  { "HIGH", "LOW", "QRP", NULL };
+static const char *const CAB_MODE_VALUES[] =
+  { "MIXED", "CW", "SSB", "RTTY", "DIGI", "FM", NULL };
+static const char *const CAB_TX_VALUES[] =
+  { "ONE", "TWO", "LIMITED", "UNLIMITED", "SWL", NULL };
+static const char *const CAB_ASSISTED_VALUES[] =
+  { "—", "ASSISTED", "NON-ASSISTED", NULL };
+
+static void
+cab_export_free (CabExport *ce)
+{
+  g_free (ce->contest);
+  g_free (ce->callsign);
+  g_free (ce->op);
+  g_free (ce->band);
+  g_free (ce->mode);
+  g_free (ce->power);
+  g_free (ce->tx);
+  g_free (ce->assisted);
+  g_free (ce->name);
+  g_free (ce->email);
+  g_free (ce->location);
+  g_free (ce->club);
+  g_free (ce->grid);
+  g_free (ce);
+}
+
+static void
+on_cabrillo_file_ready (GObject *source, GAsyncResult *res,
+                        gpointer user_data)
+{
+  CabExport *ce = user_data;
+  GError *err = NULL;
+  GFile *file =
+      gtk_file_dialog_save_finish (GTK_FILE_DIALOG (source), res, &err);
+  if (!file)
+    {
+      g_clear_error (&err);    /* dismissed */
+      cab_export_free (ce);
+      return;
+    }
+  char *path = g_file_get_path (file);
+  LogflCabrilloOpts o = {
+    .contest = ce->contest,
+    .callsign = ce->callsign,
+    .cat_operator = ce->op,
+    .cat_band = ce->band,
+    .cat_power = ce->power,
+    .cat_mode = ce->mode,
+    .cat_transmitter = ce->tx,
+    .cat_assisted = ce->assisted,
+    .name = ce->name,
+    .email = ce->email,
+    .location = ce->location,
+    .club = ce->club,
+    .grid = ce->grid,
+  };
+  guint n = 0;
+  if (logfl_cabrillo_export_file (ce->win->store, ce->contest_id, path,
+                                  &o, &n, &err))
+    toast (ce->win, "Cabrillo: %u QSO → %s", n, path);
+  else
+    {
+      toast (ce->win, "Cabrillo export failed: %s", err->message);
+      g_clear_error (&err);
+    }
+  g_free (path);
+  g_object_unref (file);
+  cab_export_free (ce);
+}
+
+/* Cabrillo CONTEST names are not ADIF ids — map the known difference,
+ * else fall back to the ADIF id / a name-derived guess. */
+static char *
+cabrillo_contest_guess (const LogflContest *c)
+{
+  if (g_strcmp0 (c->adif_id, "EU-HF") == 0)
+    return g_strdup ("EUHFC");
+  if (c->adif_id && *c->adif_id)
+    return g_strdup (c->adif_id);
+  char *up = g_ascii_strup (c->name, -1);
+  return g_strdelimit (up, " ", '-');
+}
+
+typedef struct {
+  LogflWindow *win;
+  AdwDialog *dlg;
+  GtkWidget *contest_row, *call_row;
+  GtkWidget *op_row, *band_row, *mode_row, *power_row, *tx_row,
+            *assisted_row;
+  GtkWidget *name_row, *email_row, *loc_row, *club_row;
+} CabDialog;
+
+/* Combo over a fixed Cabrillo value list, preselected on the persisted
+ * value (first entry when unknown; "—" stands for an empty/omitted tag). */
+static GtkWidget *
+cab_combo (AdwPreferencesGroup *grp, const char *title,
+           const char *const *values, const char *current)
+{
+  GtkStringList *sl = gtk_string_list_new (values);
+  GtkWidget *r = g_object_new (ADW_TYPE_COMBO_ROW, "title", title, NULL);
+  adw_combo_row_set_model (ADW_COMBO_ROW (r), G_LIST_MODEL (sl));
+  g_object_unref (sl);
+  guint sel = 0;
+  const char *want = current && *current ? current : "—";
+  for (guint i = 0; values[i]; i++)
+    if (g_strcmp0 (values[i], want) == 0)
+      {
+        sel = i;
+        break;
+      }
+  adw_combo_row_set_selected (ADW_COMBO_ROW (r), sel);
+  adw_preferences_group_add (grp, r);
+  return r;
+}
+
+static char *
+cab_combo_value (GtkWidget *row)
+{
+  GObject *item = adw_combo_row_get_selected_item (ADW_COMBO_ROW (row));
+  const char *s = item
+      ? gtk_string_object_get_string (GTK_STRING_OBJECT (item)) : "";
+  return g_strdup (g_strcmp0 (s, "—") == 0 ? "" : s);
+}
+
+static void
+on_cab_dialog_closed (AdwDialog *dlg, gpointer user_data)
+{
+  (void) dlg;
+  g_free (user_data);
+}
+
+/* Replace one settings string with the row's stripped text. */
+static void
+cab_setting_take (char **slot, GtkWidget *row)
+{
+  g_free (*slot);
+  *slot = g_strstrip (
+      g_strdup (gtk_editable_get_text (GTK_EDITABLE (row))));
+}
+
+static void
+on_cab_dialog_export (GtkButton *btn, gpointer user_data)
+{
+  (void) btn;
+  CabDialog *cd = user_data;
+  LogflWindow *self = cd->win;
+
+  char *contest = g_strstrip (
+      g_strdup (gtk_editable_get_text (GTK_EDITABLE (cd->contest_row))));
+  char *callsign = g_strstrip (
+      g_strdup (gtk_editable_get_text (GTK_EDITABLE (cd->call_row))));
+  if (!*contest || !*callsign)
+    {
+      toast (self, "CONTEST and CALLSIGN are required");
+      g_free (contest);
+      g_free (callsign);
+      return;
+    }
+
+  /* Category and operator info persist for the next contest. */
+  LogflSettings *st = &self->settings;
+  g_free (st->cab_operator);
+  st->cab_operator = cab_combo_value (cd->op_row);
+  g_free (st->cab_band);
+  st->cab_band = cab_combo_value (cd->band_row);
+  g_free (st->cab_mode);
+  st->cab_mode = cab_combo_value (cd->mode_row);
+  g_free (st->cab_power);
+  st->cab_power = cab_combo_value (cd->power_row);
+  g_free (st->cab_transmitter);
+  st->cab_transmitter = cab_combo_value (cd->tx_row);
+  g_free (st->cab_assisted);
+  st->cab_assisted = cab_combo_value (cd->assisted_row);
+  cab_setting_take (&st->cab_name, cd->name_row);
+  cab_setting_take (&st->cab_email, cd->email_row);
+  cab_setting_take (&st->cab_location, cd->loc_row);
+  cab_setting_take (&st->cab_club, cd->club_row);
+  logfl_settings_save (st);
+
+  CabExport *ce = g_new0 (CabExport, 1);
+  ce->win = self;
+  ce->contest_id = self->contest->id;
+  ce->contest = contest;
+  ce->callsign = callsign;
+  ce->op = g_strdup (st->cab_operator);
+  ce->band = g_strdup (st->cab_band);
+  ce->mode = g_strdup (st->cab_mode);
+  ce->power = g_strdup (st->cab_power);
+  ce->tx = g_strdup (st->cab_transmitter);
+  ce->assisted = g_strdup (st->cab_assisted);
+  ce->name = g_strdup (st->cab_name);
+  ce->email = g_strdup (st->cab_email);
+  ce->location = g_strdup (st->cab_location);
+  ce->club = g_strdup (st->cab_club);
+  ce->grid = g_strdup (st->station_grid);
+  adw_dialog_close (cd->dlg);
+
+  GtkFileDialog *fd = gtk_file_dialog_new ();
+  gtk_file_dialog_set_title (fd, "Export Cabrillo");
+  char *lower = g_ascii_strdown (ce->callsign, -1);
+  char *fname = g_strconcat (lower, ".log", NULL);
+  gtk_file_dialog_set_initial_name (fd, fname);
+  g_free (fname);
+  g_free (lower);
+  gtk_file_dialog_save (fd, GTK_WINDOW (self), NULL,
+                        on_cabrillo_file_ready, ce);
+  g_object_unref (fd);
+}
+
+static GtkWidget *
+cab_row (AdwPreferencesGroup *grp, const char *title, const char *value)
+{
+  GtkWidget *r = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (r), title);
+  gtk_editable_set_text (GTK_EDITABLE (r), value ? value : "");
+  adw_preferences_group_add (grp, r);
+  return r;
+}
+
+static void
+act_cabrillo (GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+  (void) action;
+  (void) param;
+  LogflWindow *self = user_data;
+  if (!self->store)
+    {
+      toast (self, "Log store is not open");
+      return;
+    }
+  if (!self->contest)
+    {
+      toast (self, "Cabrillo exports the active contest — switch into one "
+                   "first");
+      return;
+    }
+
+  CabDialog *cd = g_new0 (CabDialog, 1);
+  cd->win = self;
+  cd->dlg = adw_dialog_new ();
+  adw_dialog_set_title (cd->dlg, "Export Cabrillo");
+  adw_dialog_set_content_width (cd->dlg, 440);
+  adw_dialog_set_content_height (cd->dlg, 620);
+
+  GtkWidget *hdr = adw_header_bar_new ();
+  adw_header_bar_set_show_start_title_buttons (ADW_HEADER_BAR (hdr), FALSE);
+  adw_header_bar_set_show_end_title_buttons (ADW_HEADER_BAR (hdr), FALSE);
+  GtkWidget *cancel = gtk_button_new_with_label ("Cancel");
+  g_signal_connect_swapped (cancel, "clicked", G_CALLBACK (adw_dialog_close),
+                            cd->dlg);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (hdr), cancel);
+  GtkWidget *save = gtk_button_new_with_label ("Export…");
+  gtk_widget_add_css_class (save, "suggested-action");
+  g_signal_connect (save, "clicked", G_CALLBACK (on_cab_dialog_export), cd);
+  adw_header_bar_pack_end (ADW_HEADER_BAR (hdr), save);
+
+  AdwPreferencesPage *page =
+      ADW_PREFERENCES_PAGE (adw_preferences_page_new ());
+
+  AdwPreferencesGroup *lg = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP, "title", "Log", NULL));
+  char *guess = cabrillo_contest_guess (self->contest);
+  cd->contest_row = cab_row (lg, "CONTEST", guess);
+  g_free (guess);
+  cd->call_row = cab_row (lg, "CALLSIGN",
+                          self->settings.station_callsign);
+  adw_preferences_page_add (page, lg);
+
+  AdwPreferencesGroup *cg = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP,
+      "title", "Category",
+      "description", "Cabrillo v3 values as announced by the contest.",
+      NULL));
+  cd->op_row = cab_combo (cg, "Operator", CAB_OPERATOR_VALUES,
+                          self->settings.cab_operator);
+  cd->band_row = cab_combo (cg, "Band", CAB_BAND_VALUES,
+                            self->settings.cab_band);
+  cd->power_row = cab_combo (cg, "Power", CAB_POWER_VALUES,
+                             self->settings.cab_power);
+  cd->mode_row = cab_combo (cg, "Mode", CAB_MODE_VALUES,
+                            self->settings.cab_mode);
+  cd->tx_row = cab_combo (cg, "Transmitter", CAB_TX_VALUES,
+                          self->settings.cab_transmitter);
+  cd->assisted_row = cab_combo (cg, "Assisted", CAB_ASSISTED_VALUES,
+                                self->settings.cab_assisted);
+  adw_preferences_page_add (page, cg);
+
+  AdwPreferencesGroup *og = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP, "title", "Operator info", NULL));
+  cd->name_row = cab_row (og, "Name", self->settings.cab_name);
+  cd->email_row = cab_row (og, "Email", self->settings.cab_email);
+  cd->loc_row = cab_row (og, "Location", self->settings.cab_location);
+  cd->club_row = cab_row (og, "Club", self->settings.cab_club);
+  adw_preferences_page_add (page, og);
+
+  GtkWidget *tbv = adw_toolbar_view_new ();
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (tbv), hdr);
+  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (tbv), GTK_WIDGET (page));
+  adw_dialog_set_child (cd->dlg, tbv);
+  g_signal_connect (cd->dlg, "closed", G_CALLBACK (on_cab_dialog_closed),
+                    cd);
+  adw_dialog_present (cd->dlg, GTK_WIDGET (self));
+}
+
 /* --- QSO table (inline cell edit via GtkEditableLabel) ----------------- */
 
 /* Display string for a column (caller frees). Matches what the cell shows. */
@@ -3861,6 +4189,7 @@ static const GActionEntry win_actions[] = {
     .activate = act_contest_switch },
   { .name = "contest-new", .activate = act_contest_new },
   { .name = "contest-manage", .activate = act_contest_manage },
+  { .name = "cabrillo", .activate = act_cabrillo },
 };
 
 /* Resolve LogflQsoRow under view coordinates. Only the cell boxes carry
@@ -4040,6 +4369,7 @@ logfl_window_init (LogflWindow *self)
   GMenu *menu = g_menu_new ();
   g_menu_append (menu, "_Import ADIF…", "win.import");
   g_menu_append (menu, "_Export ADIF…", "win.export");
+  g_menu_append (menu, "Export Ca_brillo…", "win.cabrillo");
   g_menu_append (menu, "_Preferences", "win.preferences");
   g_menu_append (menu, "_About Log for Linux", "win.about");
   GtkWidget *menu_btn = gtk_menu_button_new ();

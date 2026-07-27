@@ -250,8 +250,21 @@ importing someone's log and exporting it again must never silently drop data.
   warning, exchange column in the table, active contest persisted in
   settings.ini (`contest.active`). WSJT-X auto-logged QSOs always land in
   the main log (FT8 contest support would come later, deliberately).
+- **Cabrillo export. IMPLEMENTED 2026-07-28** (pulled ahead for EUHFC —
+  submission is Cabrillo-only within 48 h). `src/engine/cabrillo.c`:
+  WWROF v3 shape verified against wwrof.org and the official EUHFC sample
+  (log.s5cc.eu): tag header (empty fields omitted, CREATED-BY stamped),
+  chronological QSO lines — kHz from the exact QRG, generic band edge
+  without one (per EUHFC rules note), VHF+ band designators; modes
+  CW/PH/FM/RY/DG; missing RSTs default 599/59; sent serial zero-padded +
+  exchange text. Gate: `log-cabrillo-test`. UI: menu → Export Cabrillo…
+  (exports the ACTIVE contest), header dialog with CATEGORY-* as
+  spec-value dropdowns (incl. optional ASSISTED, "—" = omit), values
+  persisted in settings.ini `[cabrillo]`; CONTEST prefilled via a
+  known-map (ADIF `EU-HF` → Cabrillo `EUHFC`); file defaults to
+  `<call>.log`. Claimed score / scoring itself stays out (Later).
 - **Later** — DXCC/awards tracking (cty.dat entity resolver, worked/confirmed
-  matrices per band/mode), contest scoring/multipliers + Cabrillo export,
+  matrices per band/mode), contest scoring/multipliers,
   linking imported CONTEST_ID QSOs to contests, and — only if ever
   revisited — the skimmer cluster client.
 

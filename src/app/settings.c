@@ -21,6 +21,30 @@ bank_group (LogflMacroBankId bank)
   return bank == LOGFL_MACRO_BANK_SNP ? "macros_snp" : "macros_run";
 }
 
+/* Cabrillo header prefill — one [cabrillo] key per struct field. */
+static const struct {
+  const char *key;
+  goffset off;
+  const char *def;
+} cab_fields[] = {
+  { "operator", G_STRUCT_OFFSET (LogflSettings, cab_operator), "SINGLE-OP" },
+  { "band", G_STRUCT_OFFSET (LogflSettings, cab_band), "ALL" },
+  { "mode", G_STRUCT_OFFSET (LogflSettings, cab_mode), "MIXED" },
+  { "power", G_STRUCT_OFFSET (LogflSettings, cab_power), "LOW" },
+  { "transmitter", G_STRUCT_OFFSET (LogflSettings, cab_transmitter), "ONE" },
+  { "assisted", G_STRUCT_OFFSET (LogflSettings, cab_assisted), "" },
+  { "name", G_STRUCT_OFFSET (LogflSettings, cab_name), "" },
+  { "email", G_STRUCT_OFFSET (LogflSettings, cab_email), "" },
+  { "location", G_STRUCT_OFFSET (LogflSettings, cab_location), "DX" },
+  { "club", G_STRUCT_OFFSET (LogflSettings, cab_club), "" },
+};
+
+static char **
+cab_slot (LogflSettings *s, gsize i)
+{
+  return (char **) G_STRUCT_MEMBER_P (s, cab_fields[i].off);
+}
+
 static void
 load_macros (GKeyFile *kf, LogflMacroSet *set)
 {
@@ -88,6 +112,12 @@ logfl_settings_init_defaults (LogflSettings *s)
   s->wsjtx_enabled = TRUE;
   s->wsjtx_port = LOGFL_WSJTX_DEFAULT_PORT;
   s->active_contest = 0;
+  for (gsize i = 0; i < G_N_ELEMENTS (cab_fields); i++)
+    {
+      char **slot = cab_slot (s, i);
+      g_free (*slot);
+      *slot = g_strdup (cab_fields[i].def);
+    }
 }
 
 void
@@ -166,6 +196,18 @@ logfl_settings_load (LogflSettings *s)
 
       load_macros (kf, &s->macros);
 
+      for (gsize i = 0; i < G_N_ELEMENTS (cab_fields); i++)
+        {
+          char *v = g_key_file_get_string (kf, "cabrillo",
+                                           cab_fields[i].key, NULL);
+          if (v)
+            {
+              char **slot = cab_slot (s, i);
+              g_free (*slot);
+              *slot = g_strstrip (v);
+            }
+        }
+
       if (g_key_file_has_key (kf, "wsjtx", "enabled", NULL))
         s->wsjtx_enabled =
             g_key_file_get_boolean (kf, "wsjtx", "enabled", NULL);
@@ -212,6 +254,13 @@ logfl_settings_save (const LogflSettings *s)
   g_key_file_set_int64 (kf, "contest", "active", s->active_contest);
   save_macros (kf, &s->macros);
 
+  for (gsize i = 0; i < G_N_ELEMENTS (cab_fields); i++)
+    {
+      char **slot = cab_slot ((LogflSettings *) s, i);
+      g_key_file_set_string (kf, "cabrillo", cab_fields[i].key,
+                             *slot ? *slot : "");
+    }
+
   g_key_file_set_boolean (kf, "wsjtx", "enabled", s->wsjtx_enabled);
   g_key_file_set_integer (kf, "wsjtx", "port",
                           s->wsjtx_port ? s->wsjtx_port
@@ -245,4 +294,6 @@ logfl_settings_clear (LogflSettings *s)
   logfl_macro_set_clear (&s->macros);
   s->wsjtx_enabled = FALSE;
   s->wsjtx_port = 0;
+  for (gsize i = 0; i < G_N_ELEMENTS (cab_fields); i++)
+    g_clear_pointer (cab_slot (s, i), g_free);
 }
