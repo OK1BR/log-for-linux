@@ -504,8 +504,13 @@ logfl_tci_client_cw_send (LogflTciClient *c, const char *text)
 {
   if (!c || !c->thread || !text || !*text)
     return;
-  /* TCI reserves ':' ',' ';' — scrub free text before queueing. */
-  char *t = g_strdup (text);
+  /* TCI reserves ':' ',' ';' — scrub free text before queueing. The LEADING
+   * space is deliberate and mirrors what SDC sends: sdr-for-linux's CW
+   * generator inserts the word gap between two queued messages only when the
+   * SECOND one asks for it up front (F2, F3 fired back to back); on an idle
+   * keyer the leading space is skipped, so an over never starts with dead
+   * air. A trailing space does nothing there — tried and reverted. */
+  char *t = g_strdup_printf (" %s", text);
   for (char *p = t; *p; p++)
     {
       if (*p == ':' || *p == ',' || *p == ';')
