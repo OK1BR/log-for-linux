@@ -55,6 +55,45 @@ test_expand_tokens (void)
 }
 
 static void
+test_cut_numbers (void)
+{
+  /* Standard cut set: 599 → 5NN, 001 → TTA, EUHFC year 99 → NN. */
+  char *s = logfl_macro_cut_apply ("599", "0=T 1=A 9=N");
+  g_assert_cmpstr (s, ==, "5NN");
+  g_free (s);
+  s = logfl_macro_cut_apply ("001", "0=T 1=A 9=N");
+  g_assert_cmpstr (s, ==, "TTA");
+  g_free (s);
+  s = logfl_macro_cut_apply ("99", "0=T 1=A 9=N");
+  g_assert_cmpstr (s, ==, "NN");
+  g_free (s);
+
+  /* Unmapped digits and non-digits pass; map letter case is normalized. */
+  s = logfl_macro_cut_apply ("579 APA", "9=n");
+  g_assert_cmpstr (s, ==, "57N APA");
+  g_free (s);
+
+  /* Extended map, free-form separators. */
+  s = logfl_macro_cut_apply ("585", "5=E,8=D");
+  g_assert_cmpstr (s, ==, "EDE");
+  g_free (s);
+
+  /* NULL/empty map or junk pairs = plain copy. */
+  s = logfl_macro_cut_apply ("599", NULL);
+  g_assert_cmpstr (s, ==, "599");
+  g_free (s);
+  s = logfl_macro_cut_apply ("599", "");
+  g_assert_cmpstr (s, ==, "599");
+  g_free (s);
+  s = logfl_macro_cut_apply ("599", "x=Y 9");
+  g_assert_cmpstr (s, ==, "599");
+  g_free (s);
+  s = logfl_macro_cut_apply (NULL, "9=N");
+  g_assert_cmpstr (s, ==, "");
+  g_free (s);
+}
+
+static void
 test_defaults_and_banks (void)
 {
   LogflMacroSet set;
@@ -157,6 +196,7 @@ main (int argc, char **argv)
 {
   g_test_init (&argc, &argv, NULL);
   g_test_add_func ("/macros/expand", test_expand_tokens);
+  g_test_add_func ("/macros/cut", test_cut_numbers);
   g_test_add_func ("/macros/banks", test_defaults_and_banks);
   g_test_add_func ("/macros/esm", test_esm_cycle);
   return g_test_run ();

@@ -142,6 +142,40 @@ toast_short (LogflWindow *self, const char *fmt, ...)
   g_free (msg);
 }
 
+/* CW cut numbers offered in Preferences — the standard contest set, one
+ * switch each. The ini keeps the "0=T 1=A 9=N" pair syntax (hand-editable,
+ * engine-parsed); the switches just compose it. */
+static const struct { char digit; char letter; } cut_pairs[] = {
+  { '0', 'T' }, { '1', 'A' }, { '2', 'U' }, { '3', 'V' },
+  { '5', 'E' }, { '8', 'D' }, { '9', 'N' },
+};
+
+static gboolean
+cut_map_has_digit (const char *map, char digit)
+{
+  if (!map)
+    return FALSE;
+  for (const char *p = map; p[0] && p[1]; p++)
+    {
+      if (p[0] == digit && p[1] == '=' && g_ascii_isalpha (p[2]))
+        return TRUE;
+    }
+  return FALSE;
+}
+
+static gboolean
+str_all_digits (const char *s)
+{
+  if (!s || !*s)
+    return FALSE;
+  for (; *s; s++)
+    {
+      if (!g_ascii_isdigit (*s))
+        return FALSE;
+    }
+  return TRUE;
+}
+
 static char *
 fmt_freq (double mhz)
 {
@@ -1045,9 +1079,34 @@ macro_run (LogflWindow *self, guint idx)
                     : NULL);
   else if (sent_txt && *sent_txt)
     exch = sent_txt;
+
+  /* CW cut numbers — number tokens only, never the calls. The exchange is
+   * cut only when it is purely digits (EUHFC year 99 → NN); text like an
+   * OK/OM DX district passes verbatim. */
+  const char *rst = entry_text (self->rst_s);
+  char *rst_cut = NULL, *exch_cut = NULL;
+  if (self->settings.cw_cut_numbers)
+    {
+      const char *map = self->settings.cw_cut_map;
+      rst_cut = logfl_macro_cut_apply (rst, map);
+      rst = rst_cut;
+      if (nr)
+        {
+          char *t = logfl_macro_cut_apply (nr, map);
+          g_free (nr);
+          nr = t;
+        }
+      if (exch && str_all_digits (exch))
+        {
+          exch_cut = logfl_macro_cut_apply (exch, map);
+          exch = exch_cut;
+        }
+    }
   char *msg = logfl_macro_expand (k->tmpl, mycall, entry_text (self->call),
-                                  entry_text (self->rst_s), nr, exch);
+                                  rst, nr, exch);
   g_free (nr);
+  g_free (rst_cut);
+  g_free (exch_cut);
   if (!msg || !*msg)
     {
       g_free (msg);
@@ -1884,6 +1943,22 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
   gboolean esm = esm_row
                      ? adw_switch_row_get_active (ADW_SWITCH_ROW (esm_row))
                      : FALSE;
+  GtkWidget *cut_en_row = g_object_get_data (G_OBJECT (dlg), "cut-en");
+  gboolean cut_en =
+      cut_en_row ? adw_switch_row_get_active (ADW_SWITCH_ROW (cut_en_row))
+                 : self->settings.cw_cut_numbers;
+  /* Compose the map from the per-digit switches. All off = empty map. */
+  GString *cm = g_string_new (NULL);
+  for (gsize i = 0; i < G_N_ELEMENTS (cut_pairs); i++)
+    {
+      char key[16];
+      g_snprintf (key, sizeof key, "cut-d%c", cut_pairs[i].digit);
+      GtkWidget *row = g_object_get_data (G_OBJECT (dlg), key);
+      if (row && adw_switch_row_get_active (ADW_SWITCH_ROW (row)))
+        g_string_append_printf (cm, "%s%c=%c", cm->len ? " " : "",
+                                cut_pairs[i].digit, cut_pairs[i].letter);
+    }
+  char *cut_map = g_string_free (cm, FALSE);
   gboolean wsjtx_en = wsjtx_en_row
                           ? adw_switch_row_get_active (ADW_SWITCH_ROW (wsjtx_en_row))
                           : self->settings.wsjtx_enabled;
@@ -1902,11 +1977,15 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
       cqz != self->settings.station_cqz ||
       ituz != self->settings.station_ituz;
   gboolean esm_changed = esm != self->settings.esm_enabled;
+  gboolean cut_changed =
+      cut_en != self->settings.cw_cut_numbers ||
+      g_strcmp0 (cut_map, self->settings.cw_cut_map) != 0;
   gboolean wsjtx_changed =
       wsjtx_en != self->settings.wsjtx_enabled ||
       (guint16) wsjtx_port != self->settings.wsjtx_port;
 
-  if (tci_changed || call_changed || esm_changed || wsjtx_changed)
+  if (tci_changed || call_changed || esm_changed || cut_changed ||
+      wsjtx_changed)
     {
       g_free (self->settings.tci_host);
       self->settings.tci_host = host;
@@ -1918,6 +1997,9 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
       self->settings.station_cqz = cqz;
       self->settings.station_ituz = ituz;
       self->settings.esm_enabled = esm;
+      self->settings.cw_cut_numbers = cut_en;
+      g_free (self->settings.cw_cut_map);
+      self->settings.cw_cut_map = cut_map;
       self->settings.wsjtx_enabled = wsjtx_en;
       self->settings.wsjtx_port = (guint16) wsjtx_port;
       if (esm_changed)
@@ -1934,6 +2016,7 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
       g_free (host);
       g_free (call);
       g_free (grid);
+      g_free (cut_map);
     }
 
   if (self->prefs_macros_dirty)
@@ -2156,6 +2239,38 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
   adw_preferences_group_add (cgrp, esm_row);
   adw_preferences_page_add (p_msg, cgrp);
 
+  /* CW cut numbers — keyed text only; entries and the log keep real digits. */
+  AdwPreferencesGroup *kgrp = ADW_PREFERENCES_GROUP (g_object_new (
+      ADW_TYPE_PREFERENCES_GROUP,
+      "title", "CW keyer",
+      "description",
+      "Cut numbers shorten digits in the keyed RST, serial and numeric "
+      "exchange (599 → 5NN, 001 → TTA). Callsigns and the logged QSO keep "
+      "real digits.",
+      NULL));
+  GtkWidget *cut_row = adw_switch_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (cut_row),
+                                 "Cut numbers");
+  adw_switch_row_set_active (ADW_SWITCH_ROW (cut_row),
+                             self->settings.cw_cut_numbers);
+  adw_preferences_group_add (kgrp, cut_row);
+  for (gsize i = 0; i < G_N_ELEMENTS (cut_pairs); i++)
+    {
+      GtkWidget *row = adw_switch_row_new ();
+      char title[16];
+      g_snprintf (title, sizeof title, "%c → %c",
+                  cut_pairs[i].digit, cut_pairs[i].letter);
+      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), title);
+      adw_switch_row_set_active (
+          ADW_SWITCH_ROW (row),
+          cut_map_has_digit (self->settings.cw_cut_map, cut_pairs[i].digit));
+      adw_preferences_group_add (kgrp, row);
+      char key[16];
+      g_snprintf (key, sizeof key, "cut-d%c", cut_pairs[i].digit);
+      g_object_set_data (G_OBJECT (dlg), key, row);
+    }
+  adw_preferences_page_add (p_msg, kgrp);
+
   /* Both banks behind an explicit Run/S&P switcher; opens on the bank
    * that is active on the macro bar. */
   AdwPreferencesGroup *mgrp = ADW_PREFERENCES_GROUP (g_object_new (
@@ -2233,6 +2348,7 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
   g_object_set_data (G_OBJECT (dlg), "station-cqz", cqz_row);
   g_object_set_data (G_OBJECT (dlg), "station-ituz", ituz_row);
   g_object_set_data (G_OBJECT (dlg), "esm", esm_row);
+  g_object_set_data (G_OBJECT (dlg), "cut-en", cut_row);
   g_object_set_data (G_OBJECT (dlg), "wsjtx-en", wsjtx_en);
   g_object_set_data (G_OBJECT (dlg), "wsjtx-port", wsjtx_port);
   g_signal_connect (dlg, "closed", G_CALLBACK (prefs_closed), self);

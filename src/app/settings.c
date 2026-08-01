@@ -107,6 +107,9 @@ logfl_settings_init_defaults (LogflSettings *s)
   s->station_cqz = 15;
   s->station_ituz = 28;
   s->esm_enabled = FALSE;
+  s->cw_cut_numbers = FALSE;
+  g_free (s->cw_cut_map);
+  s->cw_cut_map = g_strdup ("0=T 1=A 9=N");
   s->macro_bank = LOGFL_MACRO_BANK_RUN;
   logfl_macro_set_init_defaults (&s->macros);
   s->wsjtx_enabled = TRUE;
@@ -176,6 +179,18 @@ logfl_settings_load (LogflSettings *s)
 
       if (g_key_file_has_key (kf, "contest", "esm", NULL))
         s->esm_enabled = g_key_file_get_boolean (kf, "contest", "esm", NULL);
+
+      if (g_key_file_has_key (kf, "cw", "cut_numbers", NULL))
+        s->cw_cut_numbers =
+            g_key_file_get_boolean (kf, "cw", "cut_numbers", NULL);
+      /* Empty map is a valid state (all cut switches off) — only a missing
+       * key keeps the default. */
+      char *cmap = g_key_file_get_string (kf, "cw", "cut_map", NULL);
+      if (cmap)
+        {
+          g_free (s->cw_cut_map);
+          s->cw_cut_map = g_strstrip (cmap);
+        }
 
       char *bank = g_key_file_get_string (kf, "contest", "bank", NULL);
       if (bank)
@@ -247,6 +262,10 @@ logfl_settings_save (const LogflSettings *s)
   g_key_file_set_integer (kf, "station", "cq_zone", (int) s->station_cqz);
   g_key_file_set_integer (kf, "station", "itu_zone", (int) s->station_ituz);
 
+  g_key_file_set_boolean (kf, "cw", "cut_numbers", s->cw_cut_numbers);
+  g_key_file_set_string (kf, "cw", "cut_map",
+                         s->cw_cut_map ? s->cw_cut_map : "");
+
   g_key_file_set_boolean (kf, "contest", "esm", s->esm_enabled);
   g_key_file_set_string (kf, "contest", "bank",
                          s->macro_bank == LOGFL_MACRO_BANK_SNP ? "snp"
@@ -290,6 +309,8 @@ logfl_settings_clear (LogflSettings *s)
   s->station_ituz = 0;
   s->tci_port = 0;
   s->esm_enabled = FALSE;
+  s->cw_cut_numbers = FALSE;
+  g_clear_pointer (&s->cw_cut_map, g_free);
   s->macro_bank = LOGFL_MACRO_BANK_RUN;
   logfl_macro_set_clear (&s->macros);
   s->wsjtx_enabled = FALSE;

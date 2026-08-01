@@ -176,6 +176,36 @@ logfl_macro_expand (const char *tmpl, const char *mycall,
   return s;
 }
 
+char *
+logfl_macro_cut_apply (const char *s, const char *map)
+{
+  if (!s)
+    return g_strdup ("");
+
+  /* One substitute per digit; 0 = keep the digit. */
+  char sub[10] = { 0 };
+  if (map)
+    {
+      for (const char *p = map; p[0] && p[1]; p++)
+        {
+          if (g_ascii_isdigit (p[0]) && p[1] == '=' &&
+              g_ascii_isalpha (p[2]))
+            {
+              sub[p[0] - '0'] = g_ascii_toupper (p[2]);
+              p += 2;
+            }
+        }
+    }
+
+  char *out = g_strdup (s);
+  for (char *p = out; *p; p++)
+    {
+      if (g_ascii_isdigit (*p) && sub[*p - '0'])
+        *p = sub[*p - '0'];
+    }
+  return out;
+}
+
 LogflEsmAct
 logfl_esm_decide (LogflEsmPhase phase, gboolean call_present, guint *out_key)
 {

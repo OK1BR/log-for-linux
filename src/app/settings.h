@@ -24,6 +24,9 @@ typedef struct {
   guint   station_cqz;         /* my CQ (DX) zone, 0 = unset (OK = 15)       */
   guint   station_ituz;        /* my ITU zone, 0 = unset (OK = 28)           */
   gboolean esm_enabled;        /* M5: Enter advances ESM instead of log      */
+  gboolean cw_cut_numbers;     /* key digits of RST/serial/numeric exchange
+                                * as letters per cw_cut_map                  */
+  char    *cw_cut_map;         /* "0=T 1=A 9=N"-style digit→letter pairs     */
   LogflMacroBankId macro_bank; /* Run or S&P                                 */
   LogflMacroSet macros;        /* F1–F8 + free row + STOP (16) per bank      */
   gboolean wsjtx_enabled;      /* M6: listen for WSJT-X / JTDX UDP           */

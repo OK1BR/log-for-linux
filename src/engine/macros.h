@@ -63,6 +63,13 @@ char *logfl_macro_expand (const char *tmpl, const char *mycall,
                           const char *his_call, const char *rst,
                           const char *nr, const char *exch);
 
+/* CW cut numbers: replace digits of s per map, e.g. "0=T 1=A 9=N" (pairs
+ * digit '=' letter; anything between pairs is ignored). Digits without a
+ * pair, and all non-digits, pass through. Caller frees. NULL/empty map or
+ * NULL s → plain copy. Apply to number tokens only (RST/serial/numeric
+ * exchange) — never to callsigns. */
+char *logfl_macro_cut_apply (const char *s, const char *map);
+
 /* --- ESM: Enter sends message ------------------------------------------- */
 
 typedef enum {
