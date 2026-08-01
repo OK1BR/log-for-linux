@@ -42,12 +42,22 @@ typedef void (*LogflTciStateCb) (const LogflTciState *st, gpointer user_data);
 /* Unexpected disconnect while running. Does NOT fire on stop(). LWS thread. */
 typedef void (*LogflTciClosedCb) (gpointer user_data);
 
+/* The operator clicked a spot on the radio's panadapter — sdr-for-linux
+ * broadcasts the callsign it just tuned to (skimmer-for-linux feeds those
+ * spots in over its own TCI link). An event, not state: it fires once per
+ * click, on the LWS thread. call is upper-case and validated as plausible;
+ * freq_hz is the spot's exact frequency. */
+typedef void (*LogflTciSpotCb) (const char *call, double freq_hz,
+                                gpointer user_data);
+
 LogflTciClient *logfl_tci_client_new  (const char *host, guint16 port);
 void            logfl_tci_client_free (LogflTciClient *c);
 
 void logfl_tci_client_set_state_cb  (LogflTciClient *c, LogflTciStateCb cb,
                                      gpointer user_data);
 void logfl_tci_client_set_closed_cb (LogflTciClient *c, LogflTciClosedCb cb,
+                                     gpointer user_data);
+void logfl_tci_client_set_spot_cb   (LogflTciClient *c, LogflTciSpotCb cb,
                                      gpointer user_data);
 
 /* Connect and wait for ready; (blocks up to a few seconds). No IQ start. */

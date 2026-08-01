@@ -160,6 +160,19 @@ importing someone's log and exporting it again must never silently drop data.
   sdr-for-linux; the radio's echo (handshake, own controls, our set) is the
   authority and shows in the TCI status line. Falls through to default
   scrolling while a cell is edited or when no speed is known yet.
+  **Spot-click prefill (2026-08-01):** clicking a skimmer spot on the
+  sdr-for-linux panadapter makes it broadcast `rx_clicked_on_spot` /
+  `clicked_on_spot`; the logbook takes the callsign into the Call entry
+  (upper-cased, sanity-checked, receiver 0 only) and the worked-B4 / dup
+  check runs on it as if typed. Spots themselves stay one-way client→server
+  in TCI, so the logbook never sees the spot list — this is the tiny prefill
+  the SCOPE's no-cluster-window rule leaves room for, not a spot window. An
+  already-typed call is never overwritten and an open cell editor is never
+  interrupted, which also makes the two spellings of one click idempotent.
+  The prefill is tracked as such until the operator touches Call: clicking
+  another spot replaces it, and tuning more than 200 Hz off the spot clears
+  it (that call is no longer on frequency). Once typed into, the call is the
+  operator's — QSY never deletes it and a spot click never overwrites it.
 - **M5 — macros v2 (contest-style messaging). IMPLEMENTED 2026-07-21
   (offline gate green).** Grew the F-key strip into a messaging layer
   (inspired by N1MM+, not a clone). Done:

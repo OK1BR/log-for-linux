@@ -33,6 +33,7 @@ static volatile gint s_run = 1;
 static volatile gint s_push_vfo;
 static volatile gint s_push_mode;
 static volatile gint s_push_wpm;
+static volatile gint s_push_spot;
 
 static void
 srv_queue_text (const char *txt)
@@ -144,6 +145,16 @@ server_thread (gpointer data)
           g_atomic_int_set (&s_push_wpm, 0);
           srv_queue_text ("cw_macros_speed:34;");
         }
+      if (g_atomic_int_get (&s_push_spot))
+        {
+          g_atomic_int_set (&s_push_spot, 0);
+          /* Exactly what sdr-for-linux emits per click: both spellings,
+           * plus junk that must never reach the operator's Call field. */
+          srv_queue_text ("clicked_on_spot:NONSENSE,14025000;"
+                          "rx_clicked_on_spot:1,0,DL9XY,14025000;"
+                          "rx_clicked_on_spot:0,0,OK1BR/P,14025300;"
+                          "clicked_on_spot:OK1BR/P,14025300;");
+        }
       g_mutex_lock (&s_lock);
       gboolean pending = !g_queue_is_empty (&s_out) && s_wsi;
       g_mutex_unlock (&s_lock);
@@ -162,6 +173,7 @@ static volatile gint c_states;
 static double c_last_vfo;
 static char c_last_mode[32];
 static gint c_last_wpm;
+static GPtrArray *c_spots;      /* "CALL@HZ" per spot callback */
 static volatile gint c_closed;
 
 static void
@@ -174,6 +186,16 @@ on_state (const LogflTciState *st, gpointer user_data)
   c_last_wpm = st->cw_wpm;
   g_mutex_unlock (&c_lock);
   g_atomic_int_inc (&c_states);
+}
+
+static void
+on_spot (const char *call, double freq_hz, gpointer user_data)
+{
+  (void) user_data;
+  g_mutex_lock (&c_lock);
+  g_ptr_array_add (c_spots,
+                   g_strdup_printf ("%s@%.0f", call, freq_hz));
+  g_mutex_unlock (&c_lock);
 }
 
 static void
@@ -222,10 +244,12 @@ test_handshake_and_live (void)
   g_atomic_int_set (&s_push_vfo, 0);
   g_atomic_int_set (&s_push_mode, 0);
   g_atomic_int_set (&s_push_wpm, 0);
+  g_atomic_int_set (&s_push_spot, 0);
   g_atomic_int_set (&c_states, 0);
   g_atomic_int_set (&c_closed, 0);
   c_last_vfo = 0;
   c_last_mode[0] = '\0';
+  c_spots = g_ptr_array_new_with_free_func (g_free);
   g_mutex_init (&c_lock);
 
   lws_set_log_level (LLL_ERR, NULL);
@@ -248,6 +272,7 @@ test_handshake_and_live (void)
   LogflTciClient *cli = logfl_tci_client_new ("127.0.0.1", (guint16) port);
   logfl_tci_client_set_state_cb (cli, on_state, NULL);
   logfl_tci_client_set_closed_cb (cli, on_closed, NULL);
+  logfl_tci_client_set_spot_cb (cli, on_spot, NULL);
 
   GError *err = NULL;
   g_assert_true (logfl_tci_client_start (cli, &err));
@@ -332,6 +357,29 @@ test_handshake_and_live (void)
   g_assert_true (saw_speed);
   g_assert_true (saw_clamp);
 
+  /* Spot click on the panadapter → the call for the entry-row prefill.
+   * sdr-for-linux sends both spellings per click, so two callbacks for the
+   * one real click are expected (the UI keeps the first, see win.c). Junk
+   * and other receivers must be dropped outright. */
+  g_atomic_int_set (&s_push_spot, 1);
+  lws_cancel_service (s_ctx);
+  gboolean saw_spot = FALSE;
+  for (int i = 0; i < 500; i++)
+    {
+      g_mutex_lock (&c_lock);
+      saw_spot = c_spots->len >= 2;
+      g_mutex_unlock (&c_lock);
+      if (saw_spot)
+        break;
+      g_usleep (5000);
+    }
+  g_assert_true (saw_spot);
+  g_mutex_lock (&c_lock);
+  g_assert_cmpuint (c_spots->len, ==, 2);       /* junk + rx 1 dropped */
+  g_assert_cmpstr (c_spots->pdata[0], ==, "OK1BR/P@14025300");
+  g_assert_cmpstr (c_spots->pdata[1], ==, "OK1BR/P@14025300");
+  g_mutex_unlock (&c_lock);
+
   logfl_tci_client_stop (cli);
   g_assert_false (logfl_tci_client_is_ready (cli));
   logfl_tci_client_free (cli);
@@ -349,6 +397,7 @@ test_handshake_and_live (void)
       g_free (m);
     }
   g_string_free (s_rx, TRUE);
+  g_ptr_array_free (c_spots, TRUE);
   g_mutex_clear (&s_lock);
   g_mutex_clear (&c_lock);
 }

@@ -23,6 +23,8 @@ struct _LogflTciClient {
   gpointer         state_cb_data;
   LogflTciClosedCb closed_cb;
   gpointer         closed_cb_data;
+  LogflTciSpotCb   spot_cb;
+  gpointer         spot_cb_data;
 
   struct lws_context *ctx;
   struct lws         *wsi;
@@ -76,6 +78,30 @@ emit_state (LogflTciClient *c)
   c->state_cb (&st, c->state_cb_data);
 }
 
+/* A spot callsign is about to be typed into the log for the operator, so it
+ * has to look like a callsign: letters/digits with optional /P-style
+ * suffixes, at least one digit, no free text. Deliberately permissive about
+ * exotic prefixes — the point is to reject decode garbage, not to referee
+ * what is a valid call. */
+static gboolean
+spot_call_plausible (const char *s)
+{
+  gsize n = strlen (s);
+  if (n < 3 || n > 16)
+    return FALSE;
+  gboolean digit = FALSE, alpha = FALSE;
+  for (const char *p = s; *p; p++)
+    {
+      if (g_ascii_isdigit (*p))
+        digit = TRUE;
+      else if (g_ascii_isalpha (*p))
+        alpha = TRUE;
+      else if (*p != '/')
+        return FALSE;
+    }
+  return digit && alpha;
+}
+
 static void
 handle_command (LogflTciClient *c, char *cmd)
 {
@@ -86,6 +112,8 @@ handle_command (LogflTciClient *c, char *cmd)
     *p = (char) g_ascii_tolower (*p);
 
   gboolean changed = FALSE;
+  char     spot_call[32] = "";     /* non-empty → fire the spot callback */
+  double   spot_hz = 0;
 
   g_mutex_lock (&c->lock);
   if (strcmp (cmd, "ready") == 0)
@@ -146,10 +174,40 @@ handle_command (LogflTciClient *c, char *cmd)
           changed = TRUE;
         }
     }
+  else if ((strcmp (cmd, "rx_clicked_on_spot") == 0 ||
+            strcmp (cmd, "clicked_on_spot") == 0) && args)
+    {
+      /* The operator clicked a spot on the panadapter. sdr-for-linux sends
+       * both spellings for every click (tci_server.c): the rx_ form carries
+       * <rx>,<ch> first, the legacy one starts at the call. Fields after the
+       * frequency (none today) are ignored. */
+      char **f = g_strsplit (args, ",", 0);
+      guint n = g_strv_length (f);
+      gboolean rx_form = strcmp (cmd, "rx_clicked_on_spot") == 0;
+      guint i = rx_form ? 2 : 0;   /* index of the call field */
+      if (n >= i + 2)
+        {
+          char *call = g_strstrip (f[i]);
+          double hz = g_ascii_strtod (f[i + 1], NULL);
+          /* rx_ form: receiver 0 channel A only, matching vfo/modulation. */
+          if ((!rx_form || (strtol (f[0], NULL, 10) == 0 &&
+                            strtol (f[1], NULL, 10) == 0)) &&
+              hz > 0 && spot_call_plausible (call))
+            {
+              for (char *p = call; *p; p++)
+                *p = (char) g_ascii_toupper (*p);
+              g_strlcpy (spot_call, call, sizeof spot_call);
+              spot_hz = hz;
+            }
+        }
+      g_strfreev (f);
+    }
   g_mutex_unlock (&c->lock);
 
   if (changed)
     emit_state (c);
+  if (spot_call[0] && c->spot_cb)
+    c->spot_cb (spot_call, spot_hz, c->spot_cb_data);
 }
 
 static void
@@ -307,6 +365,14 @@ logfl_tci_client_set_closed_cb (LogflTciClient *c, LogflTciClosedCb cb,
 {
   c->closed_cb = cb;
   c->closed_cb_data = user_data;
+}
+
+void
+logfl_tci_client_set_spot_cb (LogflTciClient *c, LogflTciSpotCb cb,
+                              gpointer user_data)
+{
+  c->spot_cb = cb;
+  c->spot_cb_data = user_data;
 }
 
 gboolean

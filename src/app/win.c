@@ -79,6 +79,8 @@ struct _LogflWindow {
   gboolean tci_connecting;     /* connect thread in flight */
   guint tci_epoch;             /* bumps on reconnect; stale jobs drop */
   int cw_wpm;                  /* keyer speed shown in status; 0 = unknown */
+  gboolean call_from_spot;     /* Call holds an untouched spot-click prefill */
+  double spot_hz;              /* frequency that prefill belongs to */
   LogflTciClient *tci;
   LogflWsjtxServer *wsjtx;     /* M6: UDP listener for WSJT-X / JTDX        */
   LogflQso *pending;           /* QSO awaiting dup confirmation */
@@ -321,6 +323,21 @@ cw_speed_bump (LogflWindow *self, int delta)
   return TRUE;
 }
 
+/* How far the VFO may wander before a spot prefill is considered stale.
+ * Wide enough for zero-beating the station you clicked, narrow enough that
+ * tuning off it drops the call. */
+#define LOGFL_SPOT_KEEP_HZ 200.0
+
+/* Forget a spot prefill: either the operator tuned away from the station, or
+ * they started typing over it (then the call is theirs, not the spot's, and
+ * QSYing must never delete it under their hands). */
+static void
+spot_prefill_forget (LogflWindow *self)
+{
+  self->call_from_spot = FALSE;
+  self->spot_hz = 0;
+}
+
 typedef struct {
   LogflWindow  *self;          /* strong ref — idle may outlive the window */
   LogflTciState st;
@@ -339,6 +356,16 @@ tci_apply_state (gpointer user_data)
       g_object_unref (self);
       g_free (d);
       return G_SOURCE_REMOVE;
+    }
+
+  /* Tuning away from the spotted station drops its prefill — that call is
+   * no longer who is on frequency. Only an untouched prefill goes: once the
+   * operator has typed, the call is theirs and QSY must not delete it. */
+  if (self->call_from_spot && st->vfo_hz > 0 && self->spot_hz > 0 &&
+      ABS (st->vfo_hz - self->spot_hz) > LOGFL_SPOT_KEEP_HZ)
+    {
+      spot_prefill_forget (self);
+      gtk_editable_set_text (GTK_EDITABLE (self->call), "");
     }
 
   /* Prefill entry from live VFO (entry strip is for new QSOs only). */
@@ -366,6 +393,78 @@ tci_apply_state (gpointer user_data)
   g_object_unref (self);
   g_free (d);
   return G_SOURCE_REMOVE;
+}
+
+typedef struct {
+  LogflWindow *self;           /* strong ref — idle may outlive the window */
+  char         call[32];
+  double       hz;
+} TciSpotIdle;
+
+/* Any edit of Call — by hand or by us — clears the "this is a spot prefill"
+ * mark. tci_apply_spot re-arms it right after its own write. */
+static void
+on_call_changed_drop_spot (LogflWindow *self)
+{
+  spot_prefill_forget (self);
+}
+
+/* Operator clicked a skimmer spot on the radio's panadapter: put the call in
+ * the entry row so the QSO can start with one keystroke. Frequency/band/mode
+ * need no help here — the radio QSYed itself and its vfo broadcast follows.
+ * Silent by design: SCOPE.md keeps cluster/spot windows out of the logbook,
+ * this is only a prefill. */
+static gboolean
+tci_apply_spot (gpointer user_data)
+{
+  TciSpotIdle *d = user_data;
+  LogflWindow *self = d->self;
+
+  /* Drop if the window is already tearing down. */
+  if (self->call == NULL || self->tci_label == NULL)
+    {
+      g_object_unref (self);
+      g_free (d);
+      return G_SOURCE_REMOVE;
+    }
+
+  /* Never overwrite a call being typed, and never yank focus out of an open
+   * cell editor. sdr-for-linux sends two spellings per click, so the second
+   * one lands here with the call already filled — this is what makes the
+   * repeat harmless. */
+  /* Fill an empty Call, and replace a call that is itself an untouched
+   * prefill — clicking spot to spot must follow. A call the operator typed
+   * is theirs and stays. Re-clicking the same station changes nothing, which
+   * is what makes the two spellings sdr-for-linux sends per click harmless. */
+  if (!self->cell_edit_box &&
+      (entry_text (self->call)[0] == '\0' || self->call_from_spot))
+    {
+      if (g_strcmp0 (entry_text (self->call), d->call) != 0)
+        {
+          gtk_editable_set_text (GTK_EDITABLE (self->call), d->call);
+          gtk_widget_grab_focus (self->call);
+          gtk_editable_set_position (GTK_EDITABLE (self->call), -1);
+        }
+      /* Mark AFTER the write: the changed handler above just cleared it. */
+      self->call_from_spot = TRUE;
+      self->spot_hz = d->hz;
+    }
+
+  g_object_unref (self);
+  g_free (d);
+  return G_SOURCE_REMOVE;
+}
+
+/* LWS thread → main loop. user_data is the window (stable while client lives). */
+static void
+on_tci_spot (const char *call, double freq_hz, gpointer user_data)
+{
+  (void) freq_hz;              /* the radio already tuned; vfo: follows */
+  LogflWindow *self = user_data;
+  TciSpotIdle *d = g_new0 (TciSpotIdle, 1);
+  d->self = g_object_ref (self);
+  g_strlcpy (d->call, call, sizeof d->call);
+  g_idle_add (tci_apply_spot, d);
 }
 
 /* LWS thread → main loop. user_data is the window (stable while client lives). */
@@ -400,6 +499,7 @@ tci_mark_offline (gpointer user_data)
     {
       logfl_tci_client_set_state_cb (self->tci, NULL, NULL);
       logfl_tci_client_set_closed_cb (self->tci, NULL, NULL);
+      logfl_tci_client_set_spot_cb (self->tci, NULL, NULL);
       logfl_tci_client_free (self->tci);
       self->tci = NULL;
     }
@@ -429,6 +529,7 @@ tci_connect_done (gpointer user_data)
         {
           logfl_tci_client_set_state_cb (r->cli, NULL, NULL);
           logfl_tci_client_set_closed_cb (r->cli, NULL, NULL);
+          logfl_tci_client_set_spot_cb (r->cli, NULL, NULL);
           logfl_tci_client_free (r->cli);
         }
       g_object_unref (self);
@@ -443,6 +544,7 @@ tci_connect_done (gpointer user_data)
         {
           logfl_tci_client_set_state_cb (r->cli, NULL, NULL);
           logfl_tci_client_set_closed_cb (r->cli, NULL, NULL);
+          logfl_tci_client_set_spot_cb (r->cli, NULL, NULL);
           logfl_tci_client_free (r->cli);
           r->cli = NULL;
         }
@@ -459,6 +561,7 @@ tci_connect_done (gpointer user_data)
         {
           logfl_tci_client_set_state_cb (self->tci, NULL, NULL);
           logfl_tci_client_set_closed_cb (self->tci, NULL, NULL);
+          logfl_tci_client_set_spot_cb (self->tci, NULL, NULL);
           logfl_tci_client_free (self->tci);
         }
       self->tci = r->cli;
@@ -511,6 +614,7 @@ tci_connect_kick (gpointer user_data)
   LogflTciClient *cli = logfl_tci_client_new (host, port);
   logfl_tci_client_set_state_cb (cli, on_tci_state, self);
   logfl_tci_client_set_closed_cb (cli, on_tci_closed, self);
+  logfl_tci_client_set_spot_cb (cli, on_tci_spot, self);
 
   TciConnectResult *r = g_new0 (TciConnectResult, 1);
   r->self = g_object_ref (self);
@@ -1613,6 +1717,7 @@ tci_disconnect (LogflWindow *self)
     {
       logfl_tci_client_set_state_cb (self->tci, NULL, NULL);
       logfl_tci_client_set_closed_cb (self->tci, NULL, NULL);
+      logfl_tci_client_set_spot_cb (self->tci, NULL, NULL);
       logfl_tci_client_free (self->tci);
       self->tci = NULL;
     }
@@ -4201,6 +4306,7 @@ logfl_window_dispose (GObject *obj)
     {
       logfl_tci_client_set_state_cb (self->tci, NULL, NULL);
       logfl_tci_client_set_closed_cb (self->tci, NULL, NULL);
+      logfl_tci_client_set_spot_cb (self->tci, NULL, NULL);
       logfl_tci_client_free (self->tci);
       self->tci = NULL;
     }
@@ -4448,6 +4554,8 @@ logfl_window_init (LogflWindow *self)
   self->call = mk_entry (self, 10, NULL);
   g_signal_connect_swapped (self->call, "changed",
                             G_CALLBACK (update_wb4), self);
+  g_signal_connect_swapped (self->call, "changed",
+                            G_CALLBACK (on_call_changed_drop_spot), self);
   self->rst_s = mk_entry (self, 4, NULL);
   self->rst_r = mk_entry (self, 4, NULL);
   gtk_editable_set_text (GTK_EDITABLE (self->rst_s), "599");
