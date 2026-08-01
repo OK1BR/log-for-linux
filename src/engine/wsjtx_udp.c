@@ -703,9 +703,14 @@ on_udp (GSocket *sock, GIOCondition cond, gpointer user_data)
 {
   LogflWsjtxServer *s = user_data;
   (void) sock;
-  if (!(cond & G_IO_IN) || !s->sock)
+  (void) cond;
+  if (!s->sock)
     return G_SOURCE_CONTINUE;
 
+  /* Receive regardless of the condition bits — same hardening as dup_srv:
+   * an async UDP error (ICMP unreachable after a reply to a dead peer)
+   * wakes the source with G_IO_ERR alone and only the recv clears it;
+   * bailing out without reading would spin the main loop. */
   guint8 buf[4096];
   GSocketAddress *from = NULL;
   GError *err = NULL;
