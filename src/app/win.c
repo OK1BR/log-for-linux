@@ -110,6 +110,8 @@ struct _LogflWindow {
 G_DEFINE_FINAL_TYPE (LogflWindow, logfl_window, ADW_TYPE_APPLICATION_WINDOW)
 
 static void refresh_esm_hint (LogflWindow *self);
+static void dup_notify (LogflWindow *self, const char *call,
+                        const char *band, const char *mode);
 static GtkWidget *labeled (const char *caption, GtkWidget *child);
 static void contest_ui_refresh (LogflWindow *self);
 static void refresh_serial (LogflWindow *self);
@@ -930,6 +932,7 @@ do_add_pending (LogflWindow *self)
       reload (self);
       refresh_serial (self);
       refresh_esm_hint (self);
+      dup_notify (self, q->call, q->band, q->mode);
     }
   else
     {
@@ -1598,18 +1601,24 @@ on_delete_response (GObject *source, GAsyncResult *res, gpointer user_data)
     }
   GError *err = NULL;
   gint64 deleted_id = self->pending_delete_id;
+  /* Snapshot before the delete — the fresh verdict for this call (likely
+   * back to NEW) is pushed to dup-service peers after it. */
+  LogflQso *gone = logfl_store_get (self->store, deleted_id, NULL);
   if (logfl_store_delete (self->store, deleted_id, &err))
     {
       toast (self, "QSO deleted");
       reload (self);
       /* Deleting the highest contest serial hands its number out again. */
       refresh_serial (self);
+      if (gone)
+        dup_notify (self, gone->call, gone->band, gone->mode);
     }
   else
     {
       toast (self, "Delete failed: %s", err->message);
       g_clear_error (&err);
     }
+  g_clear_pointer (&gone, logfl_qso_free);
   self->pending_delete_id = 0;
 }
 
@@ -1834,6 +1843,7 @@ on_wsjtx_logged (LogflQso *q, const LogflWsjtxQsoLogged *raw, gpointer user_data
     {
       toast (self, "WSJT-X: logged %s · %s · %s", q->call, q->band, q->mode);
       reload (self);
+      dup_notify (self, q->call, q->band, q->mode);
     }
   else
     {
@@ -1912,14 +1922,12 @@ wsjtx_start (LogflWindow *self)
  * derived from the spot frequency; NULL band just widens the queries to
  * call-only, which errs on the informative side. */
 static LogflDupVerdict
-on_dup_query (const char *call, gint64 freq_hz, const char *mode,
-              gpointer user_data)
+dup_verdict_for (LogflWindow *self, const char *call, const char *band,
+                 const char *mode)
 {
-  LogflWindow *self = user_data;
   if (!self->store)
     return LOGFL_DUP_NEW;
   char *up = g_ascii_strup (call, -1);
-  const char *band = logfl_adif_band_for_freq (freq_hz / 1e6);
   LogflDupVerdict v = LOGFL_DUP_NEW;
   gboolean dup = FALSE;
   if (self->contest &&
@@ -1936,6 +1944,30 @@ on_dup_query (const char *call, gint64 freq_hz, const char *mode,
     }
   g_free (up);
   return v;
+}
+
+static LogflDupVerdict
+on_dup_query (const char *call, gint64 freq_hz, const char *mode,
+              gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  return dup_verdict_for (self, call,
+                          logfl_adif_band_for_freq (freq_hz / 1e6), mode);
+}
+
+/* A QSO with this call was just logged / deleted / edited — push the fresh
+ * verdict to recent dup-service peers so the skimmer recolors its live
+ * spot at once (its own re-announce would take up to 3 minutes). */
+static void
+dup_notify (LogflWindow *self, const char *call, const char *band,
+            const char *mode)
+{
+  if (!self->dup_srv || !call || !*call)
+    return;
+  char *up = g_ascii_strup (call, -1);
+  logfl_dup_srv_notify (self->dup_srv, up,
+                        dup_verdict_for (self, up, band, mode));
+  g_free (up);
 }
 
 /* Always on, localhost only; a failed bind (second instance?) is logged and
@@ -4010,6 +4042,16 @@ commit_cell_edit (LogflWindow *self, LogflQsoRow *row, int col,
       return FALSE;
     }
 
+  /* Verdict pushes for the dup service: the edited QSO's new identity, and
+   * the old one when call/band/mode moved (that call may be NEW again).
+   * Snapshot before row_replace frees the old row QSO under cur. */
+  gboolean ident_moved = g_strcmp0 (cur->call, q->call) != 0 ||
+                         g_strcmp0 (cur->band, q->band) != 0 ||
+                         g_strcmp0 (cur->mode, q->mode) != 0;
+  char *old_call = g_strdup (cur->call);
+  char *old_band = g_strdup (cur->band);
+  char *old_mode = g_strdup (cur->mode);
+
   logfl_qso_row_replace (row, q);
   if (out_changed)
     *out_changed = TRUE;
@@ -4017,6 +4059,12 @@ commit_cell_edit (LogflWindow *self, LogflQsoRow *row, int col,
   update_subtitle (self);
   /* Editing the highest sent serial moves the next-serial prefill. */
   refresh_serial (self);
+  dup_notify (self, q->call, q->band, q->mode);
+  if (ident_moved)
+    dup_notify (self, old_call, old_band, old_mode);
+  g_free (old_call);
+  g_free (old_band);
+  g_free (old_mode);
   return TRUE;
 }
 

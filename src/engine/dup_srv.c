@@ -9,6 +9,16 @@
 
 G_DEFINE_QUARK (logfl-dup-error-quark, logfl_dup_error)
 
+/* Recent valid requesters — the audience for unsolicited verdict pushes.
+ * A handful is plenty (one skimmer, maybe a second instance per mode). */
+#define DUP_MAX_PEERS 8
+#define DUP_PEER_TTL_US (10 * 60 * (gint64) G_USEC_PER_SEC)
+
+typedef struct {
+  GSocketAddress *addr;        /* NULL = free slot */
+  gint64          seen;        /* monotonic µs of the last valid query */
+} DupPeer;
+
 struct _LogflDupSrv {
   char            *host;
   guint16          port;      /* requested; 0 = ephemeral */
@@ -16,6 +26,7 @@ struct _LogflDupSrv {
   GSource         *source;
   LogflDupQueryCb  query_cb;
   gpointer         query_data;
+  DupPeer          peers[DUP_MAX_PEERS];
 };
 
 const char *
@@ -132,6 +143,74 @@ logfl_dup_srv_port (const LogflDupSrv *s)
 }
 
 static gboolean
+peer_addr_equal (GSocketAddress *a, GSocketAddress *b)
+{
+  if (!G_IS_INET_SOCKET_ADDRESS (a) || !G_IS_INET_SOCKET_ADDRESS (b))
+    return FALSE;
+  GInetSocketAddress *ia = G_INET_SOCKET_ADDRESS (a);
+  GInetSocketAddress *ib = G_INET_SOCKET_ADDRESS (b);
+  return g_inet_socket_address_get_port (ia) ==
+             g_inet_socket_address_get_port (ib) &&
+         g_inet_address_equal (g_inet_socket_address_get_address (ia),
+                               g_inet_socket_address_get_address (ib));
+}
+
+static void
+remember_peer (LogflDupSrv *s, GSocketAddress *addr)
+{
+  gint64 now = g_get_monotonic_time ();
+  DupPeer *slot = &s->peers[0];
+  for (guint i = 0; i < DUP_MAX_PEERS; i++)
+    {
+      DupPeer *p = &s->peers[i];
+      if (p->addr && peer_addr_equal (p->addr, addr))
+        {
+          p->seen = now;
+          return;
+        }
+      /* Free slot wins; otherwise remember the stalest for eviction. */
+      if (!p->addr && slot->addr)
+        slot = p;
+      else if (p->addr && slot->addr && p->seen < slot->seen)
+        slot = p;
+    }
+  g_clear_object (&slot->addr);
+  slot->addr = g_object_ref (addr);
+  slot->seen = now;
+}
+
+static void
+drop_peers (LogflDupSrv *s)
+{
+  for (guint i = 0; i < DUP_MAX_PEERS; i++)
+    g_clear_object (&s->peers[i].addr);
+}
+
+void
+logfl_dup_srv_notify (LogflDupSrv *s, const char *call, LogflDupVerdict v)
+{
+  if (!s || !s->sock || !call || !*call)
+    return;
+  char *msg = NULL;
+  gint64 now = g_get_monotonic_time ();
+  for (guint i = 0; i < DUP_MAX_PEERS; i++)
+    {
+      DupPeer *p = &s->peers[i];
+      if (!p->addr)
+        continue;
+      if (now - p->seen > DUP_PEER_TTL_US)
+        {
+          g_clear_object (&p->addr);
+          continue;
+        }
+      if (!msg)
+        msg = g_strdup_printf ("%s %s\n", logfl_dup_verdict_str (v), call);
+      g_socket_send_to (s->sock, p->addr, msg, strlen (msg), NULL, NULL);
+    }
+  g_free (msg);
+}
+
+static gboolean
 on_udp (GSocket *sock, GIOCondition cond, gpointer user_data)
 {
   LogflDupSrv *s = user_data;
@@ -161,6 +240,7 @@ on_udp (GSocket *sock, GIOCondition cond, gpointer user_data)
   if (from && s->query_cb &&
       logfl_dup_parse_query (buf, &call, &hz, &mode))
     {
+      remember_peer (s, from);   /* audience for unsolicited pushes */
       LogflDupVerdict v = s->query_cb (call, hz, mode, s->query_data);
       char *reply = g_strdup_printf ("%s %s\n",
                                      logfl_dup_verdict_str (v), call);
@@ -238,4 +318,5 @@ logfl_dup_srv_stop (LogflDupSrv *s)
       s->source = NULL;
     }
   g_clear_object (&s->sock);
+  drop_peers (s);
 }

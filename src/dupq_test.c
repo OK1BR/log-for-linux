@@ -75,14 +75,11 @@ mock_query (const char *call, gint64 hz, const char *mode, gpointer user)
   return LOGFL_DUP_NEW;
 }
 
-/* Send one datagram to the server and pump the main context until the
- * reply lands (or ~2 s pass). Returns the owned reply string ("" = none). */
+/* Pump the main context until a datagram lands on cli (or ~2 s pass).
+ * Returns the owned stripped text ("" = nothing arrived). */
 static char *
-roundtrip (GSocket *cli, GSocketAddress *srv_addr, const char *req)
+wait_datagram (GSocket *cli)
 {
-  g_assert_cmpint (
-      g_socket_send_to (cli, srv_addr, req, strlen (req), NULL, NULL), >, 0);
-
   char buf[256];
   gint64 deadline = g_get_monotonic_time () + 2 * G_USEC_PER_SEC;
   while (g_get_monotonic_time () < deadline)
@@ -100,6 +97,15 @@ roundtrip (GSocket *cli, GSocketAddress *srv_addr, const char *req)
       g_usleep (2000);
     }
   return g_strdup ("");
+}
+
+/* Send one datagram to the server and wait for the reply. */
+static char *
+roundtrip (GSocket *cli, GSocketAddress *srv_addr, const char *req)
+{
+  g_assert_cmpint (
+      g_socket_send_to (cli, srv_addr, req, strlen (req), NULL, NULL), >, 0);
+  return wait_datagram (cli);
 }
 
 static void
@@ -150,8 +156,43 @@ test_loopback (void)
   g_assert_cmpstr (r, ==, "NEW OK9NEW");
   g_free (r);
 
+  /* PUSH: a verdict change reaches the peer unsolicited — same format. */
+  logfl_dup_srv_notify (s, "OK9NEW", LOGFL_DUP_DUP);
+  r = wait_datagram (cli);
+  g_assert_cmpstr (r, ==, "DUP OK9NEW");
+  g_free (r);
+
+  /* A second registered peer gets the push too. */
+  GSocket *cli2 = g_socket_new (G_SOCKET_FAMILY_IPV4, G_SOCKET_TYPE_DATAGRAM,
+                                G_SOCKET_PROTOCOL_UDP, NULL);
+  g_assert_nonnull (cli2);
+  g_socket_set_blocking (cli2, FALSE);
+  r = roundtrip (cli2, sa, "DUP? OK9B4 14022000 CW");
+  g_assert_cmpstr (r, ==, "B4 OK9B4");
+  g_free (r);
+  logfl_dup_srv_notify (s, "OK9B4", LOGFL_DUP_DUP);
+  r = wait_datagram (cli);
+  g_assert_cmpstr (r, ==, "DUP OK9B4");
+  g_free (r);
+  r = wait_datagram (cli2);
+  g_assert_cmpstr (r, ==, "DUP OK9B4");
+  g_free (r);
+  g_object_unref (cli2);
+
   g_object_unref (sa);
   g_object_unref (cli);
+  logfl_dup_srv_free (s);
+}
+
+static void
+test_notify_no_peers (void)
+{
+  /* Notify with nobody listening (and even before start) must be a no-op. */
+  LogflDupSrv *s = logfl_dup_srv_new (NULL, 0);
+  logfl_dup_srv_notify (s, "OK1BR", LOGFL_DUP_DUP);
+  g_assert_true (logfl_dup_srv_start (s, NULL));
+  logfl_dup_srv_notify (s, "OK1BR", LOGFL_DUP_DUP);
+  logfl_dup_srv_notify (s, NULL, LOGFL_DUP_NEW);
   logfl_dup_srv_free (s);
 }
 
@@ -161,5 +202,6 @@ main (int argc, char **argv)
   g_test_init (&argc, &argv, NULL);
   g_test_add_func ("/dupq/parse", test_parse);
   g_test_add_func ("/dupq/loopback", test_loopback);
+  g_test_add_func ("/dupq/notify-no-peers", test_notify_no_peers);
   return g_test_run ();
 }

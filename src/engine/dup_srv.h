@@ -66,6 +66,14 @@ void     logfl_dup_srv_stop  (LogflDupSrv *s);
 gboolean logfl_dup_srv_is_running (const LogflDupSrv *s);
 guint16  logfl_dup_srv_port (const LogflDupSrv *s);
 
+/* PUSH: a call's verdict just changed (QSO logged / deleted / edited) —
+ * send the STANDARD answer datagram, unsolicited, to every peer that sent
+ * a valid DUP? within the last ~10 minutes. The skimmer parses it exactly
+ * like an answer and recolors its live spot at once instead of waiting for
+ * its next query/re-announce. No-op when stopped or nobody asked. */
+void logfl_dup_srv_notify (LogflDupSrv *s, const char *call,
+                           LogflDupVerdict v);
+
 /* --- exposed for the gate test ------------------------------------------ */
 
 /* Parse "DUP? <call> <freq_hz> <mode>". Out strings are owned by the
