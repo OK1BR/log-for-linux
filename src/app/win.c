@@ -85,6 +85,7 @@ struct _LogflWindow {
   LogflTciClient *tci;
   LogflWsjtxServer *wsjtx;     /* M6: UDP listener for WSJT-X / JTDX        */
   LogflDupSrv *dup_srv;        /* worked/dup answers for the skimmer        */
+  GtkWidget *cw_text_win;      /* Ctrl+K free CW text window (weak ptr)     */
   LogflQso *pending;           /* QSO awaiting dup confirmation */
   gint64 pending_delete_id;
   gint64 context_qso_id;       /* row under last right-click (delete menu) */
@@ -1401,6 +1402,113 @@ on_entry_activate (LogflWindow *self)
  * entry controller, so Esc must be handled here while a cell is open). */
 static void cell_end_edit (GtkWidget *box, gboolean commit);
 
+/* --- free CW text window (Ctrl+K, N1MM style) --------------------------- */
+
+static void
+on_cw_text_activate (GtkEntry *entry, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  const char *txt = gtk_editable_get_text (GTK_EDITABLE (entry));
+  if (!txt || !*txt)
+    return;
+  if (!self->tci || !logfl_tci_client_is_ready (self->tci))
+    {
+      toast_short (self, "TCI not connected");
+      return;
+    }
+  /* CW has no case; uppercase mirrors what the macro strip keys. */
+  char *up = g_ascii_strup (txt, -1);
+  g_strstrip (up);
+  if (*up)
+    {
+      logfl_tci_client_cw_send (self->tci, up);
+      toast_short (self, "CW: %s", up);
+    }
+  g_free (up);
+  gtk_editable_set_text (GTK_EDITABLE (entry), "");
+}
+
+static void
+on_cw_text_stop (GtkButton *btn, gpointer user_data)
+{
+  (void) btn;
+  LogflWindow *self = user_data;
+  if (self->tci && logfl_tci_client_is_ready (self->tci))
+    {
+      logfl_tci_client_cw_stop (self->tci);
+      toast_short (self, "CW stop");
+    }
+}
+
+static gboolean
+on_cw_text_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
+                GdkModifierType state, gpointer user_data)
+{
+  (void) ctl;
+  (void) keycode;
+  (void) state;
+  LogflWindow *self = user_data;
+  if (keyval == GDK_KEY_Escape)
+    {
+      /* Esc is the panic key everywhere in this app: stop, then close. */
+      if (self->tci && logfl_tci_client_is_ready (self->tci))
+        logfl_tci_client_cw_stop (self->tci);
+      if (self->cw_text_win)
+        gtk_window_destroy (GTK_WINDOW (self->cw_text_win));
+      return TRUE;
+    }
+  return FALSE;
+}
+
+/* Small non-modal companion window: type a line, Enter keys it (queueing
+ * behind whatever the keyer is sending — word gap comes for free), the
+ * entry clears for the next line. Esc stops the keyer and closes. */
+static void
+cw_text_window_open (LogflWindow *self)
+{
+  if (self->cw_text_win)
+    {
+      gtk_window_present (GTK_WINDOW (self->cw_text_win));
+      return;
+    }
+
+  GtkWidget *win = gtk_window_new ();
+  gtk_window_set_title (GTK_WINDOW (win), "CW text");
+  gtk_window_set_transient_for (GTK_WINDOW (win), GTK_WINDOW (self));
+  gtk_window_set_destroy_with_parent (GTK_WINDOW (win), TRUE);
+  gtk_window_set_default_size (GTK_WINDOW (win), 440, -1);
+
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_widget_set_margin_start (box, 12);
+  gtk_widget_set_margin_end (box, 12);
+  gtk_widget_set_margin_top (box, 12);
+  gtk_widget_set_margin_bottom (box, 12);
+
+  GtkWidget *entry = gtk_entry_new ();
+  gtk_widget_set_hexpand (entry, TRUE);
+  gtk_entry_set_placeholder_text (GTK_ENTRY (entry),
+                                  "Enter keys it · Esc stops && closes");
+  g_signal_connect (entry, "activate", G_CALLBACK (on_cw_text_activate),
+                    self);
+  gtk_box_append (GTK_BOX (box), entry);
+
+  GtkWidget *stop = gtk_button_new_with_label ("Stop");
+  g_signal_connect (stop, "clicked", G_CALLBACK (on_cw_text_stop), self);
+  gtk_box_append (GTK_BOX (box), stop);
+
+  gtk_window_set_child (GTK_WINDOW (win), box);
+
+  GtkEventController *kc = gtk_event_controller_key_new ();
+  g_signal_connect (kc, "key-pressed", G_CALLBACK (on_cw_text_key), self);
+  gtk_widget_add_controller (win, kc);
+
+  self->cw_text_win = win;
+  g_object_add_weak_pointer (G_OBJECT (win),
+                             (gpointer *) &self->cw_text_win);
+  gtk_window_present (GTK_WINDOW (win));
+  gtk_widget_grab_focus (entry);
+}
+
 static gboolean
 on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
              GdkModifierType state, gpointer user_data)
@@ -1409,7 +1517,21 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
   (void) keycode;
   LogflWindow *self = user_data;
   if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))
-    return FALSE;
+    {
+      /* Ctrl+K — free CW text window (N1MM style). Everything else with a
+       * modifier stays with GTK; dialogs and cell editors keep their keys. */
+      if ((state & GDK_CONTROL_MASK) &&
+          !(state & (GDK_ALT_MASK | GDK_SUPER_MASK)) &&
+          (keyval == GDK_KEY_k || keyval == GDK_KEY_K) &&
+          !self->cell_edit_box &&
+          !adw_application_window_get_visible_dialog (
+              ADW_APPLICATION_WINDOW (self)))
+        {
+          cw_text_window_open (self);
+          return TRUE;
+        }
+      return FALSE;
+    }
   /* A dialog is up (prefs, macro edit, confirm…): let it have the keys —
    * F1 must not key CW from a dialog entry and Esc must close the dialog. */
   if (adw_application_window_get_visible_dialog (ADW_APPLICATION_WINDOW (self)))

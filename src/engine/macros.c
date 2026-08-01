@@ -39,7 +39,7 @@ logfl_macro_set_init_defaults (LogflMacroSet *set)
     { "MY",   "{MYCALL}" },
     { "HIS",  "{CALL}" },
     { "AGN",  "AGN?" },
-    { "NR",   "{CALL} {MYCALL} {MYCALL}" },
+    { "NR",   "NR?" },
   };
   const guint n_filled = G_N_ELEMENTS (run_filled);
 
