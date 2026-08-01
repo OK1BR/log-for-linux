@@ -33,6 +33,7 @@ engine_sources = [
   'src/engine/tci_client.c',   # M4: TCI client (VFO/mode, explicit QSY)
   'src/engine/macros.c',       # M5: F-key expand, Run/S&P banks, ESM
   'src/engine/wsjtx_udp.c',    # M6: WSJT-X / JTDX UDP (QSO Logged, highlight)
+  'src/engine/dup_srv.c',      # worked/dup lookup UDP service (skimmer asks)
   'src/engine/contest.c',      # M9: contest exchange templates + presets
   'src/engine/cabrillo.c',     # M9: Cabrillo v3 contest log export
 ]
@@ -98,6 +99,15 @@ log_udp_test = executable('log-udp-test',
   link_with : engine_lib,
 )
 test('udp', log_udp_test, timeout : 30)
+
+# Worked/dup lookup service — request parser + loopback round trip.
+log_dupq_test = executable('log-dupq-test',
+  ['src/dupq_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('dupq', log_dupq_test, timeout : 30)
 
 # M9: contests — exchange templates, v1→v2 migration, scoping, delete, ADIF.
 log_contest_test = executable('log-contest-test',

@@ -17,6 +17,7 @@
 #include "adif.h"
 #include "cabrillo.h"
 #include "contest.h"
+#include "dup_srv.h"
 #include "engine.h"
 #include "log_store.h"
 #include "macros.h"
@@ -83,6 +84,7 @@ struct _LogflWindow {
   double spot_hz;              /* frequency that prefill belongs to */
   LogflTciClient *tci;
   LogflWsjtxServer *wsjtx;     /* M6: UDP listener for WSJT-X / JTDX        */
+  LogflDupSrv *dup_srv;        /* worked/dup answers for the skimmer        */
   LogflQso *pending;           /* QSO awaiting dup confirmation */
   gint64 pending_delete_id;
   gint64 context_qso_id;       /* row under last right-click (delete menu) */
@@ -1902,6 +1904,57 @@ wsjtx_start (LogflWindow *self)
   char *st = g_strdup_printf ("WSJT-X :%u", port);
   wsjtx_set_status (self, st);
   g_free (st);
+}
+
+/* Skimmer asks "is this call a dup?" before it colors a spot / decode
+ * highlight. Same verdict the entry row shows: DUP under the active-contest
+ * rule, else B4 when the call is anywhere in the log, else NEW. Band is
+ * derived from the spot frequency; NULL band just widens the queries to
+ * call-only, which errs on the informative side. */
+static LogflDupVerdict
+on_dup_query (const char *call, gint64 freq_hz, const char *mode,
+              gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  if (!self->store)
+    return LOGFL_DUP_NEW;
+  char *up = g_ascii_strup (call, -1);
+  const char *band = logfl_adif_band_for_freq (freq_hz / 1e6);
+  LogflDupVerdict v = LOGFL_DUP_NEW;
+  gboolean dup = FALSE;
+  if (self->contest &&
+      logfl_store_contest_dup_check (self->store, self->contest->id, up,
+                                     band, mode, &dup, NULL) &&
+      dup)
+    v = LOGFL_DUP_DUP;
+  else
+    {
+      LogflWorkedB4 wb;
+      if (logfl_store_worked_b4 (self->store, up, band, mode, &wb, NULL) &&
+          wb.n_total > 0)
+        v = LOGFL_DUP_B4;
+    }
+  g_free (up);
+  return v;
+}
+
+/* Always on, localhost only; a failed bind (second instance?) is logged and
+ * the app runs on without the service. */
+static void
+dup_srv_start (LogflWindow *self)
+{
+  self->dup_srv = logfl_dup_srv_new (LOGFL_DUP_DEFAULT_HOST,
+                                     LOGFL_DUP_DEFAULT_PORT);
+  logfl_dup_srv_set_query_cb (self->dup_srv, on_dup_query, self);
+  GError *err = NULL;
+  if (!logfl_dup_srv_start (self->dup_srv, &err))
+    {
+      g_warning ("dup lookup service: %s",
+                 err ? err->message : "bind failed");
+      g_clear_error (&err);
+      logfl_dup_srv_free (self->dup_srv);
+      self->dup_srv = NULL;
+    }
 }
 
 static void
@@ -4426,6 +4479,12 @@ logfl_window_dispose (GObject *obj)
       logfl_wsjtx_server_free (self->wsjtx);
       self->wsjtx = NULL;
     }
+  if (self->dup_srv)
+    {
+      logfl_dup_srv_set_query_cb (self->dup_srv, NULL, NULL);
+      logfl_dup_srv_free (self->dup_srv);
+      self->dup_srv = NULL;
+    }
   if (self->tci)
     {
       logfl_tci_client_set_state_cb (self->tci, NULL, NULL);
@@ -4808,6 +4867,7 @@ logfl_window_init (LogflWindow *self)
   /* M4: connect to sdr-for-linux TCI in a background thread (non-blocking). */
   g_idle_add (tci_connect_kick, self);
   wsjtx_start (self);
+  dup_srv_start (self);
   gtk_widget_grab_focus (self->call);
 }
 
