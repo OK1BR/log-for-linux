@@ -440,14 +440,16 @@ tci_apply_spot (gpointer user_data)
       (entry_text (self->call)[0] == '\0' || self->call_from_spot))
     {
       if (g_strcmp0 (entry_text (self->call), d->call) != 0)
-        {
-          gtk_editable_set_text (GTK_EDITABLE (self->call), d->call);
-          gtk_widget_grab_focus (self->call);
-          gtk_editable_set_position (GTK_EDITABLE (self->call), -1);
-        }
+        gtk_editable_set_text (GTK_EDITABLE (self->call), d->call);
       /* Mark AFTER the write: the changed handler above just cleared it. */
       self->call_from_spot = TRUE;
       self->spot_hz = d->hz;
+
+      /* Land like a double-click into Call: window to front, entry focused,
+       * call selected — Tab/Enter keeps it, typing replaces it. */
+      gtk_window_present (GTK_WINDOW (self));
+      gtk_widget_grab_focus (self->call);
+      gtk_editable_select_region (GTK_EDITABLE (self->call), 0, -1);
     }
 
   g_object_unref (self);
@@ -459,11 +461,11 @@ tci_apply_spot (gpointer user_data)
 static void
 on_tci_spot (const char *call, double freq_hz, gpointer user_data)
 {
-  (void) freq_hz;              /* the radio already tuned; vfo: follows */
   LogflWindow *self = user_data;
   TciSpotIdle *d = g_new0 (TciSpotIdle, 1);
   d->self = g_object_ref (self);
   g_strlcpy (d->call, call, sizeof d->call);
+  d->hz = freq_hz;             /* anchors the QSY-away staleness check */
   g_idle_add (tci_apply_spot, d);
 }
 
