@@ -67,6 +67,15 @@ test_defaults_and_banks (void)
   g_assert_cmpstr (k->caption, ==, "CQ");
   g_assert_true (strstr (k->tmpl, "{MYCALL}") != NULL);
 
+  /* F2 EXCH must carry the contest exchange — serial and/or static part.
+   * Caught live 2026-08-01 (EUHFC): the report went out without the sent
+   * number because the default template had neither token. */
+  k = logfl_macro_set_key (&set, LOGFL_MACRO_BANK_RUN, 1);
+  g_assert_cmpstr (k->caption, ==, "EXCH");
+  g_assert_true (strstr (k->tmpl, "{NR}") && strstr (k->tmpl, "{EXCH}"));
+  k = logfl_macro_set_key (&set, LOGFL_MACRO_BANK_SNP, 1);
+  g_assert_true (strstr (k->tmpl, "{NR}") && strstr (k->tmpl, "{EXCH}"));
+
   /* F8 is free, not stop; STOP is last of row 2 (index 15). */
   g_assert_cmpuint (LOGFL_MACRO_N_KEYS, ==, 16);
   g_assert_false (logfl_macro_index_is_stop (7));

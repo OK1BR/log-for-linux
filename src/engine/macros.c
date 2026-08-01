@@ -25,7 +25,7 @@ logfl_macro_set_init_defaults (LogflMacroSet *set)
    * Indices 0..7 = F1..F8, 8..15 = second row (15 = STOP). */
   static const struct { const char *c; const char *t; } run_filled[] = {
     { "CQ",   "CQ {MYCALL} {MYCALL} TEST" },
-    { "EXCH", "{CALL} {RST}" },
+    { "EXCH", "{CALL} {RST} {NR} {EXCH}" },
     { "TU",   "TU {MYCALL}" },
     { "MY",   "{MYCALL}" },
     { "HIS",  "{CALL}" },
@@ -34,7 +34,7 @@ logfl_macro_set_init_defaults (LogflMacroSet *set)
   };
   static const struct { const char *c; const char *t; } snp_filled[] = {
     { "ANS",  "{CALL} {MYCALL}" },
-    { "EXCH", "{RST}" },
+    { "EXCH", "{RST} {NR} {EXCH}" },
     { "TU",   "TU" },
     { "MY",   "{MYCALL}" },
     { "HIS",  "{CALL}" },
