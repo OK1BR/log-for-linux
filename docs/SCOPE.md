@@ -173,6 +173,15 @@ importing someone's log and exporting it again must never silently drop data.
   another spot replaces it, and tuning more than 200 Hz off the spot clears
   it (that call is no longer on frequency). Once typed into, the call is the
   operator's — QSY never deletes it and a spot click never overwrites it.
+  **Live-EUHFC hardening (2026-08-01, tuned mid-contest):** the click also
+  presents the logbook window and focuses Call with the text selected
+  (double-click feel — Tab/Enter keeps, typing replaces); QSY off an
+  untouched spot resets the WHOLE entry row via `entry_reset_defaults`
+  (RST to the mode default, Sent back to the serial/exchange prefill,
+  focus in Call) so leftovers of a QSO that never happened cannot leak
+  into the next one. The New-call / worked-B4 / DUP verdict line is
+  1.3em bold with family colors: New = #30C060 (the skimmer's own spot
+  green on the panadapter), DUP = saturated #ED333B.
 - **M5 — macros v2 (contest-style messaging). IMPLEMENTED 2026-07-21
   (offline gate green).** Grew the F-key strip into a messaging layer
   (inspired by N1MM+, not a clone). Done:
@@ -191,6 +200,21 @@ importing someone's log and exporting it again must never silently drop data.
   4. **SSB “wav” / DVK — OUT OF SCOPE** (unchanged): CW text via TCI only.
   Gate: `log-macro-test` — expand, bank defaults/edit, ESM transitions.
   Live CW smoke against sdr-for-linux when available (not formal signed gate).
+  **Contest-day round (2026-08-01, all live-verified in EUHFC):**
+  `{NR}`/`{EXCH}` tokens (sent serial / static exchange, fed from the Sent
+  entry) — the default F2 is `{CALL} {RST} {NR} {EXCH}` (S&P: `{RST} {NR}
+  {EXCH}`; empty tokens collapse, so nothing changes outside contests) and
+  S&P F7 asks `NR?` in the spirit of F6's `AGN?`. **Cut numbers** (opt-in,
+  Preferences → Messaging → CW keyer): `logfl_macro_cut_apply` rewrites
+  digits per `[cw] cut_map` pairs, one switch per standard substitution
+  (0T 1A 2U 3V 5E 8D 9N) — applied at send time to RST/serial/all-digit
+  exchange only, never callsigns; the log keeps real digits. **Queued-
+  message word gap:** CW text goes out with a leading space, SDC-style —
+  sdr-for-linux's generator inserts the inter-message gap only when the
+  following text asks for it (a trailing space does nothing; skipped on an
+  idle keyer, so overs never start with dead air). **Ctrl+K free CW text**
+  (N1MM style): small non-modal window, Enter keys the line and clears for
+  the next, Esc stops the keyer and closes, Stop button just stops.
 - **M6 — WSJT-X UDP. IMPLEMENTED 2026-07-21 (offline gate green).**
   UDP server (default `127.0.0.1:2237`): decode `QSO Logged` into the store,
   on `Status` answer worked-B4 via `Highlight Callsign` (green = new, yellow
@@ -200,6 +224,27 @@ importing someone's log and exporting it again must never silently drop data.
   reply. UI wires auto-log (exact-ts dup skip) + toast + table reload.
   Gate: `log-udp-test` — synthetic QSO Logged/Status round-trip, store insert,
   loopback server. Live check: one real FT8 QSO from WSJT-X (not formal gate).
+- **Dup lookup service for skimmer-for-linux. IMPLEMENTED 2026-08-01
+  (gate green, live-verified in EUHFC).** Read-only UDP line protocol on
+  `127.0.0.1:2238`, always on with the app: `DUP? <call> <freq_hz> <mode>`
+  → `NEW|B4|DUP <call>` back to the sender. DUP = call+band+mode already
+  in the ACTIVE contest (band derived from the frequency), B4 = worked any
+  time, NEW = not in the log; malformed requests get silence, so the
+  skimmer treats a timeout as unknown and spotting survives the logbook
+  being closed. **Push:** the service remembers peers with a valid `DUP?`
+  in the last 10 min (8 slots) and any verdict-changing mutation — manual
+  log, WSJT-X QSO, delete, cell edit (old + new identity) — sends them the
+  same answer datagram unsolicited, so the skimmer regrays the live
+  panadapter label at once instead of on its ≤180 s re-announce. The
+  logbook deliberately never writes TCI `spot:` — the label color is the
+  skimmer's to own (two writers would race). Engine transport in
+  `src/engine/dup_srv.c` (the verdict callback in the app owns store +
+  contest context); both UDP handlers (dup + WSJT-X) receive regardless
+  of the wake condition — Linux delivers async ICMP errors on unconnected
+  UDP sockets and a G_IO_ERR-only wake must be drained by the recv or the
+  main loop spins. Gate: `log-dupq-test` — parser, loopback round trip,
+  push to multiple peers, no-peer no-op. The skimmer side (querying,
+  caching, coloring) lives in skimmer-for-linux (its SCOPE.md).
 - **M7 — callbook lookup.** QRZ.com XML (subscriber) / HamQTH (free) —
   name/QTH/grid auto-fill on callsign entry, on-disk cache, credentials in the
   keyring, never in config files.
