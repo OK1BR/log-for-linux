@@ -113,6 +113,8 @@ G_DEFINE_FINAL_TYPE (LogflWindow, logfl_window, ADW_TYPE_APPLICATION_WINDOW)
 static void refresh_esm_hint (LogflWindow *self);
 static void dup_notify (LogflWindow *self, const char *call,
                         const char *band, const char *mode);
+static void entry_reset_defaults (LogflWindow *self);
+static void clear_entry_row (LogflWindow *self);
 static GtkWidget *labeled (const char *caption, GtkWidget *child);
 static void contest_ui_refresh (LogflWindow *self);
 static void refresh_serial (LogflWindow *self);
@@ -404,7 +406,13 @@ tci_apply_state (gpointer user_data)
       ABS (st->vfo_hz - self->spot_hz) > LOGFL_SPOT_KEEP_HZ)
     {
       spot_prefill_forget (self);
-      gtk_editable_set_text (GTK_EDITABLE (self->call), "");
+      /* The whole row resets, not just Call — typed RST/exchange/name of
+       * a QSO that never happened must not haunt the next station. With a
+       * cell editor open only the call goes; nothing yanks the focus. */
+      if (!self->cell_edit_box)
+        entry_reset_defaults (self);
+      else
+        gtk_editable_set_text (GTK_EDITABLE (self->call), ""); /* → forget */
     }
 
   /* Prefill entry from live VFO (entry strip is for new QSOs only). */
@@ -745,6 +753,19 @@ static gboolean
 rst_looks_default (const char *s)
 {
   return !*s || g_str_equal (s, "59") || g_str_equal (s, "599");
+}
+
+/* Full entry-row reset to the ready state: fields cleared, RST back to the
+ * mode default, Sent back to the serial/exchange prefill. Leftovers of a
+ * QSO that never happened must not leak into the next one. */
+static void
+entry_reset_defaults (LogflWindow *self)
+{
+  clear_entry_row (self);
+  const char *def = rst_default_for_mode (dd_selected (self->mode_dd, modes));
+  gtk_editable_set_text (GTK_EDITABLE (self->rst_s), def);
+  gtk_editable_set_text (GTK_EDITABLE (self->rst_r), def);
+  refresh_serial (self);
 }
 
 static void
@@ -4567,10 +4588,19 @@ ensure_table_css (void)
       "  padding: 2px 0;\n"
       "}\n"
       /* New-call / worked-B4 / DUP verdict — the operator decides whether
-       * to call based on this line, it must not be overlooked. */
+       * to call based on this line, it must not be overlooked. Green is
+       * the family spot green (SKIM_SPOT_ARGB #30C060 — the very color of
+       * skimmer labels on the panadapter); red is a saturated GNOME red,
+       * the theme's washed-out salmon was easy to gloss over. */
       "label.logfl-wb4 {\n"
       "  font-size: 1.3em;\n"
       "  font-weight: bold;\n"
+      "}\n"
+      "label.logfl-wb4.success {\n"
+      "  color: #30c060;\n"
+      "}\n"
+      "label.logfl-wb4.error {\n"
+      "  color: #ed333b;\n"
       "}\n";
 
   GtkCssProvider *prov = gtk_css_provider_new ();
