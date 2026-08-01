@@ -4342,6 +4342,12 @@ ensure_table_css (void)
       "columnview.data-table .logfl-cell label {\n"
       "  margin: 0;\n"
       "  padding: 2px 0;\n"
+      "}\n"
+      /* New-call / worked-B4 / DUP verdict — the operator decides whether
+       * to call based on this line, it must not be overlooked. */
+      "label.logfl-wb4 {\n"
+      "  font-size: 1.3em;\n"
+      "  font-weight: bold;\n"
       "}\n";
 
   GtkCssProvider *prov = gtk_css_provider_new ();
@@ -4732,7 +4738,7 @@ logfl_window_init (LogflWindow *self)
   gtk_label_set_ellipsize (GTK_LABEL (self->wb4_label),
                            PANGO_ELLIPSIZE_END);
   gtk_widget_set_hexpand (self->wb4_label, TRUE);
-  gtk_widget_add_css_class (self->wb4_label, "dim-label");
+  gtk_widget_add_css_class (self->wb4_label, "logfl-wb4");
 
   GtkWidget *macro_bar = build_macro_bar (self);
   GtkWidget *qso_table = build_qso_table (self);
