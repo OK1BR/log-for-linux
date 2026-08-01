@@ -39,6 +39,7 @@ struct _LogflTciClient {
   char   mode[32];
   char   device[64];
   char   protocol[64];
+  int    cw_wpm;               /* 0 until the radio reports it */
 
   GString *txt;                /* LWS thread only */
   volatile gint run;
@@ -70,6 +71,7 @@ emit_state (LogflTciClient *c)
   g_strlcpy (st.mode, c->mode, sizeof st.mode);
   g_strlcpy (st.device, c->device, sizeof st.device);
   g_strlcpy (st.protocol, c->protocol, sizeof st.protocol);
+  st.cw_wpm = c->cw_wpm;
   g_mutex_unlock (&c->lock);
   c->state_cb (&st, c->state_cb_data);
 }
@@ -130,6 +132,18 @@ handle_command (LogflTciClient *c, char *cmd)
               g_strlcpy (c->mode, tmp, sizeof c->mode);
               changed = TRUE;
             }
+        }
+    }
+  else if ((strcmp (cmd, "cw_macros_speed") == 0 ||
+            strcmp (cmd, "cw_keyer_speed") == 0) && args)
+    {
+      /* cw_macros_speed:<wpm> — the radio's accepted value (also sent on
+       * handshake and after our own set, so this is the authority). */
+      int wpm = (int) strtol (args, NULL, 10);
+      if (wpm > 0 && wpm != c->cw_wpm)
+        {
+          c->cw_wpm = wpm;
+          changed = TRUE;
         }
     }
   g_mutex_unlock (&c->lock);
@@ -406,6 +420,7 @@ logfl_tci_client_get_state (LogflTciClient *c, LogflTciState *out)
   g_strlcpy (out->mode, c->mode, sizeof out->mode);
   g_strlcpy (out->device, c->device, sizeof out->device);
   g_strlcpy (out->protocol, c->protocol, sizeof out->protocol);
+  out->cw_wpm = c->cw_wpm;
   g_mutex_unlock (&c->lock);
 }
 
@@ -441,6 +456,26 @@ logfl_tci_client_cw_stop (LogflTciClient *c)
   if (!c || !c->thread)
     return;
   cli_queue (c, g_strdup ("cw_macros_stop;"));
+}
+
+void
+logfl_tci_client_cw_set_speed (LogflTciClient *c, int wpm)
+{
+  if (!c || !c->thread)
+    return;
+  wpm = CLAMP (wpm, LOGFL_TCI_WPM_MIN, LOGFL_TCI_WPM_MAX);
+  cli_queue (c, g_strdup_printf ("cw_macros_speed:%d;", wpm));
+}
+
+int
+logfl_tci_client_cw_speed (LogflTciClient *c)
+{
+  if (!c)
+    return 0;
+  g_mutex_lock (&c->lock);
+  int wpm = c->cw_wpm;
+  g_mutex_unlock (&c->lock);
+  return wpm;
 }
 
 const char *

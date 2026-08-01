@@ -78,6 +78,7 @@ struct _LogflWindow {
   gboolean syncing_tci;        /* guard: applying radio state to entry */
   gboolean tci_connecting;     /* connect thread in flight */
   guint tci_epoch;             /* bumps on reconnect; stale jobs drop */
+  int cw_wpm;                  /* keyer speed shown in status; 0 = unknown */
   LogflTciClient *tci;
   LogflWsjtxServer *wsjtx;     /* M6: UDP listener for WSJT-X / JTDX        */
   LogflQso *pending;           /* QSO awaiting dup confirmation */
@@ -273,6 +274,53 @@ select_mode_string (LogflWindow *self, const char *mode)
       }
 }
 
+/* One place builds the TCI status line, so the keyer-speed readout survives
+ * both radio state updates and local Page Up/Down repaints. */
+static void
+tci_paint_status (LogflWindow *self, const LogflTciState *st)
+{
+  char *mhz_txt = st->vfo_hz > 0 ? fmt_freq (st->vfo_hz / 1e6) : g_strdup ("—");
+  char *wpm_txt = self->cw_wpm > 0
+                      ? g_strdup_printf (" · %d WPM", self->cw_wpm)
+                      : g_strdup ("");
+  char *status = g_strdup_printf (
+      "TCI · %s · %s MHz · %s%s",
+      st->device[0] ? st->device : "radio",
+      mhz_txt,
+      st->mode[0] ? st->mode : "—",
+      wpm_txt);
+  tci_set_status (self, status);
+  g_free (status);
+  g_free (wpm_txt);
+  g_free (mhz_txt);
+}
+
+/* Page Up / Page Down — nudge the keyer speed by delta WPM. Optimistic: the
+ * new value is painted at once and corrected when the radio echoes back. */
+static gboolean
+cw_speed_bump (LogflWindow *self, int delta)
+{
+  if (!self->tci || !logfl_tci_client_is_ready (self->tci))
+    return FALSE;
+
+  int cur = self->cw_wpm > 0 ? self->cw_wpm
+                             : logfl_tci_client_cw_speed (self->tci);
+  if (cur <= 0)
+    return FALSE;              /* speed not known yet — leave the key alone */
+
+  int want = CLAMP (cur + delta, LOGFL_TCI_WPM_MIN, LOGFL_TCI_WPM_MAX);
+  if (want == cur)
+    return TRUE;               /* already at the limit; still ours to eat */
+
+  self->cw_wpm = want;
+  logfl_tci_client_cw_set_speed (self->tci, want);
+
+  LogflTciState st;
+  logfl_tci_client_get_state (self->tci, &st);
+  tci_paint_status (self, &st);
+  return TRUE;
+}
+
 typedef struct {
   LogflWindow  *self;          /* strong ref — idle may outlive the window */
   LogflTciState st;
@@ -309,15 +357,11 @@ tci_apply_state (gpointer user_data)
   self->syncing_tci = FALSE;
   update_wb4 (self);
 
-  char *mhz_txt = st->vfo_hz > 0 ? fmt_freq (st->vfo_hz / 1e6) : g_strdup ("—");
-  char *status = g_strdup_printf (
-      "TCI · %s · %s MHz · %s",
-      st->device[0] ? st->device : "radio",
-      mhz_txt,
-      st->mode[0] ? st->mode : "—");
-  tci_set_status (self, status);
-  g_free (status);
-  g_free (mhz_txt);
+  /* The radio's echo is the authority for keyer speed — it overrides the
+   * optimistic value Page Up/Down painted locally. */
+  if (st->cw_wpm > 0)
+    self->cw_wpm = st->cw_wpm;
+  tci_paint_status (self, st);
 
   g_object_unref (self);
   g_free (d);
@@ -1238,6 +1282,17 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
         return FALSE;
       macro_run (self, keyval - GDK_KEY_F1);
       return TRUE;
+    }
+  /* Page Up/Down = keyer speed, contest-logger style — works with focus in
+   * the call field. Falls through to the default (log scrolling) while a
+   * cell is being edited or when the radio has no speed to change. */
+  if (keyval == GDK_KEY_Page_Up || keyval == GDK_KEY_KP_Page_Up ||
+      keyval == GDK_KEY_Page_Down || keyval == GDK_KEY_KP_Page_Down)
+    {
+      if (self->cell_edit_box)
+        return FALSE;
+      gboolean up = keyval == GDK_KEY_Page_Up || keyval == GDK_KEY_KP_Page_Up;
+      return cw_speed_bump (self, up ? +1 : -1);
     }
   if (keyval == GDK_KEY_Escape)
     {

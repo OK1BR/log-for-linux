@@ -153,7 +153,13 @@ importing someone's log and exporting it again must never silently drop data.
   (F1–F8 + Esc stop): fixed CQ/EXCH/TU/MY/HIS/AGN/QRZ/STOP with `{MYCALL}`
   `{CALL}` `{RST}` expansion; CW text via TCI `cw_macros` to sdr-for-linux
   when connected. Full editable macros / Run·S&P / ESM → **M5**. The logbook
-  never changes radio state except operator-triggered CW macros.
+  never changes radio state except operator-triggered CW macros and keyer
+  speed. **Keyer speed (2026-08-01):** Page Up/Down nudge WPM by 1 from
+  anywhere in the entry window (contest-logger style, focus stays in Call),
+  sent as TCI `cw_macros_speed:<wpm>` and clamped 5–60 to match
+  sdr-for-linux; the radio's echo (handshake, own controls, our set) is the
+  authority and shows in the TCI status line. Falls through to default
+  scrolling while a cell is edited or when no speed is known yet.
 - **M5 — macros v2 (contest-style messaging). IMPLEMENTED 2026-07-21
   (offline gate green).** Grew the F-key strip into a messaging layer
   (inspired by N1MM+, not a clone). Done:

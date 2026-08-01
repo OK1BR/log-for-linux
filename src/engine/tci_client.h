@@ -17,15 +17,22 @@ G_BEGIN_DECLS
 #define LOGFL_TCI_DEFAULT_HOST "127.0.0.1"
 #define LOGFL_TCI_DEFAULT_PORT 40001
 
+/* Keyer speed limits — mirror sdr-for-linux tci_set_cw_speed() so the local
+ * (optimistic) value can never drift outside what the radio will accept. */
+#define LOGFL_TCI_WPM_MIN 5
+#define LOGFL_TCI_WPM_MAX 60
+
 typedef struct _LogflTciClient LogflTciClient;
 
 /* Snapshot of the last known radio state. mode is the TCI string
- * (lowercase: "cw", "usb", …). Valid after a successful start(). */
+ * (lowercase: "cw", "usb", …). Valid after a successful start().
+ * cw_wpm is 0 until the radio reports cw_macros_speed. */
 typedef struct {
   double vfo_hz;
   char   mode[32];
   char   device[64];
   char   protocol[64];
+  int    cw_wpm;
 } LogflTciState;
 
 /* State changed (vfo and/or modulation). Fires on the LWS service thread —
@@ -57,6 +64,14 @@ void logfl_tci_client_tune (LogflTciClient *c, double freq_hz);
  * contain ':' or ';' — they are scrubbed. No-op when not connected. */
 void logfl_tci_client_cw_send (LogflTciClient *c, const char *text);
 void logfl_tci_client_cw_stop (LogflTciClient *c);
+
+/* Keyer speed (Page Up/Down in the contest UI). Clamped to WPM_MIN..MAX and
+ * sent as cw_macros_speed:<wpm>; the radio echoes the accepted value back,
+ * which updates the state snapshot. No-op when not connected. */
+void logfl_tci_client_cw_set_speed (LogflTciClient *c, int wpm);
+
+/* Last speed reported by the radio, or 0 when not known yet. */
+int  logfl_tci_client_cw_speed (LogflTciClient *c);
 
 /* Map a TCI modulation string to a logbook mode dropdown value, or NULL
  * when the mapping is unknown (leave the UI alone). */

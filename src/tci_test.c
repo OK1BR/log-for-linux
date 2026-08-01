@@ -32,6 +32,7 @@ static struct lws_context *s_ctx;
 static volatile gint s_run = 1;
 static volatile gint s_push_vfo;
 static volatile gint s_push_mode;
+static volatile gint s_push_wpm;
 
 static void
 srv_queue_text (const char *txt)
@@ -71,7 +72,7 @@ srv_cb (struct lws *wsi, enum lws_callback_reasons reason,
           "trx_count:1;channels_count:2;vfo_limits:0,61440000;"
           "modulations_list:am,lsb,usb,cw,cwl,cwu,digu,digl;"
           "dds:0,7020000;vfo:0,0,7023456;modulation:0,cw;"
-          "rx_enable:0,true;ready;start;");
+          "cw_macros_speed:28;rx_enable:0,true;ready;start;");
       lws_callback_on_writable (wsi);
       return 0;
     case LWS_CALLBACK_RECEIVE:
@@ -138,6 +139,11 @@ server_thread (gpointer data)
           g_atomic_int_set (&s_push_mode, 0);
           srv_queue_text ("modulation:0,usb;");
         }
+      if (g_atomic_int_get (&s_push_wpm))
+        {
+          g_atomic_int_set (&s_push_wpm, 0);
+          srv_queue_text ("cw_macros_speed:34;");
+        }
       g_mutex_lock (&s_lock);
       gboolean pending = !g_queue_is_empty (&s_out) && s_wsi;
       g_mutex_unlock (&s_lock);
@@ -155,6 +161,7 @@ static GMutex c_lock;
 static volatile gint c_states;
 static double c_last_vfo;
 static char c_last_mode[32];
+static gint c_last_wpm;
 static volatile gint c_closed;
 
 static void
@@ -164,6 +171,7 @@ on_state (const LogflTciState *st, gpointer user_data)
   g_mutex_lock (&c_lock);
   c_last_vfo = st->vfo_hz;
   g_strlcpy (c_last_mode, st->mode, sizeof c_last_mode);
+  c_last_wpm = st->cw_wpm;
   g_mutex_unlock (&c_lock);
   g_atomic_int_inc (&c_states);
 }
@@ -213,6 +221,7 @@ test_handshake_and_live (void)
   g_atomic_int_set (&s_run, 1);
   g_atomic_int_set (&s_push_vfo, 0);
   g_atomic_int_set (&s_push_mode, 0);
+  g_atomic_int_set (&s_push_wpm, 0);
   g_atomic_int_set (&c_states, 0);
   g_atomic_int_set (&c_closed, 0);
   c_last_vfo = 0;
@@ -254,6 +263,10 @@ test_handshake_and_live (void)
   g_assert_true (g_str_has_prefix (st.protocol, "ExpertSDR3"));
   g_assert_cmpfloat (st.vfo_hz, ==, 7023456.0);
   g_assert_cmpstr (st.mode, ==, "cw");
+  /* Keyer speed arrives in the handshake batch — Page Up/Down needs a
+   * starting point the moment the radio is up. */
+  g_assert_cmpint (st.cw_wpm, ==, 28);
+  g_assert_cmpint (logfl_tci_client_cw_speed (cli), ==, 28);
 
   /* Live VFO push. lws_service() blocks until an event, so wake the server
    * loop explicitly — without it the flag sits until some internal timer. */
@@ -274,6 +287,16 @@ test_handshake_and_live (void)
   g_assert_cmpstr (c_last_mode, ==, "usb");
   g_mutex_unlock (&c_lock);
 
+  /* Live keyer-speed push (radio-side change, e.g. the SDR's own control). */
+  before = g_atomic_int_get (&c_states);
+  g_atomic_int_set (&s_push_wpm, 1);
+  lws_cancel_service (s_ctx);
+  g_assert_true (wait_states (before + 1, 2000));
+  g_mutex_lock (&c_lock);
+  g_assert_cmpint (c_last_wpm, ==, 34);
+  g_mutex_unlock (&c_lock);
+  g_assert_cmpint (logfl_tci_client_cw_speed (cli), ==, 34);
+
   /* Explicit QSY. */
   logfl_tci_client_tune (cli, 21025000.0);
   gboolean saw_tune = FALSE;
@@ -288,6 +311,26 @@ test_handshake_and_live (void)
       g_usleep (5000);
     }
   g_assert_true (saw_tune);
+
+  /* Page Up/Down path: speed is sent as an absolute value and clamped to
+   * what the radio accepts (sdr-for-linux caps at 60 WPM). */
+  logfl_tci_client_cw_set_speed (cli, 35);
+  logfl_tci_client_cw_set_speed (cli, 999);
+  gboolean saw_speed = FALSE, saw_clamp = FALSE;
+  for (int i = 0; i < 500; i++)
+    {
+      g_mutex_lock (&s_lock);
+      if (strstr (s_rx->str, "cw_macros_speed:35;"))
+        saw_speed = TRUE;
+      if (strstr (s_rx->str, "cw_macros_speed:60;"))
+        saw_clamp = TRUE;
+      g_mutex_unlock (&s_lock);
+      if (saw_speed && saw_clamp)
+        break;
+      g_usleep (5000);
+    }
+  g_assert_true (saw_speed);
+  g_assert_true (saw_clamp);
 
   logfl_tci_client_stop (cli);
   g_assert_false (logfl_tci_client_is_ready (cli));
