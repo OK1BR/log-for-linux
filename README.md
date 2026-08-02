@@ -72,15 +72,29 @@ of the retired Rust prototype (BRlog).
   changes radio state except operator-triggered CW macros and keyer speed;
   nothing leaves the machine without an explicit action
 
-## Requirements
+## Install
+
+Pick whichever fits your distribution — every release ships prebuilt
+packages on the [Releases page](https://github.com/OK1BR/log-for-linux/releases):
+
+- **AppImage** (any distro): download, `chmod +x Log_for_Linux-*.AppImage`,
+  run. Everything bundled, nothing to install.
+- **Ubuntu 24.04+ / Debian 13+**: `sudo apt install ./log-for-linux_*.deb`
+- **Fedora 40+**: `sudo dnf install ./log-for-linux-*.rpm`
+- **Arch Linux**: `makepkg -si` in `packaging/` of a repo clone — the
+  [PKGBUILD](packaging/PKGBUILD) builds the tagged release tarball (AUR
+  package to follow)
+
+Both distro packages are install-tested in clean containers before they are
+attached to a release.
+
+## Build from source
 
 C11 compiler, `meson`/`ninja`, and development files for **GTK 4**,
 **libadwaita**, **GLib/GIO**, **SQLite** and **libwebsockets**.
 
 Arch: `pacman -S --needed gcc meson gtk4 libadwaita glib2 sqlite
 libwebsockets` (equivalent `-dev`/`-devel` packages on other distributions).
-
-## Build & install
 
 ```
 meson setup builddir
