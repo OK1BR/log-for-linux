@@ -41,6 +41,8 @@ logfl_macro_set_init_defaults (LogflMacroSet *set)
     { "AGN",  "AGN?" },
     { "NR",   "NR?" },
   };
+  /* One bound indexes both arrays below — they must stay the same size. */
+  G_STATIC_ASSERT (G_N_ELEMENTS (run_filled) == G_N_ELEMENTS (snp_filled));
   const guint n_filled = G_N_ELEMENTS (run_filled);
 
   for (guint i = 0; i < LOGFL_MACRO_N_KEYS; i++)

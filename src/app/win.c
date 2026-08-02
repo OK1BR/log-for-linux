@@ -93,6 +93,7 @@ struct _LogflWindow {
   LogflEsmPhase esm_phase;     /* M5 Enter-sends-message state */
   gboolean esm_force_log;      /* ESM LOG step → bypass ESM on Enter */
   gboolean prefs_macros_dirty; /* macro edits in Preferences await ini save */
+  GtkWidget *prefs_dlg;        /* open Preferences dialog; NULL when closed */
 
   /* M9 contests. */
   LogflContest *contest;       /* active contest; NULL = main log view */
@@ -2147,6 +2148,9 @@ static void
 prefs_closed (AdwDialog *dlg, gpointer user_data)
 {
   LogflWindow *self = user_data;
+  if (self->prefs_dlg != GTK_WIDGET (dlg))
+    return;                    /* already flushed on window close-request */
+  self->prefs_dlg = NULL;
   GtkWidget *host_row = g_object_get_data (G_OBJECT (dlg), "tci-host");
   GtkWidget *port_row = g_object_get_data (G_OBJECT (dlg), "tci-port");
   GtkWidget *call_row = g_object_get_data (G_OBJECT (dlg), "station-call");
@@ -2252,6 +2256,22 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
       self->prefs_macros_dirty = FALSE;
       logfl_settings_save (&self->settings);
     }
+}
+
+/* AdwDialog::closed does not fire when the parent window is destroyed with
+ * the dialog still up (observed on libadwaita 1.9): closing the app with
+ * Preferences open would silently drop every change made in it, including
+ * macro edits the strip already shows. Flush the read-out on close-request,
+ * while the dialog's widgets are still alive; prefs_closed's guard makes a
+ * later ::closed a no-op. */
+static gboolean
+on_close_request (GtkWindow *win, gpointer user_data)
+{
+  (void) user_data;
+  LogflWindow *self = LOGFL_WINDOW (win);
+  if (self->prefs_dlg)
+    prefs_closed (ADW_DIALOG (self->prefs_dlg), self);
+  return FALSE;                /* proceed with the normal close */
 }
 
 /* --- Preferences → Messaging: inline macro bank editors ----------------- */
@@ -2581,6 +2601,7 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
   g_object_set_data (G_OBJECT (dlg), "wsjtx-port", wsjtx_port);
   g_signal_connect (dlg, "closed", G_CALLBACK (prefs_closed), self);
   adw_dialog_present (dlg, GTK_WIDGET (self));
+  self->prefs_dlg = GTK_WIDGET (dlg);
 }
 
 static void
@@ -3589,6 +3610,13 @@ on_cabrillo_file_ready (GObject *source, GAsyncResult *res,
       cab_export_free (ce);
       return;
     }
+  if (!ce->win->store)
+    {
+      toast (ce->win, "Log store is not open");
+      g_object_unref (file);
+      cab_export_free (ce);
+      return;
+    }
   char *path = g_file_get_path (file);
   LogflCabrilloOpts o = {
     .contest = ce->contest,
@@ -3863,8 +3891,11 @@ cell_display_text (int col, const LogflQso *q)
     {
     case COL_UTC:
       {
+        /* Four-digit year: the cell is editable, and a two-digit display
+         * round-tripped through the century pivot would shift pre-2000
+         * QSOs on an unrelated edit. */
         GDateTime *dt = g_date_time_new_from_unix_utc (q->ts);
-        char *s = g_date_time_format (dt, "%d.%m.%y %H:%M");
+        char *s = g_date_time_format (dt, "%d.%m.%Y %H:%M");
         g_date_time_unref (dt);
         return s;
       }
@@ -3923,11 +3954,14 @@ cell_edit_text (int col, const LogflQso *q)
   return cell_display_text (col, q);
 }
 
-/* Exchange cell text → serial + uppercased text remainder. WYSIWYG: the
- * first digits-only token becomes the serial, everything else joins the
- * text part; either output may end up unset. */
+/* Exchange cell text → serial + uppercased text remainder. WYSIWYG but
+ * shape-preserving: only a QSO that already holds a numeric serial gets one
+ * back from the cell (first digits-only token). A text exchange that happens
+ * to be digits — EUHFC year "01", a CQ WW zone — must stay text, or the edit
+ * silently rewrites it into the serial column and drops leading zeros. */
 static void
-parse_exch_cell (const char *raw, gint64 *serial, char **text_out)
+parse_exch_cell (const char *raw, gboolean had_serial,
+                 gint64 *serial, char **text_out)
 {
   *serial = 0;
   g_clear_pointer (text_out, g_free);
@@ -3944,7 +3978,7 @@ parse_exch_cell (const char *raw, gint64 *serial, char **text_out)
             digits = FALSE;
             break;
           }
-      if (digits && *serial == 0)
+      if (had_serial && digits && *serial == 0)
         *serial = g_ascii_strtoll (*t, NULL, 10);
       else
         {
@@ -3990,12 +4024,12 @@ apply_cell_to_qso (LogflQso *q, int col, const char *raw, GError **error)
         if (sscanf (text, "%d.%d.%d %d:%d", &d, &m, &y, &H, &M) != 5)
           {
             g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_INVALID,
-                         "UTC must be DD.MM.YY HH:MM");
+                         "UTC must be DD.MM.YYYY HH:MM");
             g_free (text);
             return FALSE;
           }
         if (y < 100)
-          y += 2000;
+          y += (y < 70) ? 2000 : 1900;   /* hand-typed short year */
         if (m < 1 || m > 12 || d < 1 || d > 31 || H < 0 || H > 23
             || M < 0 || M > 59)
           {
@@ -4119,10 +4153,10 @@ apply_cell_to_qso (LogflQso *q, int col, const char *raw, GError **error)
       q->comment = *text ? g_steal_pointer (&text) : NULL;
       break;
     case COL_STX:
-      parse_exch_cell (text, &q->stx, &q->stx_string);
+      parse_exch_cell (text, q->stx > 0, &q->stx, &q->stx_string);
       break;
     case COL_EXCH:
-      parse_exch_cell (text, &q->srx, &q->srx_string);
+      parse_exch_cell (text, q->srx > 0, &q->srx, &q->srx_string);
       break;
     default:
       g_free (text);
@@ -4873,6 +4907,8 @@ logfl_window_init (LogflWindow *self)
   gtk_window_set_default_size (GTK_WINDOW (self), 1200, 760);
   g_action_map_add_action_entries (G_ACTION_MAP (self), win_actions,
                                    G_N_ELEMENTS (win_actions), self);
+  g_signal_connect (self, "close-request",
+                    G_CALLBACK (on_close_request), NULL);
 
   logfl_settings_load (&self->settings);
 

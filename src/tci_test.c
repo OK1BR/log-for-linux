@@ -34,6 +34,7 @@ static volatile gint s_push_vfo;
 static volatile gint s_push_mode;
 static volatile gint s_push_wpm;
 static volatile gint s_push_spot;
+static volatile gint s_push_nul;
 
 static void
 srv_queue_text (const char *txt)
@@ -154,6 +155,21 @@ server_thread (gpointer data)
                           "rx_clicked_on_spot:1,0,DL9XY,14025000;"
                           "rx_clicked_on_spot:0,0,OK1BR/P,14025300;"
                           "clicked_on_spot:OK1BR/P,14025300;");
+        }
+      if (g_atomic_int_get (&s_push_nul))
+        {
+          g_atomic_int_set (&s_push_nul, 0);
+          /* A frame with an embedded NUL, then a live update: the client
+           * must survive the NUL and keep parsing commands after it. */
+          static const char raw[] = { 'g', 'a', 'r', '\0', 'b', 'a', 'g',
+                                      ';' };
+          Msg *m = g_new0 (Msg, 1);
+          m->data = g_memdup2 (raw, sizeof raw);
+          m->len = sizeof raw;
+          g_mutex_lock (&s_lock);
+          g_queue_push_tail (&s_out, m);
+          g_mutex_unlock (&s_lock);
+          srv_queue_text ("vfo:0,0,7101500;");
         }
       g_mutex_lock (&s_lock);
       gboolean pending = !g_queue_is_empty (&s_out) && s_wsi;
@@ -321,6 +337,16 @@ test_handshake_and_live (void)
   g_assert_cmpint (c_last_wpm, ==, 34);
   g_mutex_unlock (&c_lock);
   g_assert_cmpint (logfl_tci_client_cw_speed (cli), ==, 34);
+
+  /* NUL resilience: a frame with an embedded NUL must not wedge the ';'
+   * scan — the VFO update queued right behind it still has to land. */
+  before = g_atomic_int_get (&c_states);
+  g_atomic_int_set (&s_push_nul, 1);
+  lws_cancel_service (s_ctx);
+  g_assert_true (wait_states (before + 1, 2000));
+  g_mutex_lock (&c_lock);
+  g_assert_cmpfloat (c_last_vfo, ==, 7101500.0);
+  g_mutex_unlock (&c_lock);
 
   /* Explicit QSY. */
   logfl_tci_client_tune (cli, 21025000.0);

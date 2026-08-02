@@ -14,6 +14,7 @@
 
 #define LOGFL_TCI_ERROR      (g_quark_from_static_string ("logfl-tci-error"))
 #define HANDSHAKE_TIMEOUT_S  3
+#define TCI_TXT_MAX          (64 * 1024)   /* cap on unterminated rx text */
 
 struct _LogflTciClient {
   char    *host;
@@ -65,17 +66,21 @@ cli_queue (LogflTciClient *c, char *msg /* takes ownership */)
 static void
 emit_state (LogflTciClient *c)
 {
-  if (!c->state_cb)
-    return;
   LogflTciState st;
   g_mutex_lock (&c->lock);
+  /* Snapshot cb+data under the lock — the setters run on the main thread
+   * and null the pair on a live client (disconnect); a torn read here
+   * would call through NULL or hand the callback stale user_data. */
+  LogflTciStateCb cb = c->state_cb;
+  gpointer cb_data = c->state_cb_data;
   st.vfo_hz = c->vfo_hz;
   g_strlcpy (st.mode, c->mode, sizeof st.mode);
   g_strlcpy (st.device, c->device, sizeof st.device);
   g_strlcpy (st.protocol, c->protocol, sizeof st.protocol);
   st.cw_wpm = c->cw_wpm;
   g_mutex_unlock (&c->lock);
-  c->state_cb (&st, c->state_cb_data);
+  if (cb)
+    cb (&st, cb_data);
 }
 
 /* A spot callsign is about to be typed into the log for the operator, so it
@@ -202,29 +207,38 @@ handle_command (LogflTciClient *c, char *cmd)
         }
       g_strfreev (f);
     }
+  LogflTciSpotCb spot_cb = c->spot_cb;   /* snapshot, same as emit_state */
+  gpointer spot_cb_data = c->spot_cb_data;
   g_mutex_unlock (&c->lock);
 
   if (changed)
     emit_state (c);
-  if (spot_call[0] && c->spot_cb)
-    c->spot_cb (spot_call, spot_hz, c->spot_cb_data);
+  if (spot_call[0] && spot_cb)
+    spot_cb (spot_call, spot_hz, spot_cb_data);
 }
 
 static void
 drain_text (LogflTciClient *c)
 {
-  char *s = c->txt->str;
-  char *semi;
+  /* Scan by length, not strchr: a stray NUL in a frame must not stop the
+   * ';' search for good — that would wedge the text plane while the link
+   * still looks ready (a NUL inside one command just truncates that one). */
   gsize used = 0;
-  while ((semi = strchr (s, ';')) != NULL)
+  for (;;)
     {
+      char *base = c->txt->str + used;
+      char *semi = memchr (base, ';', c->txt->len - used);
+      if (!semi)
+        break;
       *semi = '\0';
-      handle_command (c, s);
+      handle_command (c, base);
       used = (gsize) (semi + 1 - c->txt->str);
-      s = semi + 1;
     }
   if (used)
     g_string_erase (c->txt, 0, (gssize) used);
+  /* A peer that never sends ';' must not grow the buffer without bound. */
+  if (c->txt->len > TCI_TXT_MAX)
+    g_string_truncate (c->txt, 0);
 }
 
 /* ---- LWS --------------------------------------------------------------- */
@@ -283,14 +297,18 @@ client_cb (struct lws *wsi, enum lws_callback_reasons reason,
       return -1;
 
     case LWS_CALLBACK_CLIENT_CLOSED:
-      g_mutex_lock (&c->lock);
-      c->up = FALSE;
-      c->wsi = NULL;
-      g_cond_broadcast (&c->cond);
-      g_mutex_unlock (&c->lock);
-      if (g_atomic_int_get (&c->run) && c->closed_cb)
-        c->closed_cb (c->closed_cb_data);
-      return 0;
+      {
+        g_mutex_lock (&c->lock);
+        c->up = FALSE;
+        c->wsi = NULL;
+        LogflTciClosedCb cb = c->closed_cb;   /* snapshot, see emit_state */
+        gpointer cb_data = c->closed_cb_data;
+        g_cond_broadcast (&c->cond);
+        g_mutex_unlock (&c->lock);
+        if (g_atomic_int_get (&c->run) && cb)
+          cb (cb_data);
+        return 0;
+      }
 
     default:
       return 0;
@@ -351,28 +369,37 @@ logfl_tci_client_free (LogflTciClient *c)
   g_free (c);
 }
 
+/* The setters lock: win.c nulls the callbacks on a live, streaming client
+ * before freeing it, and the LWS thread snapshots the pair under the same
+ * lock (emit_state) — without it the thread can see a torn cb/data pair. */
 void
 logfl_tci_client_set_state_cb (LogflTciClient *c, LogflTciStateCb cb,
                                gpointer user_data)
 {
+  g_mutex_lock (&c->lock);
   c->state_cb = cb;
   c->state_cb_data = user_data;
+  g_mutex_unlock (&c->lock);
 }
 
 void
 logfl_tci_client_set_closed_cb (LogflTciClient *c, LogflTciClosedCb cb,
                                 gpointer user_data)
 {
+  g_mutex_lock (&c->lock);
   c->closed_cb = cb;
   c->closed_cb_data = user_data;
+  g_mutex_unlock (&c->lock);
 }
 
 void
 logfl_tci_client_set_spot_cb (LogflTciClient *c, LogflTciSpotCb cb,
                               gpointer user_data)
 {
+  g_mutex_lock (&c->lock);
   c->spot_cb = cb;
   c->spot_cb_data = user_data;
+  g_mutex_unlock (&c->lock);
 }
 
 gboolean

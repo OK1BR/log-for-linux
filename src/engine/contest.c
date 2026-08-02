@@ -225,7 +225,12 @@ route_value (LogflQso *q, const char *target, const char *val)
   else
     {
       /* Not a store column — ride in extras as a regular ADIF tag, the
-       * same shape the ADIF writer emits (M2). */
+       * same shape the ADIF writer emits (M2). Mirror the value into
+       * SRX_STRING as well: exchange consumers (the Cabrillo writer, the
+       * table's Rcvd column) read only the exchange columns, never extras,
+       * so a zone routed solely to CQZ/ITUZ would silently vanish from a
+       * submitted log. */
+      join_str (&q->srx_string, val);
       GString *e = g_string_new (q->extras);
       g_string_append_printf (e, "<%s:%zu>%s", target, strlen (val), val);
       g_free (q->extras);

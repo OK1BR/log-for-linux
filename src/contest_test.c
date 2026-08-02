@@ -211,15 +211,16 @@ test_exch_apply (void)
       "[field:dist]\nlabel=District\ntype=text\n", &err);
   g_assert_no_error (err);
 
-  /* Full exchange: number → CQZ tag in extras, serial → srx, text → string;
-   * sent side gets the serial and the uppercased static exchange. */
+  /* Full exchange: number → CQZ tag in extras AND mirrored into the string
+   * column (Cabrillo + the table read only the exchange columns), serial →
+   * srx, text → string; sent side gets serial + uppercased static exch. */
   LogflQso *q = logfl_qso_new ();
   const char *vals[] = { "15", "007", "apa" };
   logfl_exch_apply (def, vals, 3, "jn69", 12, q);
   g_assert_cmpint (q->stx, ==, 12);
   g_assert_cmpstr (q->stx_string, ==, "JN69");
   g_assert_cmpint (q->srx, ==, 7);
-  g_assert_cmpstr (q->srx_string, ==, "APA");
+  g_assert_cmpstr (q->srx_string, ==, "15 APA");
   g_assert_nonnull (q->extras);
   g_assert_nonnull (strstr (q->extras, "<CQZ:2>15"));
   logfl_qso_free (q);

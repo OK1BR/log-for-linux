@@ -136,12 +136,14 @@ logfl_cabrillo_export (LogflStore *s, gint64 contest_id,
   put_tag (out, "SOAPBOX", o->soapbox);
 
   /* list is newest-first; the spec wants chronological order. */
+  guint n_lines = 0;
   for (guint i = list->len; i-- > 0; )
     {
       const LogflQso *q = list->pdata[i];
       GDateTime *dt = g_date_time_new_from_unix_utc (q->ts);
       if (!dt)
         continue;
+      n_lines++;
       char *date = g_date_time_format (dt, "%Y-%m-%d");
       char *time = g_date_time_format (dt, "%H%M");
       g_date_time_unref (dt);
@@ -168,7 +170,7 @@ logfl_cabrillo_export (LogflStore *s, gint64 contest_id,
 
   g_string_append (out, "END-OF-LOG:\n");
   if (n_exported)
-    *n_exported = list->len;
+    *n_exported = n_lines;
   g_ptr_array_unref (list);
   return g_string_free (out, FALSE);
 }
