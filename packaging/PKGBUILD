@@ -9,7 +9,9 @@ arch=('x86_64')
 url="https://github.com/OK1BR/log-for-linux"
 license=('GPL-3.0-or-later')
 depends=('gtk4' 'libadwaita' 'glib2' 'sqlite' 'libwebsockets')
-makedepends=('meson')
+# desktop-file-utils + gtk-update-icon-cache: gnome.post_install wants both
+# tools at meson-configure time even though DESTDIR skips the actual refresh.
+makedepends=('meson' 'desktop-file-utils' 'gtk-update-icon-cache')
 source=("$pkgname-$_pkgtag.tar.gz::$url/archive/refs/tags/v$_pkgtag.tar.gz")
 sha256sums=('8eba0e228ea57629cd2de9c80de6f2afeb775b8acc06efc830542b937ed6e715')
 
