@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Log for Linux
+Comment=Ham radio logbook
+Comment[cs]=Radioamatérský staniční deník
+Exec=@bindir@/log-for-linux
+Icon=cz.ok1br.log_for_linux
+Terminal=false
+Categories=Utility;HamRadio;
+Keywords=ham;radio;amateur;logbook;log;QSO;ADIF;Cabrillo;contest;CW;WSJT-X;DXCC;
+StartupNotify=true
+StartupWMClass=cz.ok1br.log_for_linux

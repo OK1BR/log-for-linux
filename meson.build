@@ -1,5 +1,5 @@
 project('log-for-linux', 'c',
-  version : '0.0.0',
+  version : '0.1.0',
   license : 'GPL-3.0-or-later',
   default_options : [
     'c_std=c11',
@@ -9,6 +9,8 @@ project('log-for-linux', 'c',
 )
 
 add_project_arguments('-D_GNU_SOURCE', language : 'c')
+
+gnome = import('gnome')  # used in data/ for post-install icon/desktop DB refresh
 add_project_arguments('-DLOGFL_VERSION="@0@"'.format(meson.project_version()),
                       language : 'c')
 
@@ -140,3 +142,5 @@ executable('log-for-linux',
   link_with : engine_lib,
   install : true,
 )
+
+subdir('data')   # .desktop + icon + AppStream metainfo (install only)
