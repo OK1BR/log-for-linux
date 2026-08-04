@@ -349,6 +349,14 @@ importing someone's log and exporting it again must never silently drop data.
   `issue_url`, `copyright` and `comments`.** Four setter calls plus the
   icon name. `sdr-for-linux`'s About (`src/gui.c`) is the family reference
   for the full field set.
+- **The Website field in the repo header. TO DO (written down 2026-08-04 at
+  Richard's request, across every one of his projects).** Every OK1BR repo
+  has that field empty while its README already points at
+  [rifak.cz](https://rifak.cz) — so the GitHub sidebar, which is the first
+  place a visitor looks, links nowhere. It is repo metadata, not code:
+  `gh repo edit OK1BR/log-for-linux --homepage https://rifak.cz` (or the web
+  UI). Whoever next works this project sets it; the same note is in the scope
+  of every sibling.
 - **Later** — DXCC/awards tracking (cty.dat entity resolver, worked/confirmed
   matrices per band/mode), contest scoring/multipliers,
   linking imported CONTEST_ID QSOs to contests, and — only if ever
