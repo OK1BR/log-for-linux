@@ -327,6 +327,28 @@ importing someone's log and exporting it again must never silently drop data.
   persisted in settings.ini `[cabrillo]`; CONTEST prefilled via a
   known-map (ADIF `EU-HF` → Cabrillo `EUHFC`); file defaults to
   `<call>.log`. Claimed score / scoring itself stays out (Later).
+- **A GNOME-correct About dialog — finish it. TO DO (written down
+  2026-08-04 at Richard's request, across every app of the family).** Every
+  app must open the same kind of About from its primary menu, and its
+  strings must agree with what the `.desktop` entry and the AppStream
+  metainfo already say — one truth about the app, not three. The contract,
+  in `AdwAboutDialog` terms (`adw_about_dialog_new`, NOT the deprecated
+  `AdwAboutWindow`): `application_icon` = the GApplication id, which is
+  also the installed icon's file name — get that wrong and the dialog
+  shows a generic gear; `application_name`; `version` from the meson
+  project version; `developer_name` "Richard Fakenberg, OK1BR";
+  `copyright`; `license_type` `GTK_LICENSE_GPL_3_0`; `comments` — the same
+  one-liner the metainfo carries; `website` + `issue_url`; `debug_info`
+  with versions and paths for a pasteable bug report; an acknowledgement
+  section wherever third-party code is vendored. Menu item last in the
+  primary menu, per the GNOME HIG.
+  **Where this project stands: the dialog exists** (`act_about` in
+  `src/app/win.c`, wired to `win.about`, last in the menu) **with name,
+  version, developer, licence, website and a good `debug_info` — missing
+  `application_icon` (so it shows a generic icon next to the name),
+  `issue_url`, `copyright` and `comments`.** Four setter calls plus the
+  icon name. `sdr-for-linux`'s About (`src/gui.c`) is the family reference
+  for the full field set.
 - **Later** — DXCC/awards tracking (cty.dat entity resolver, worked/confirmed
   matrices per band/mode), contest scoring/multipliers,
   linking imported CONTEST_ID QSOs to contests, and — only if ever
