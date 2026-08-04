@@ -198,6 +198,45 @@ test_presets (void)
         logfl_exch_def_free (def);
       }
   g_assert_true (euhfc);
+
+  /* WAE/SARTG are serial contests; CVA's continent/state is TEXT (a PY
+   * state like "SP" must never be reinterpreted as a number). */
+  gboolean wae = FALSE, cva = FALSE, sartg = FALSE;
+  for (guint i = 0; i < n; i++)
+    {
+      LogflExchFieldType want;
+      gboolean want_serial;
+      if (g_strcmp0 (p[i].name, "WAE DX") == 0)
+        {
+          wae = TRUE;
+          g_assert_cmpstr (p[i].adif_id, ==, "DARC-WAEDC-CW");
+          want = LOGFL_EXCH_SERIAL;
+          want_serial = TRUE;
+        }
+      else if (g_strcmp0 (p[i].name, "CVA DX") == 0)
+        {
+          cva = TRUE;
+          g_assert_cmpstr (p[i].adif_id, ==, "CVA-DX-CW");
+          want = LOGFL_EXCH_TEXT;
+          want_serial = FALSE;
+        }
+      else if (g_strcmp0 (p[i].name, "SARTG WW RTTY") == 0)
+        {
+          sartg = TRUE;
+          g_assert_cmpstr (p[i].adif_id, ==, "SARTG-RTTY");
+          want = LOGFL_EXCH_SERIAL;
+          want_serial = TRUE;
+        }
+      else
+        continue;
+      def = logfl_exch_def_parse (p[i].exch_def, &err);
+      g_assert_no_error (err);
+      f = def->fields->pdata[0];
+      g_assert_cmpint (f->type, ==, want);
+      g_assert_cmpint (def->tx_serial, ==, want_serial);
+      logfl_exch_def_free (def);
+    }
+  g_assert_true (wae && cva && sartg);
 }
 
 static void

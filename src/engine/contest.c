@@ -304,6 +304,28 @@ static const LogflContestPreset presets[] = {
     "[exchange]\ntx_serial=false\nfields=year;\n"
     "[field:year]\nlabel=Year\ntype=text\nrequired=true\n",
     "two-digit year of first licence (e.g. 99)" },
+  /* WAE (darc.de rules): RST + progressive serial, "000" when the other
+   * side sends none; EU works non-EU only (not enforced here). The ADIF id
+   * is per part — the CW prefill matches the August edition, SSB/RTTY
+   * editions edit the suffix. Cabrillo CONTEST equals the ADIF id per the
+   * WA7BNM master list; DARC's own rules name no value. */
+  { "WAE DX", "DARC-WAEDC-CW",
+    "[exchange]\ntx_serial=true\nfields=nr;\n"
+    "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
+    NULL },
+  /* CVA (cvadx.org rules): we send RS(T) + continent ("599 EU"); PY
+   * stations answer with their state — both two-letter TEXT, never a
+   * serial. SSB edition edits the ADIF id suffix. */
+  { "CVA DX", "CVA-DX-CW",
+    "[exchange]\ntx_serial=false\nfields=cont;\n"
+    "[field:cont]\nlabel=Cont/State\ntype=text\nrequired=true\n",
+    "continent (OK = EU)" },
+  /* SARTG WW RTTY (sartg.com rules): RST + serial; the rules themselves
+   * fix the Cabrillo CONTEST name to SARTG-RTTY. */
+  { "SARTG WW RTTY", "SARTG-RTTY",
+    "[exchange]\ntx_serial=true\nfields=nr;\n"
+    "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
+    NULL },
   { "Custom", NULL,
     "[exchange]\ntx_serial=false\nfields=exch;\n"
     "[field:exch]\nlabel=Exch\ntype=auto\nrequired=false\n",
