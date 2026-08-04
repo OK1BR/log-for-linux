@@ -2613,14 +2613,24 @@ act_about (GSimpleAction *action, GVariant *param, gpointer user_data)
   AdwDialog *dlg = adw_about_dialog_new ();
   adw_about_dialog_set_application_name (ADW_ABOUT_DIALOG (dlg),
                                          "Log for Linux");
+  adw_about_dialog_set_application_icon (ADW_ABOUT_DIALOG (dlg),
+                                         "cz.ok1br.log_for_linux");
   adw_about_dialog_set_version (ADW_ABOUT_DIALOG (dlg),
                                 logfl_engine_version ());
   adw_about_dialog_set_developer_name (ADW_ABOUT_DIALOG (dlg),
                                        "Richard Fakenberg, OK1BR");
+  /* Same one-liner the metainfo <summary> and the .desktop Comment carry. */
+  adw_about_dialog_set_comments (ADW_ABOUT_DIALOG (dlg),
+                                 "Ham radio logbook");
+  adw_about_dialog_set_copyright (ADW_ABOUT_DIALOG (dlg),
+                                  "© 2026 Richard Fakenberg, OK1BR");
   adw_about_dialog_set_license_type (ADW_ABOUT_DIALOG (dlg),
                                      GTK_LICENSE_GPL_3_0);
   adw_about_dialog_set_website (ADW_ABOUT_DIALOG (dlg),
                                 "https://github.com/OK1BR/log-for-linux");
+  adw_about_dialog_set_issue_url (
+      ADW_ABOUT_DIALOG (dlg),
+      "https://github.com/OK1BR/log-for-linux/issues");
   char *dbg = g_strdup_printf (
       "SQLite %s\nLog: %s\nTCI: %s:%u\nSettings: %s/log-for-linux/settings.ini",
       logfl_engine_sqlite_version (), self->db_path,

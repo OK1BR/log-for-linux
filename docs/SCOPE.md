@@ -327,41 +327,28 @@ importing someone's log and exporting it again must never silently drop data.
   persisted in settings.ini `[cabrillo]`; CONTEST prefilled via a
   known-map (ADIF `EU-HF` → Cabrillo `EUHFC`); file defaults to
   `<call>.log`. Claimed score / scoring itself stays out (Later).
-- **A GNOME-correct About dialog — finish it. TO DO (written down
-  2026-08-04 at Richard's request, across every app of the family).** Every
-  app must open the same kind of About from its primary menu, and its
-  strings must agree with what the `.desktop` entry and the AppStream
-  metainfo already say — one truth about the app, not three. The contract,
-  in `AdwAboutDialog` terms (`adw_about_dialog_new`, NOT the deprecated
-  `AdwAboutWindow`): `application_icon` = the GApplication id, which is
-  also the installed icon's file name — get that wrong and the dialog
-  shows a generic gear; `application_name`; `version` from the meson
-  project version; `developer_name` "Richard Fakenberg, OK1BR";
-  `copyright`; `license_type` `GTK_LICENSE_GPL_3_0`; `comments` — the same
-  one-liner the metainfo carries; `website` + `issue_url`; `debug_info`
-  with versions and paths for a pasteable bug report; an acknowledgement
-  section wherever third-party code is vendored. Menu item last in the
-  primary menu, per the GNOME HIG.
-  **The version must be findable FROM THE UI** (Richard, 2026-08-04): a
-  `--version` flag on the command line does NOT satisfy this. Someone who
-  launched the app from the app grid must be able to see which version he
-  is running without leaving it — the About dialog is that place. A CLI
-  flag is welcome on top, never instead.
-  **Where this project stands: the dialog exists** (`act_about` in
-  `src/app/win.c`, wired to `win.about`, last in the menu) **with name,
-  version, developer, licence, website and a good `debug_info` — missing
-  `application_icon` (so it shows a generic icon next to the name),
-  `issue_url`, `copyright` and `comments`.** Four setter calls plus the
-  icon name. `sdr-for-linux`'s About (`src/gui.c`) is the family reference
-  for the full field set.
-- **The Website field in the repo header. TO DO (written down 2026-08-04 at
-  Richard's request, across every one of his projects).** Every OK1BR repo
-  has that field empty while its README already points at
-  [rifak.cz](https://rifak.cz) — so the GitHub sidebar, which is the first
-  place a visitor looks, links nowhere. It is repo metadata, not code:
-  `gh repo edit OK1BR/log-for-linux --homepage https://rifak.cz` (or the web
-  UI). Whoever next works this project sets it; the same note is in the scope
-  of every sibling.
+- **A GNOME-correct About dialog. IMPLEMENTED 2026-08-04** (family-wide
+  contract written down that day; closed here the same day, Richard checked
+  the dialog visually). The contract: every app opens the same kind of
+  About from its primary menu (last item, per the GNOME HIG), and its
+  strings agree with the `.desktop` entry and the AppStream metainfo — one
+  truth about the app, not three. **The version must be findable FROM THE
+  UI** (Richard, 2026-08-04): a `--version` CLI flag is welcome on top,
+  never instead — the About dialog is where someone launched from the app
+  grid sees it. Done in `act_about` (`src/app/win.c`) by adding the four
+  missing setters to the existing `AdwAboutDialog`: `application_icon`
+  (= the GApplication id `cz.ok1br.log_for_linux`; without it the dialog
+  showed a generic icon), `comments` — "Ham radio logbook", the same
+  one-liner the metainfo `<summary>` and the `.desktop` Comment carry —
+  `copyright` "© 2026 Richard Fakenberg, OK1BR", and `issue_url` (the
+  metainfo bugtracker URL). No acknowledgement section on purpose: nothing
+  in this app is vendored (sqlite3 is a plain dependency, the TCI client is
+  family code). `sdr-for-linux`'s About (`src/gui.c`) remains the family
+  reference for the full field set.
+- **The Website field in the repo header. DONE 2026-08-04** (family-wide
+  note from the same day). `gh repo edit OK1BR/log-for-linux --homepage
+  https://rifak.cz`, verified back via `gh repo view` — the GitHub sidebar
+  now links where the README already pointed.
 - **Later** — DXCC/awards tracking (cty.dat entity resolver, worked/confirmed
   matrices per band/mode), contest scoring/multipliers,
   linking imported CONTEST_ID QSOs to contests, and — only if ever
