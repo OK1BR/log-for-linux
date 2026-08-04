@@ -351,8 +351,20 @@ importing someone's log and exporting it again must never silently drop data.
   now links where the README already pointed.
 - **Later** — DXCC/awards tracking (cty.dat entity resolver, worked/confirmed
   matrices per band/mode), contest scoring/multipliers,
-  linking imported CONTEST_ID QSOs to contests, and — only if ever
-  revisited — the skimmer cluster client.
+  WAE QTC traffic (next bullet), linking imported CONTEST_ID QSOs to
+  contests, and — only if ever revisited — the skimmer cluster client.
+- **WAE QTC traffic. DEFERRED (Richard's call, 2026-08-04).** A QTC is the
+  report of a prior contest QSO back to a European station (DARC WAE rules
+  §7): DX stations transmit numbered series ("QTC 3/7") of time/call/serial
+  triples, one point per correctly copied QTC for both sides, up to 10 per
+  station pair — roughly doubling a serious score. Richard has never taken
+  QTCs and rides WAE CW 2026 without them; a log with no QTC lines is
+  valid. If ever built: a receive window shaped for CW copy speed (series
+  header plus time/call/serial rows), storage carrying the QTC
+  transmission's own time and band (the rules require logging those), the
+  10-per-station quota, and Cabrillo `QTC:` lines (QRG, MODE, DATE, TIME,
+  CALL-RX, QTC-GRP, CALL-TX, TIME-QSO, CALL-QSO, NR-QSO). Build and
+  practice it calmly before a WAE SSB/RTTY edition, never mid-contest.
 
 ## Safety / etiquette
 
