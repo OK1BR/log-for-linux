@@ -5031,6 +5031,21 @@ logfl_window_init (LogflWindow *self)
       g_idle_add (show_store_open_error, self);
     }
 
+  /* Contests created before validity rules existed get theirs filled in
+   * from their ADIF id — must run before the active contest is parsed. */
+  if (self->store)
+    {
+      GError *bf_err = NULL;
+      guint fixed = logfl_contest_backfill_validity (self->store, &bf_err);
+      if (bf_err)
+        {
+          g_warning ("contest validity backfill: %s", bf_err->message);
+          g_clear_error (&bf_err);
+        }
+      else if (fixed > 0)
+        g_message ("validity rules added to %u stored contest(s)", fixed);
+    }
+
   /* M9: restore the active contest; a stale id (deleted elsewhere) falls
    * back to the main log. */
   self->exch_entries = g_ptr_array_new ();

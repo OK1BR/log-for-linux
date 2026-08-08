@@ -340,6 +340,60 @@ logfl_contest_qso_validity (const LogflExchDef *def,
   return LOGFL_QSO_VALID;
 }
 
+guint
+logfl_contest_backfill_validity (LogflStore *s, GError **error)
+{
+  static const struct {
+    const char *adif_prefix;
+    const char *counts;          /* NULL = leave counts at "all" */
+    gboolean    zero_own;
+  } rules[] = {
+    { "DARC-WAEDC", "eu-dx",   FALSE },
+    { "EU-HF",      "eu-only", FALSE },
+    { "CQ-WW",      NULL,      TRUE  },
+  };
+
+  GPtrArray *list = logfl_store_contest_list (s, error);
+  if (!list)
+    return 0;
+
+  guint n = 0;
+  for (guint i = 0; i < list->len; i++)
+    {
+      LogflContest *c = list->pdata[i];
+      if (!c->adif_id || !c->exch_def)
+        continue;
+      gsize r = 0;
+      while (r < G_N_ELEMENTS (rules) &&
+             !g_str_has_prefix (c->adif_id, rules[r].adif_prefix))
+        r++;
+      if (r == G_N_ELEMENTS (rules))
+        continue;
+
+      /* Edit the keyfile in place — a parse/serialize round trip would
+       * drop keys this build does not know. */
+      g_autoptr (GKeyFile) kf = g_key_file_new ();
+      if (!g_key_file_load_from_data (kf, c->exch_def, (gsize) -1,
+                                      G_KEY_FILE_NONE, NULL) ||
+          !g_key_file_has_group (kf, "exchange") ||
+          g_key_file_has_key (kf, "exchange", "counts", NULL) ||
+          g_key_file_has_key (kf, "exchange", "zero_own_country", NULL))
+        continue;
+
+      if (rules[r].counts)
+        g_key_file_set_string (kf, "exchange", "counts", rules[r].counts);
+      if (rules[r].zero_own)
+        g_key_file_set_boolean (kf, "exchange", "zero_own_country", TRUE);
+      g_free (c->exch_def);
+      c->exch_def = g_key_file_to_data (kf, NULL, NULL);
+      if (!logfl_store_contest_update (s, c, error))
+        break;
+      n++;
+    }
+  g_ptr_array_unref (list);
+  return n;
+}
+
 /* --- presets ------------------------------------------------------------ */
 
 /* Validity rules (counts= / zero_own_country) were verified against the

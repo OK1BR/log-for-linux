@@ -112,6 +112,15 @@ LogflQsoValidity logfl_contest_qso_validity (const LogflExchDef *def,
                                              const LogflCtyInfo *mine,
                                              const LogflCtyInfo *theirs);
 
+/* One-time repair for contests created before validity rules existed: a
+ * stored exch_def carrying neither counts nor zero_own_country gets the
+ * rule its ADIF id implies (DARC-WAEDC* → eu-dx, EU-HF → eu-only,
+ * CQ-WW* → zero_own_country) written back to the store. Defs that name
+ * either key — including an explicit counts=all — are left alone, so an
+ * operator's own edit is never overridden. Returns how many contests were
+ * updated; on a store error returns what was done and sets error. */
+guint logfl_contest_backfill_validity (LogflStore *s, GError **error);
+
 /* Built-in presets: name + ADIF CONTEST_ID prefill + serialized definition.
  * A new contest copies (and may edit) the definition — the preset list is a
  * starting point, not a registry. */

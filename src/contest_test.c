@@ -253,6 +253,79 @@ test_qso_validity (void)
   logfl_exch_def_free (wpx);
 }
 
+/* Contests stored before validity rules existed pick theirs up from the
+ * ADIF id; explicit defs (even counts=all) stay untouched. */
+static void
+test_backfill_validity (void)
+{
+  GError *err = NULL;
+  LogflStore *s = mem_store ();
+  static const char *OLD_DEF =
+      "[exchange]\ntx_serial=true\nfields=nr;\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n";
+
+  LogflContest *wae = logfl_contest_new ();
+  wae->name = g_strdup ("WAE DX 2026");
+  wae->adif_id = g_strdup ("DARC-WAEDC-CW");
+  wae->exch_def = g_strdup (OLD_DEF);
+  g_assert_true (logfl_store_contest_add (s, wae, &err));
+
+  LogflContest *euhfc = logfl_contest_new ();
+  euhfc->name = g_strdup ("EUHFC 2026");
+  euhfc->adif_id = g_strdup ("EU-HF");
+  euhfc->exch_def = g_strdup (OLD_DEF);
+  g_assert_true (logfl_store_contest_add (s, euhfc, &err));
+
+  /* Operator's own choice: explicit counts=all must survive. */
+  LogflContest *own = logfl_contest_new ();
+  own->name = g_strdup ("WAE for fun");
+  own->adif_id = g_strdup ("DARC-WAEDC-SSB");
+  own->exch_def = g_strdup (
+      "[exchange]\ntx_serial=true\nfields=nr;\ncounts=all\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n");
+  g_assert_true (logfl_store_contest_add (s, own, &err));
+
+  /* No ADIF id → nothing to infer from. */
+  LogflContest *cust = logfl_contest_new ();
+  cust->name = g_strdup ("Custom thing");
+  cust->exch_def = g_strdup (OLD_DEF);
+  g_assert_true (logfl_store_contest_add (s, cust, &err));
+
+  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 2);
+  g_assert_no_error (err);
+
+  LogflContest *back = logfl_store_contest_get (s, wae->id, &err);
+  LogflExchDef *def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_EU_DX);
+  g_assert_true (def->tx_serial);          /* the rest of the def survived */
+  g_assert_cmpuint (def->fields->len, ==, 1);
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
+  back = logfl_store_contest_get (s, euhfc->id, &err);
+  def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_EU_ONLY);
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
+  back = logfl_store_contest_get (s, own->id, &err);
+  def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
+  /* Second run: nothing left to do. */
+  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 0);
+  g_assert_no_error (err);
+
+  logfl_contest_free (wae);
+  logfl_contest_free (euhfc);
+  logfl_contest_free (own);
+  logfl_contest_free (cust);
+  logfl_store_close (s);
+}
+
 static void
 test_presets (void)
 {
@@ -748,6 +821,7 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/exch-def-roundtrip", test_exch_def_roundtrip);
   g_test_add_func ("/contest/exch-def-errors", test_exch_def_errors);
   g_test_add_func ("/contest/qso-validity", test_qso_validity);
+  g_test_add_func ("/contest/backfill-validity", test_backfill_validity);
   g_test_add_func ("/contest/presets", test_presets);
   g_test_add_func ("/contest/exch-apply", test_exch_apply);
   g_test_add_func ("/contest/store-crud", test_contest_crud);
