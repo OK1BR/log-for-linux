@@ -704,8 +704,10 @@ update_wb4 (LogflWindow *self)
       return;
     }
 
-  /* In a contest the question is "is this a dup HERE" — same call+band+mode
-   * already in this contest, any time. Worked-B4 stays the global answer. */
+  /* In a contest every question is asked HERE: the dup check and the B4
+   * counts both see only this contest, so a call worked last week in some
+   * other log still reads "New call". Outside a contest the whole log
+   * answers. */
   gboolean contest_dup = FALSE;
   if (self->contest)
     logfl_store_contest_dup_check (self->store, self->contest->id, call,
@@ -714,7 +716,10 @@ update_wb4 (LogflWindow *self)
                                    &contest_dup, NULL);
 
   LogflWorkedB4 wb;
-  if (!logfl_store_worked_b4 (self->store, call,
+  if (!logfl_store_worked_b4 (self->store,
+                              self->contest ? self->contest->id
+                                            : LOGFL_QUERY_CONTEST_ALL,
+                              call,
                               dd_selected (self->band_dd, bands),
                               dd_selected (self->mode_dd, modes), &wb, NULL))
     return;
@@ -2008,8 +2013,10 @@ on_wsjtx_status (const LogflWsjtxStatus *st, gpointer user_data)
   if (st->dial_hz > 0)
     band = logfl_adif_band_for_freq ((double) st->dial_hz / 1e6);
   LogflWorkedB4 wb = { 0 };
-  if (!logfl_store_worked_b4 (self->store, st->dx_call, band, st->mode, &wb,
-                              NULL))
+  if (!logfl_store_worked_b4 (self->store,
+                              self->contest ? self->contest->id
+                                            : LOGFL_QUERY_CONTEST_ALL,
+                              st->dx_call, band, st->mode, &wb, NULL))
     return;
   logfl_wsjtx_server_highlight_b4 (self->wsjtx, st->hdr.id, st->dx_call,
                                    wb.n_total, NULL);
@@ -2062,9 +2069,10 @@ wsjtx_start (LogflWindow *self)
 
 /* Skimmer asks "is this call a dup?" before it colors a spot / decode
  * highlight. Same verdict the entry row shows: DUP under the active-contest
- * rule, else B4 when the call is anywhere in the log, else NEW. Band is
- * derived from the spot frequency; NULL band just widens the queries to
- * call-only, which errs on the informative side. */
+ * rule, else B4 when the call is already in the active scope (the running
+ * contest, else the whole log), else NEW. Band is derived from the spot
+ * frequency; NULL band just widens the queries to call-only, which errs on
+ * the informative side. */
 static LogflDupVerdict
 dup_verdict_for (LogflWindow *self, const char *call, const char *band,
                  const char *mode)
@@ -2082,7 +2090,10 @@ dup_verdict_for (LogflWindow *self, const char *call, const char *band,
   else
     {
       LogflWorkedB4 wb;
-      if (logfl_store_worked_b4 (self->store, up, band, mode, &wb, NULL) &&
+      if (logfl_store_worked_b4 (self->store,
+                                 self->contest ? self->contest->id
+                                               : LOGFL_QUERY_CONTEST_ALL,
+                                 up, band, mode, &wb, NULL) &&
           wb.n_total > 0)
         v = LOGFL_DUP_B4;
     }

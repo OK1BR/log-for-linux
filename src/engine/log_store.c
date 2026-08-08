@@ -547,7 +547,7 @@ out:
 }
 
 gboolean
-logfl_store_worked_b4 (LogflStore *s, const char *call,
+logfl_store_worked_b4 (LogflStore *s, gint64 contest, const char *call,
                        const char *band, const char *mode,
                        LogflWorkedB4 *out, GError **error)
 {
@@ -557,14 +557,17 @@ logfl_store_worked_b4 (LogflStore *s, const char *call,
   char *nmode = norm_dup (mode, TRUE);
   gboolean ok = FALSE;
 
+  char *sql = g_strdup_printf (
+      "SELECT count(*),"
+      " ifnull(sum(band = ?2), 0),"
+      " ifnull(sum(band = ?2 AND mode = ?3), 0),"
+      " ifnull(max(ts), 0)"
+      " FROM qso WHERE call = ?1%s;",
+      contest > 0                           ? " AND contest_ref = ?4"
+      : contest == LOGFL_QUERY_CONTEST_NONE ? " AND contest_ref IS NULL"
+                                            : "");
   sqlite3_stmt *st = NULL;
-  if (sqlite3_prepare_v2 (s->db,
-        "SELECT count(*),"
-        " ifnull(sum(band = ?2), 0),"
-        " ifnull(sum(band = ?2 AND mode = ?3), 0),"
-        " ifnull(max(ts), 0)"
-        " FROM qso WHERE call = ?1;",
-        -1, &st, NULL) != SQLITE_OK)
+  if (sqlite3_prepare_v2 (s->db, sql, -1, &st, NULL) != SQLITE_OK)
     {
       sql_fail (s->db, "worked-b4", error);
       goto out;
@@ -572,6 +575,8 @@ logfl_store_worked_b4 (LogflStore *s, const char *call,
   bind_str (st, 1, ncall);
   bind_str (st, 2, nband);
   bind_str (st, 3, nmode);
+  if (contest > 0)
+    sqlite3_bind_int64 (st, 4, contest);
   if (sqlite3_step (st) == SQLITE_ROW)
     {
       out->n_total = (guint) sqlite3_column_int64 (st, 0);
@@ -585,6 +590,7 @@ logfl_store_worked_b4 (LogflStore *s, const char *call,
 
 out:
   sqlite3_finalize (st);
+  g_free (sql);
   g_free (ncall);
   g_free (nband);
   g_free (nmode);

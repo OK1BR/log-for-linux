@@ -237,19 +237,22 @@ test_worked_b4 (void)
     }
 
   LogflWorkedB4 wb;
-  g_assert_true (logfl_store_worked_b4 (s, "ok1abc", "40m", "cw", &wb, &err));
+  g_assert_true (logfl_store_worked_b4 (s, LOGFL_QUERY_CONTEST_ALL,
+                                        "ok1abc", "40m", "cw", &wb, &err));
   g_assert_cmpuint (wb.n_total, ==, 3);
   g_assert_cmpuint (wb.n_band, ==, 2);
   g_assert_cmpuint (wb.n_band_mode, ==, 1);
   g_assert_cmpint (wb.last_ts, ==, T + 2 * 3600);
 
   /* Never worked. */
-  g_assert_true (logfl_store_worked_b4 (s, "DL1XYZ", "40m", "CW", &wb, &err));
+  g_assert_true (logfl_store_worked_b4 (s, LOGFL_QUERY_CONTEST_ALL,
+                                        "DL1XYZ", "40m", "CW", &wb, &err));
   g_assert_cmpuint (wb.n_total, ==, 0);
   g_assert_cmpint (wb.last_ts, ==, 0);
 
   /* band/mode optional. */
-  g_assert_true (logfl_store_worked_b4 (s, "OK1ABC", NULL, NULL, &wb, &err));
+  g_assert_true (logfl_store_worked_b4 (s, LOGFL_QUERY_CONTEST_ALL,
+                                        "OK1ABC", NULL, NULL, &wb, &err));
   g_assert_cmpuint (wb.n_total, ==, 3);
   g_assert_cmpuint (wb.n_band, ==, 0);
 
@@ -367,7 +370,8 @@ test_volume_50k (void)
 
   t0 = g_get_monotonic_time ();
   LogflWorkedB4 wb;
-  g_assert_true (logfl_store_worked_b4 (s, "DL1TEST", "40m", "CW", &wb, &err));
+  g_assert_true (logfl_store_worked_b4 (s, LOGFL_QUERY_CONTEST_ALL,
+                                        "DL1TEST", "40m", "CW", &wb, &err));
   g_assert_cmpuint (wb.n_total, ==, 50);
   g_assert_cmpuint (wb.n_band_mode, ==, 50);
   gboolean dup;

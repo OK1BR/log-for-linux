@@ -94,7 +94,10 @@ GPtrArray *logfl_store_list (LogflStore *s, const LogflStoreQuery *q,
 
 /* Worked-before for a callsign: total QSO count, count on the given band,
  * count on band+mode, and the most recent ts (0 = never worked). band/mode
- * may be NULL (their counts come back 0). */
+ * may be NULL (their counts come back 0). contest scopes the counts like
+ * LogflStoreQuery.contest — ALL = whole log, a contest id = that contest
+ * only (in a running contest a call worked elsewhere is still new),
+ * NONE = the main log. */
 typedef struct {
   guint  n_total;
   guint  n_band;
@@ -102,7 +105,8 @@ typedef struct {
   gint64 last_ts;
 } LogflWorkedB4;
 
-gboolean logfl_store_worked_b4 (LogflStore *s, const char *call,
+gboolean logfl_store_worked_b4 (LogflStore *s, gint64 contest,
+                                const char *call,
                                 const char *band, const char *mode,
                                 LogflWorkedB4 *out, GError **error);
 
@@ -127,7 +131,7 @@ gboolean logfl_store_stats (LogflStore *s, LogflStoreStats *out,
  * A contest is a named log section with its own exchange template
  * (serialized LogflExchDef, see contest.h) and the operator's static sent
  * exchange. QSOs point at it via contest_ref; the QSOs stay part of the
- * canonical log (worked-B4 and ADIF export always see them). */
+ * canonical log (ADIF export and whole-log worked-B4 still see them). */
 typedef struct {
   gint64 id;                   /* 0 = not stored yet */
   char  *name;                 /* e.g. "CQ WW CW 2026" */

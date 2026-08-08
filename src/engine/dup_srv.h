@@ -9,9 +9,10 @@
  *   reply:    "NEW <call>" | "B4 <call>" | "DUP <call>"   (to the sender)
  *
  * DUP = duplicate under the ACTIVE CONTEST rule (same call+band+mode in
- * this contest), B4 = worked before ever (any time, any contest), NEW =
- * never in the log. Malformed requests get no reply — the client treats
- * a timeout as "unknown" and keeps its default color.
+ * this contest), B4 = worked before in the active scope (this contest when
+ * one is running, else anywhere in the log), NEW = neither. Malformed
+ * requests get no reply — the client treats a timeout as "unknown" and
+ * keeps its default color.
  *
  * The service is transport only: parsing + reply formatting live here
  * (GLib/Gio, headless gate log-dupq-test); the verdict comes from an app

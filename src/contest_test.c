@@ -472,10 +472,25 @@ test_serial_dup_scoping (void)
   g_assert_cmpuint (count_scoped (s, a->id), ==, 3);
   g_assert_cmpuint (count_scoped (s, b->id), ==, 1);
 
-  /* Worked-B4 stays global — the whole canonical log answers. */
+  /* Worked-B4 follows the scope: whole log, one contest, or main only.
+   * OK1ABC sits 2× in contest A, 0× in B, 1× in the main log. */
   LogflWorkedB4 wb;
-  g_assert_true (logfl_store_worked_b4 (s, "OK1ABC", "40m", "CW", &wb, &err));
+  g_assert_true (logfl_store_worked_b4 (s, LOGFL_QUERY_CONTEST_ALL, "OK1ABC",
+                                        "40m", "CW", &wb, &err));
   g_assert_cmpuint (wb.n_total, ==, 3);
+  g_assert_true (logfl_store_worked_b4 (s, a->id, "OK1ABC", "40m", "CW",
+                                        &wb, &err));
+  g_assert_cmpuint (wb.n_total, ==, 2);
+  g_assert_cmpuint (wb.n_band, ==, 1);
+  g_assert_cmpuint (wb.n_band_mode, ==, 1);
+  /* Contest B never worked him — B4 must not leak in from elsewhere. */
+  g_assert_true (logfl_store_worked_b4 (s, b->id, "OK1ABC", "40m", "CW",
+                                        &wb, &err));
+  g_assert_cmpuint (wb.n_total, ==, 0);
+  g_assert_cmpint (wb.last_ts, ==, 0);
+  g_assert_true (logfl_store_worked_b4 (s, LOGFL_QUERY_CONTEST_NONE, "OK1ABC",
+                                        "40m", "CW", &wb, &err));
+  g_assert_cmpuint (wb.n_total, ==, 1);
 
   LogflStoreStats st;
   g_assert_true (logfl_store_contest_stats (s, a->id, &st, &err));
