@@ -17,6 +17,7 @@
 #include "adif.h"
 #include "cabrillo.h"
 #include "contest.h"
+#include "cty.h"
 #include "dup_srv.h"
 #include "engine.h"
 #include "log_store.h"
@@ -55,6 +56,8 @@ struct _LogflWindow {
   char *db_path;
   char *store_open_error;      /* non-NULL when open failed; shown once */
   LogflSettings settings;      /* ~/.config/log-for-linux/settings.ini   */
+  LogflCty *cty;               /* country/continent resolver; NULL = no
+                                * cty.dat found — features degrade quietly */
 
   GListStore *rows;
   GtkSelectionModel *selection; /* GtkNoSelection — no click highlight */
@@ -689,6 +692,27 @@ tci_schedule_connect (LogflWindow *self)
 
 /* --- entry row logic ---------------------------------------------------- */
 
+/* Contest validity of a QSO with `call` right now: resolves both sides
+ * through cty and asks the active contest's rule. VALID whenever anything
+ * is missing (no contest, no cty.dat, unresolved call) — never a false
+ * alarm. theirs/theirs_ok feed the caller's banner text. */
+static LogflQsoValidity
+validity_for_call (LogflWindow *self, const char *call,
+                   LogflCtyInfo *theirs, gboolean *theirs_ok)
+{
+  LogflCtyInfo mine;
+  gboolean mine_ok = FALSE;
+  *theirs_ok = self->cty && logfl_cty_lookup (self->cty, call, theirs);
+  if (self->cty && self->settings.station_callsign)
+    mine_ok = logfl_cty_lookup (self->cty, self->settings.station_callsign,
+                                &mine);
+  if (!self->contest || !self->exch_def)
+    return LOGFL_QSO_VALID;
+  return logfl_contest_qso_validity (self->exch_def,
+                                     mine_ok ? &mine : NULL,
+                                     *theirs_ok ? theirs : NULL);
+}
+
 static void
 update_wb4 (LogflWindow *self)
 {
@@ -703,6 +727,11 @@ update_wb4 (LogflWindow *self)
       gtk_label_set_text (GTK_LABEL (l), "");
       return;
     }
+
+  LogflCtyInfo theirs;
+  gboolean theirs_ok = FALSE;
+  LogflQsoValidity validity = validity_for_call (self, call, &theirs,
+                                                 &theirs_ok);
 
   /* In a contest every question is asked HERE: the dup check and the B4
    * counts both see only this contest, so a call worked last week in some
@@ -723,23 +752,49 @@ update_wb4 (LogflWindow *self)
                               dd_selected (self->band_dd, bands),
                               dd_selected (self->mode_dd, modes), &wb, NULL))
     return;
+
+  /* Rule verdict first — an unworkable station outranks worked-before. */
+  char *prefix =
+      validity == LOGFL_QSO_NOT_VALID
+          ? g_strdup_printf ("No contest QSO — %s station (%s) · ",
+                             g_str_equal (theirs.continent, "EU")
+                                 ? "EU" : "non-EU",
+                             theirs.country)
+      : validity == LOGFL_QSO_ZERO_POINTS
+          ? g_strdup_printf ("0 pts — own country (%s) · ", theirs.country)
+          : g_strdup ("");
+
+  char *txt;
   if (wb.n_total == 0)
     {
-      gtk_label_set_text (GTK_LABEL (l), "New call");
-      gtk_widget_add_css_class (l, "success");
-      return;
+      /* The validity prefix already names the country — don't say it twice. */
+      if (theirs_ok && validity == LOGFL_QSO_VALID)
+        txt = g_strdup_printf ("New call from %s", theirs.country);
+      else if (*prefix)
+        txt = g_strdup_printf ("%snew call", prefix);
+      else
+        txt = g_strdup ("New call");
+      gtk_widget_add_css_class (l,
+          validity == LOGFL_QSO_NOT_VALID ? "error"
+          : validity == LOGFL_QSO_ZERO_POINTS ? "warning" : "success");
     }
-  GDateTime *dt = g_date_time_new_from_unix_utc (wb.last_ts);
-  char *when = g_date_time_format (dt, "%d.%m.%Y");
-  char *txt = g_strdup_printf (
-      "%sB4: %u× · this band %u× · band+mode %u× · last %s",
-      contest_dup ? "DUP in contest · " : "",
-      wb.n_total, wb.n_band, wb.n_band_mode, when);
+  else
+    {
+      GDateTime *dt = g_date_time_new_from_unix_utc (wb.last_ts);
+      char *when = g_date_time_format (dt, "%d.%m.%Y");
+      txt = g_strdup_printf (
+          "%s%sB4: %u× · this band %u× · band+mode %u× · last %s",
+          prefix, contest_dup ? "DUP in contest · " : "",
+          wb.n_total, wb.n_band, wb.n_band_mode, when);
+      gtk_widget_add_css_class (l,
+          contest_dup || validity == LOGFL_QSO_NOT_VALID ? "error"
+                                                         : "warning");
+      g_free (when);
+      g_date_time_unref (dt);
+    }
   gtk_label_set_text (GTK_LABEL (l), txt);
-  gtk_widget_add_css_class (l, contest_dup ? "error" : "warning");
   g_free (txt);
-  g_free (when);
-  g_date_time_unref (dt);
+  g_free (prefix);
 }
 
 static const char *
@@ -2068,11 +2123,12 @@ wsjtx_start (LogflWindow *self)
 }
 
 /* Skimmer asks "is this call a dup?" before it colors a spot / decode
- * highlight. Same verdict the entry row shows: DUP under the active-contest
- * rule, else B4 when the call is already in the active scope (the running
- * contest, else the whole log), else NEW. Band is derived from the spot
- * frequency; NULL band just widens the queries to call-only, which errs on
- * the informative side. */
+ * highlight. Same verdict the entry row shows: INV when the active
+ * contest's rules rule the QSO out entirely (strongest skip signal), DUP
+ * under the active-contest rule, else B4 when the call is already in the
+ * active scope (the running contest, else the whole log), else NEW. Band
+ * is derived from the spot frequency; NULL band just widens the queries to
+ * call-only, which errs on the informative side. */
 static LogflDupVerdict
 dup_verdict_for (LogflWindow *self, const char *call, const char *band,
                  const char *mode)
@@ -2081,11 +2137,16 @@ dup_verdict_for (LogflWindow *self, const char *call, const char *band,
     return LOGFL_DUP_NEW;
   char *up = g_ascii_strup (call, -1);
   LogflDupVerdict v = LOGFL_DUP_NEW;
+  LogflCtyInfo theirs;
+  gboolean theirs_ok = FALSE;
   gboolean dup = FALSE;
-  if (self->contest &&
-      logfl_store_contest_dup_check (self->store, self->contest->id, up,
-                                     band, mode, &dup, NULL) &&
-      dup)
+  if (validity_for_call (self, up, &theirs, &theirs_ok) ==
+      LOGFL_QSO_NOT_VALID)
+    v = LOGFL_DUP_INV;
+  else if (self->contest &&
+           logfl_store_contest_dup_check (self->store, self->contest->id, up,
+                                          band, mode, &dup, NULL) &&
+           dup)
     v = LOGFL_DUP_DUP;
   else
     {
@@ -4768,6 +4829,7 @@ logfl_window_dispose (GObject *obj)
   g_clear_object (&self->selection);
   g_clear_object (&self->rows);
   g_clear_pointer (&self->store, logfl_store_close);
+  g_clear_pointer (&self->cty, logfl_cty_free);
   g_clear_pointer (&self->db_path, g_free);
   logfl_settings_clear (&self->settings);
   G_OBJECT_CLASS (logfl_window_parent_class)->dispose (obj);
@@ -4932,6 +4994,25 @@ logfl_window_init (LogflWindow *self)
                     G_CALLBACK (on_close_request), NULL);
 
   logfl_settings_load (&self->settings);
+
+  /* Country resolver. Absence is not an error a dialog should shout
+   * about — the B4 line and skimmer verdicts just lose the country and
+   * validity extras. */
+  char *cty_path = logfl_cty_locate ();
+  if (cty_path)
+    {
+      GError *cty_err = NULL;
+      self->cty = logfl_cty_load (cty_path, &cty_err);
+      if (!self->cty)
+        {
+          g_warning ("cty.dat (%s): %s", cty_path,
+                     cty_err ? cty_err->message : "parse failed");
+          g_clear_error (&cty_err);
+        }
+      g_free (cty_path);
+    }
+  else
+    g_warning ("cty.dat not found — country/validity hints disabled");
 
   /* Store. */
   GError *err = NULL;

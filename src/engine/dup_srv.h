@@ -5,14 +5,16 @@
  * from its store so the client can color the spot / decode highlight and
  * the operator does not click duplicates.
  *
- *   request:  "DUP? <call> <freq_hz> <mode>"     (single datagram, UTF-8)
- *   reply:    "NEW <call>" | "B4 <call>" | "DUP <call>"   (to the sender)
+ *   request:  "DUP? <call> <freq_hz> <mode>"          (single datagram, UTF-8)
+ *   reply:    "NEW <call>" | "B4 <call>" | "DUP <call>" | "INV <call>"
  *
- * DUP = duplicate under the ACTIVE CONTEST rule (same call+band+mode in
- * this contest), B4 = worked before in the active scope (this contest when
- * one is running, else anywhere in the log), NEW = neither. Malformed
- * requests get no reply — the client treats a timeout as "unknown" and
- * keeps its default color.
+ * INV = no valid contest QSO possible under the ACTIVE CONTEST's rules
+ * (e.g. WAE: an EU station for an EU operator) — the strongest "skip"
+ * signal, the skimmer paints those grey. DUP = duplicate under the active
+ * contest rule (same call+band+mode in this contest), B4 = worked before
+ * in the active scope (this contest when one is running, else anywhere in
+ * the log), NEW = none of those. Malformed requests get no reply — the
+ * client treats a timeout as "unknown" and keeps its default color.
  *
  * The service is transport only: parsing + reply formatting live here
  * (GLib/Gio, headless gate log-dupq-test); the verdict comes from an app
@@ -44,6 +46,7 @@ typedef enum {
   LOGFL_DUP_NEW = 0,
   LOGFL_DUP_B4,
   LOGFL_DUP_DUP,
+  LOGFL_DUP_INV,               /* not a valid QSO in the active contest */
 } LogflDupVerdict;
 
 typedef struct _LogflDupSrv LogflDupSrv;

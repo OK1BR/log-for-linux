@@ -50,6 +50,7 @@ test_parse (void)
   g_assert_cmpstr (logfl_dup_verdict_str (LOGFL_DUP_NEW), ==, "NEW");
   g_assert_cmpstr (logfl_dup_verdict_str (LOGFL_DUP_B4), ==, "B4");
   g_assert_cmpstr (logfl_dup_verdict_str (LOGFL_DUP_DUP), ==, "DUP");
+  g_assert_cmpstr (logfl_dup_verdict_str (LOGFL_DUP_INV), ==, "INV");
 }
 
 /* Mock verdict: record what arrived, answer by callsign. */
@@ -72,6 +73,8 @@ mock_query (const char *call, gint64 hz, const char *mode, gpointer user)
     return LOGFL_DUP_DUP;
   if (g_str_equal (call, "OK9B4"))
     return LOGFL_DUP_B4;
+  if (g_str_equal (call, "OK9INV"))
+    return LOGFL_DUP_INV;
   return LOGFL_DUP_NEW;
 }
 
@@ -142,6 +145,10 @@ test_loopback (void)
 
   r = roundtrip (cli, sa, "DUP? OK9DUP 3520000 CW\n");
   g_assert_cmpstr (r, ==, "DUP OK9DUP");
+  g_free (r);
+
+  r = roundtrip (cli, sa, "DUP? OK9INV 14022000 CW");
+  g_assert_cmpstr (r, ==, "INV OK9INV");
   g_free (r);
 
   /* Garbage: consumed silently, no reply, callback never fired. */

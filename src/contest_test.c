@@ -105,11 +105,15 @@ test_exch_def_roundtrip (void)
   g_assert_cmpint (f->type, ==, LOGFL_EXCH_TEXT);
   g_assert_false (f->required);
 
-  /* Serialize → parse → identical shape. */
+  /* Serialize → parse → identical shape (incl. the validity rule). */
+  def->counts = LOGFL_COUNTS_EU_DX;
+  def->zero_own_country = TRUE;
   char *text = logfl_exch_def_serialize (def);
   LogflExchDef *back = logfl_exch_def_parse (text, &err);
   g_assert_no_error (err);
   g_assert_true (back->tx_serial);
+  g_assert_cmpint (back->counts, ==, LOGFL_COUNTS_EU_DX);
+  g_assert_true (back->zero_own_country);
   g_assert_cmpuint (back->fields->len, ==, 2);
   for (guint i = 0; i < 2; i++)
     {
@@ -153,6 +157,100 @@ test_exch_def_errors (void)
   g_assert_null (logfl_exch_def_parse ("\1\2 garbage", &err));
   g_assert_nonnull (err);
   g_clear_error (&err);
+
+  /* An unknown counts rule must fail loud, not degrade to "all". */
+  g_assert_null (logfl_exch_def_parse (
+      "[exchange]\nfields=a;\ncounts=marsonly\n[field:a]\n", &err));
+  g_assert_error (err, LOGFL_CONTEST_ERROR, LOGFL_CONTEST_ERROR_PARSE);
+  g_clear_error (&err);
+}
+
+/* --- QSO validity under the contest rule -------------------------------- */
+
+static LogflCtyInfo
+cty_of (const char *country, const char *prefix, const char *cont)
+{
+  LogflCtyInfo i = { 0 };
+  i.country = country;
+  i.prefix = prefix;
+  i.continent[0] = cont[0];
+  i.continent[1] = cont[1];
+  return i;
+}
+
+static const LogflContestPreset *
+preset_named (const char *name)
+{
+  guint n = 0;
+  const LogflContestPreset *p = logfl_contest_presets (&n);
+  for (guint i = 0; i < n; i++)
+    if (g_str_equal (p[i].name, name))
+      return &p[i];
+  g_assert_not_reached ();
+}
+
+static void
+test_qso_validity (void)
+{
+  GError *err = NULL;
+  LogflCtyInfo ok = cty_of ("Czech Republic", "OK", "EU");
+  LogflCtyInfo oh = cty_of ("Finland", "OH", "EU");
+  LogflCtyInfo k  = cty_of ("United States", "K", "NA");
+  LogflCtyInfo py = cty_of ("Brazil", "PY", "SA");
+
+  /* WAE: only QSOs crossing the EU boundary count. */
+  LogflExchDef *wae =
+      logfl_exch_def_parse (preset_named ("WAE DX")->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (wae->counts, ==, LOGFL_COUNTS_EU_DX);
+  g_assert_cmpint (logfl_contest_qso_validity (wae, &ok, &k), ==,
+                   LOGFL_QSO_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (wae, &ok, &oh), ==,
+                   LOGFL_QSO_NOT_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (wae, &k, &py), ==,
+                   LOGFL_QSO_NOT_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (wae, &k, &ok), ==,
+                   LOGFL_QSO_VALID);
+  /* Unresolved side: benefit of the doubt. */
+  g_assert_cmpint (logfl_contest_qso_validity (wae, &ok, NULL), ==,
+                   LOGFL_QSO_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (wae, NULL, &oh), ==,
+                   LOGFL_QSO_VALID);
+  logfl_exch_def_free (wae);
+
+  /* EUHFC: Europeans only — judged from their side alone. */
+  LogflExchDef *euhfc =
+      logfl_exch_def_parse (preset_named ("EUHFC")->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (euhfc->counts, ==, LOGFL_COUNTS_EU_ONLY);
+  g_assert_cmpint (logfl_contest_qso_validity (euhfc, &ok, &oh), ==,
+                   LOGFL_QSO_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (euhfc, &ok, &k), ==,
+                   LOGFL_QSO_NOT_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (euhfc, NULL, &py), ==,
+                   LOGFL_QSO_NOT_VALID);
+  logfl_exch_def_free (euhfc);
+
+  /* CQ WW: everyone counts, own country scores zero. */
+  LogflExchDef *cqww =
+      logfl_exch_def_parse (preset_named ("CQ WW")->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_true (cqww->zero_own_country);
+  LogflCtyInfo ol = cty_of ("Czech Republic", "OK", "EU");
+  g_assert_cmpint (logfl_contest_qso_validity (cqww, &ok, &ol), ==,
+                   LOGFL_QSO_ZERO_POINTS);
+  g_assert_cmpint (logfl_contest_qso_validity (cqww, &ok, &oh), ==,
+                   LOGFL_QSO_VALID);
+  logfl_exch_def_free (cqww);
+
+  /* Presets without a rule accept anything. */
+  LogflExchDef *wpx =
+      logfl_exch_def_parse (preset_named ("CQ WPX")->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (wpx->counts, ==, LOGFL_COUNTS_ALL);
+  g_assert_cmpint (logfl_contest_qso_validity (wpx, &ok, &ol), ==,
+                   LOGFL_QSO_VALID);
+  logfl_exch_def_free (wpx);
 }
 
 static void
@@ -649,6 +747,7 @@ main (int argc, char **argv)
   g_test_init (&argc, &argv, NULL);
   g_test_add_func ("/contest/exch-def-roundtrip", test_exch_def_roundtrip);
   g_test_add_func ("/contest/exch-def-errors", test_exch_def_errors);
+  g_test_add_func ("/contest/qso-validity", test_qso_validity);
   g_test_add_func ("/contest/presets", test_presets);
   g_test_add_func ("/contest/exch-apply", test_exch_apply);
   g_test_add_func ("/contest/store-crud", test_contest_crud);

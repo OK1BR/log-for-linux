@@ -38,6 +38,7 @@ engine_sources = [
   'src/engine/dup_srv.c',      # worked/dup lookup UDP service (skimmer asks)
   'src/engine/contest.c',      # M9: contest exchange templates + presets
   'src/engine/cabrillo.c',     # M9: Cabrillo v3 contest log export
+  'src/engine/cty.c',          # country/continent from a call (cty.dat)
 ]
 engine_deps = [glib_dep, gio_dep, sqlite_dep, lws_dep]
 
@@ -128,6 +129,17 @@ log_cabrillo_test = executable('log-cabrillo-test',
   link_with : engine_lib,
 )
 test('cabrillo', log_cabrillo_test, timeout : 30)
+
+# cty.dat parser — format corners on a synthetic file, then the bundled
+# snapshot must resolve real calls (OK/OL, OH, K, PY, …).
+log_cty_test = executable('log-cty-test',
+  ['src/cty_test.c'],
+  include_directories : engine_inc,
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('cty', log_cty_test, timeout : 30,
+  args : [meson.current_source_dir() / 'data' / 'cty.dat'])
 
 # --- App --------------------------------------------------------------------
 executable('log-for-linux',

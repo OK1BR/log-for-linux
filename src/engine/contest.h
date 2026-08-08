@@ -14,6 +14,7 @@
 #ifndef LOGFL_CONTEST_H
 #define LOGFL_CONTEST_H
 
+#include "cty.h"
 #include "log_store.h"
 
 G_BEGIN_DECLS
@@ -47,15 +48,32 @@ typedef struct {
   gboolean required;           /* UI hint: don't log while empty */
 } LogflExchField;
 
+/* Who counts in this contest — each rule verified against the sponsor's
+ * official rules (see the preset comments for sources; house rule since
+ * 2026-08-08: never add a preset without checking this).
+ *   ALL     — every QSO is valid.
+ *   EU_DX   — only QSOs crossing the EU boundary (WAE: a European station
+ *             works non-Europeans only, and vice versa).
+ *   EU_ONLY — only QSOs with European stations (EUHFC). */
+typedef enum {
+  LOGFL_COUNTS_ALL = 0,
+  LOGFL_COUNTS_EU_DX,
+  LOGFL_COUNTS_EU_ONLY,
+} LogflExchCounts;
+
 typedef struct {
   gboolean tx_serial;          /* sent exchange includes an auto serial */
   GPtrArray *fields;           /* received exchange, LogflExchField* */
+  LogflExchCounts counts;      /* which QSOs are valid at all */
+  gboolean zero_own_country;   /* valid but 0 points (CQ WW own country) */
 } LogflExchDef;
 
 /* Serialized form is GKeyFile text:
  *   [exchange]
  *   tx_serial=true
  *   fields=nr;
+ *   counts=eu-dx           # all|eu-dx|eu-only, missing = all
+ *   zero_own_country=false
  *   [field:nr]
  *   label=Nr
  *   type=serial            # serial|number|text|auto
@@ -80,6 +98,19 @@ void logfl_exch_apply (const LogflExchDef *def,
 
 /* "1" → "001" — the on-air serial convention (grows past 999 naturally). */
 char *logfl_exch_serial_format (guint serial);
+
+/* Does a QSO with them count under this contest's rule? mine/theirs come
+ * from the cty resolver; pass NULL for either when unresolved — unknown
+ * stations get the benefit of the doubt (VALID), never a false alarm. */
+typedef enum {
+  LOGFL_QSO_VALID = 0,
+  LOGFL_QSO_ZERO_POINTS,       /* counts, but 0 QSO points (still a mult) */
+  LOGFL_QSO_NOT_VALID,         /* no contest QSO under the rules */
+} LogflQsoValidity;
+
+LogflQsoValidity logfl_contest_qso_validity (const LogflExchDef *def,
+                                             const LogflCtyInfo *mine,
+                                             const LogflCtyInfo *theirs);
 
 /* Built-in presets: name + ADIF CONTEST_ID prefill + serialized definition.
  * A new contest copies (and may edit) the definition — the preset list is a

@@ -349,10 +349,37 @@ importing someone's log and exporting it again must never silently drop data.
   note from the same day). `gh repo edit OK1BR/log-for-linux --homepage
   https://rifak.cz`, verified back via `gh repo view` — the GitHub sidebar
   now links where the README already pointed.
-- **Later** — DXCC/awards tracking (cty.dat entity resolver, worked/confirmed
-  matrices per band/mode), contest scoring/multipliers,
-  WAE QTC traffic (next bullet), linking imported CONTEST_ID QSOs to
-  contests, and — only if ever revisited — the skimmer cluster client.
+- **cty resolver + contest validity rules. IMPLEMENTED 2026-08-08**
+  (triggered mid-WAE: an EU station gave Richard no serial — WAE scores
+  EU↔non-EU only, and the log had no idea). `src/engine/cty.c`: parser for
+  the AD1C cty.dat (MIT; snapshot + license note in `data/`, installed to
+  the app data dir, user-replaceable) — exact `=CALL` entries, longest
+  prefix, zone/continent overrides, portable-call heuristics; gate
+  `log-cty-test` runs format corners plus the real snapshot. Presets carry
+  a validity rule in exch_def (`counts=all|eu-dx|eu-only`,
+  `zero_own_country`), each verified 2026-08-08 against the sponsor's
+  official rules (sources in preset comments; house rule in auto-memory:
+  never add a preset unverified): WAE=eu-dx, EUHFC=eu-only, CQ WW=zero own
+  country, others all-valid. `logfl_contest_qso_validity` judges my-side ×
+  their-side; unresolved calls never alarm. UI: the B4 line leads with
+  "No contest QSO — EU station (Finland)" (error) / "0 pts — own country"
+  (warning), and a fresh call shows "New call from Czech Republic". The
+  dup service grew the INV verdict (strongest skip; skimmer paints grey —
+  its own mapping change lives in skimmer-for-linux). Same day the B4/dup
+  scope bug fell: worked-B4 answers within the active contest only
+  (e703409).
+- **Later** — DXCC/awards tracking (worked/confirmed matrices per band/mode
+  on top of the cty resolver), WAE QTC traffic (next bullet), linking
+  imported CONTEST_ID QSOs to contests, and — only if ever revisited — the
+  skimmer cluster client.
+- **Contest score calculation. IDEA (Richard, 2026-08-08).** Live claimed
+  score in the contest UI + Cabrillo CLAIMED-SCORE: per-contest QSO points
+  (the per-preset rules verified 2026-08-08 from official sources — WAE
+  weighted band multipliers ×4/×3/×2, CQ WW 0-point own country, OK/OM DX
+  2/3/5+10, IARU 1/3/5, CVA 2/3/4, SARTG 5/10/15, EUHFC 1) and multiplier
+  tracking per band. Builds directly on the cty.dat resolver and the
+  per-preset validity rules (2026-08-08); the scoring tables are already
+  researched and sourced in the preset comments.
 - **WAE QTC traffic. DEFERRED (Richard's call, 2026-08-04).** A QTC is the
   report of a prior contest QSO back to a European station (DARC WAE rules
   §7): DX stations transmit numbered series ("QTC 3/7") of time/call/serial

@@ -20,6 +20,12 @@ install_data('cz.ok1br.log_for_linux.svg',
 install_data('cz.ok1br.log_for_linux.metainfo.xml',
   install_dir : get_option('datadir') / 'metainfo')
 
+# Country/continent from a callsign prefix: AD1C country file (MIT-licensed,
+# see cty.dat.LICENSE). The engine's cty module reads it from the app's data
+# dir; refresh by replacing the file with a newer snapshot.
+install_data('cty.dat', 'cty.dat.LICENSE',
+  install_dir : get_option('datadir') / 'log-for-linux')
+
 # Refresh the icon cache and desktop database at install time so the app and
 # its icon show up without requiring a re-login. Automatically skipped when
 # DESTDIR is set (distro packaging), leaving those steps to the packager.

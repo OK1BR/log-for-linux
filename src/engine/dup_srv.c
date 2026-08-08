@@ -36,6 +36,7 @@ logfl_dup_verdict_str (LogflDupVerdict v)
     {
     case LOGFL_DUP_B4:  return "B4";
     case LOGFL_DUP_DUP: return "DUP";
+    case LOGFL_DUP_INV: return "INV";
     case LOGFL_DUP_NEW:
     default:            return "NEW";
     }

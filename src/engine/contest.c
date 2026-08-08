@@ -98,10 +98,32 @@ logfl_exch_def_parse (const char *text, GError **error)
     }
 
   LogflExchDef *def = g_new0 (LogflExchDef, 1);
-  def->tx_serial =
-    g_key_file_get_boolean (kf, "exchange", "tx_serial", NULL);
   def->fields =
     g_ptr_array_new_with_free_func ((GDestroyNotify) exch_field_free);
+  def->tx_serial =
+    g_key_file_get_boolean (kf, "exchange", "tx_serial", NULL);
+  def->zero_own_country =
+    g_key_file_get_boolean (kf, "exchange", "zero_own_country", NULL);
+  char *counts = g_key_file_get_string (kf, "exchange", "counts", NULL);
+  if (counts)
+    {
+      g_strstrip (counts);
+      if (g_str_equal (counts, "eu-dx"))
+        def->counts = LOGFL_COUNTS_EU_DX;
+      else if (g_str_equal (counts, "eu-only"))
+        def->counts = LOGFL_COUNTS_EU_ONLY;
+      else if (!g_str_equal (counts, "all") && *counts)
+        {
+          /* A rule this build does not know must not silently degrade to
+           * "everything counts" — fail loud, like an unknown field type. */
+          g_set_error (error, LOGFL_CONTEST_ERROR, LOGFL_CONTEST_ERROR_PARSE,
+                       "unknown counts rule \"%s\"", counts);
+          g_free (counts);
+          logfl_exch_def_free (def);
+          return NULL;
+        }
+      g_free (counts);
+    }
 
   gsize n_keys = 0;
   char **keys =
@@ -158,6 +180,12 @@ logfl_exch_def_serialize (const LogflExchDef *def)
 {
   g_autoptr (GKeyFile) kf = g_key_file_new ();
   g_key_file_set_boolean (kf, "exchange", "tx_serial", def->tx_serial);
+  g_key_file_set_string (kf, "exchange", "counts",
+                         def->counts == LOGFL_COUNTS_EU_DX   ? "eu-dx"
+                         : def->counts == LOGFL_COUNTS_EU_ONLY ? "eu-only"
+                                                               : "all");
+  g_key_file_set_boolean (kf, "exchange", "zero_own_country",
+                          def->zero_own_country);
 
   GString *list = g_string_new (NULL);
   for (guint i = 0; i < def->fields->len; i++)
@@ -277,21 +305,69 @@ logfl_exch_serial_format (guint serial)
   return g_strdup_printf ("%03u", serial);
 }
 
+LogflQsoValidity
+logfl_contest_qso_validity (const LogflExchDef *def,
+                            const LogflCtyInfo *mine,
+                            const LogflCtyInfo *theirs)
+{
+  /* Unresolved calls never alarm: a cty miss is our gap, not the op's. */
+  if (!def || !theirs || !theirs->country)
+    return LOGFL_QSO_VALID;
+
+  switch (def->counts)
+    {
+    case LOGFL_COUNTS_EU_DX:
+      /* The QSO must cross the EU boundary — judged from my side when
+       * known (OK: EU stations do not count), from theirs alone when
+       * my station is unresolved. */
+      if (mine && mine->country &&
+          (g_str_equal (mine->continent, "EU") ==
+           g_str_equal (theirs->continent, "EU")))
+        return LOGFL_QSO_NOT_VALID;
+      break;
+    case LOGFL_COUNTS_EU_ONLY:
+      if (!g_str_equal (theirs->continent, "EU"))
+        return LOGFL_QSO_NOT_VALID;
+      break;
+    case LOGFL_COUNTS_ALL:
+    default:
+      break;
+    }
+
+  if (def->zero_own_country && mine && mine->country &&
+      g_str_equal (mine->prefix, theirs->prefix))
+    return LOGFL_QSO_ZERO_POINTS;
+  return LOGFL_QSO_VALID;
+}
+
 /* --- presets ------------------------------------------------------------ */
 
+/* Validity rules (counts= / zero_own_country) were verified against the
+ * sponsors' official rules on 2026-08-08 — house rule: never add a preset
+ * without that check. Sources sit at each preset. */
 static const LogflContestPreset presets[] = {
+  /* cqww.com/rules.htm: everyone works everyone; a same-country QSO scores
+   * zero points but still counts for zone/country multipliers. */
   { "CQ WW", "CQ-WW",
-    "[exchange]\ntx_serial=false\nfields=zone;\n"
+    "[exchange]\ntx_serial=false\nfields=zone;\nzero_own_country=true\n"
     "[field:zone]\nlabel=Zone\ntype=number\nadif_num=CQZ\nrequired=true\n",
     "CQ zone (OK = 15)" },
+  /* cqwpx.com/rules: everyone works everyone, every QSO >= 1 point. */
   { "CQ WPX", "CQ-WPX",
     "[exchange]\ntx_serial=true\nfields=nr;\n"
     "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
     NULL },
+  /* IARU-HF-Rules.pdf (contests.arrl.org): "Any station may be contacted
+   * on each band", points 1/3/5 — nothing scores zero. */
   { "IARU HF", "IARU-HF",
     "[exchange]\ntx_serial=false\nfields=exch;\n"
     "[field:exch]\nlabel=Zone/HQ\ntype=auto\nadif_num=ITUZ\nrequired=true\n",
     "ITU zone (OK = 28)" },
+  /* okomdx.crk.cz CW rules (2026): everyone works everyone — the old
+   * OK/OM-with-foreigners-only restriction is gone; an OK station scores
+   * even OK-OK (2 points). NB the CRC war statement: QSOs with RU/BY
+   * stations are annulled — not modeled here (temporary, "until further
+   * notice"). */
   { "OK/OM DX", "OK-OM-DX",
     "[exchange]\ntx_serial=false\nfields=exch;\n"
     "[field:exch]\nlabel=Nr/District\ntype=auto\nrequired=true\n",
@@ -299,29 +375,34 @@ static const LogflContestPreset presets[] = {
   /* Exchange is the two-digit year of the operator's FIRST licence
    * (euhf.s5cc.eu rules) — text, so "01" (= 2001) keeps its zero and the
    * multiplier string survives verbatim. Once per band and mode = exactly
-   * the app's contest dup rule. */
+   * the app's contest dup rule. Rules (PDF, updated 2026-06-30): "Only
+   * continental Europe contacts count" — hence counts=eu-only. */
   { "EUHFC", "EU-HF",
-    "[exchange]\ntx_serial=false\nfields=year;\n"
+    "[exchange]\ntx_serial=false\nfields=year;\ncounts=eu-only\n"
     "[field:year]\nlabel=Year\ntype=text\nrequired=true\n",
     "two-digit year of first licence (e.g. 99)" },
   /* WAE (darc.de rules): RST + progressive serial, "000" when the other
-   * side sends none; EU works non-EU only (not enforced here). The ADIF id
+   * side sends none; "a contest QSO can only be conducted between a
+   * European and a non-European station" — counts=eu-dx. The ADIF id
    * is per part — the CW prefill matches the August edition, SSB/RTTY
    * editions edit the suffix. Cabrillo CONTEST equals the ADIF id per the
    * WA7BNM master list; DARC's own rules name no value. */
   { "WAE DX", "DARC-WAEDC-CW",
-    "[exchange]\ntx_serial=true\nfields=nr;\n"
+    "[exchange]\ntx_serial=true\nfields=nr;\ncounts=eu-dx\n"
     "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
     NULL },
-  /* CVA (cvadx.org rules): we send RS(T) + continent ("599 EU"); PY
+  /* CVA (cvadx.org/regulamento): we send RS(T) + continent ("599 EU"); PY
    * stations answer with their state — both two-letter TEXT, never a
-   * serial. SSB edition edits the ADIF id suffix. */
+   * serial. Everyone works everyone (2/3/4 points by distance) — not a
+   * PY-only contest despite the exchange shape. SSB edition edits the
+   * ADIF id suffix. */
   { "CVA DX", "CVA-DX-CW",
     "[exchange]\ntx_serial=false\nfields=cont;\n"
     "[field:cont]\nlabel=Cont/State\ntype=text\nrequired=true\n",
     "continent (OK = EU)" },
-  /* SARTG WW RTTY (sartg.com rules): RST + serial; the rules themselves
-   * fix the Cabrillo CONTEST name to SARTG-RTTY. */
+  /* SARTG WW RTTY (sartg.com/contest/wwrules.htm): everyone works
+   * everyone, 5/10/15 points; the rules themselves fix the Cabrillo
+   * CONTEST name to SARTG-RTTY. */
   { "SARTG WW RTTY", "SARTG-RTTY",
     "[exchange]\ntx_serial=true\nfields=nr;\n"
     "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
