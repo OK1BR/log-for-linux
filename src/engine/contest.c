@@ -440,7 +440,8 @@ static const LogflContestPreset presets[] = {
    * European and a non-European station" — counts=eu-dx. The ADIF id
    * is per part — the CW prefill matches the August edition, SSB/RTTY
    * editions edit the suffix. Cabrillo CONTEST equals the ADIF id per the
-   * WA7BNM master list; DARC's own rules name no value. */
+   * WA7BNM master list; DARC's own rules name no value. DARC-WAEDC-CW
+   * confirmed live: the DARC robot accepted OK1BR's 2026 log under it. */
   { "WAE DX", "DARC-WAEDC-CW",
     "[exchange]\ntx_serial=true\nfields=nr;\ncounts=eu-dx\n"
     "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
