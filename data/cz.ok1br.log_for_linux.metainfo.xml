@@ -35,6 +35,20 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-08-11">
+      <description>
+        <p>
+          Contest presets for WAE DX, CVA DX and SARTG WW RTTY; country
+          resolution from cty.dat with per-contest QSO validity — EU–DX
+          and EU-only scoring, zero-point own country — shown live in the
+          verdict line and served to skimmer-for-linux as INV; worked-B4
+          and dup checks scoped to the active contest; ADIF export covers
+          only the open log, no more whole-store dumps. Live-verified in
+          the WAE DX Contest CW 2026 — the log went through the DARC
+          robot.
+        </p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-08-02">
       <description>
         <p>

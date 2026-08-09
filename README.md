@@ -8,11 +8,12 @@ skimmer), sharing their technology and architecture: a headless, GLib-only
 engine under a GTK4/libadwaita front-end, plain C11, meson, SQLite. Successor
 of the retired Rust prototype (BRlog).
 
-> **Status: 0.1.0 — a usable daily logbook.** Everything below is implemented,
-> covered by offline test gates, and was run in anger through a full
-> **EUHF Challenge 2026** CW deployment — live entry, macros, serials, dup
-> checking and the Cabrillo submission all came from this app. Details and
-> the milestone plan: [`docs/SCOPE.md`](docs/SCOPE.md).
+> **Status: 0.2.0 — a usable daily logbook.** Everything below is implemented,
+> covered by offline test gates, and was run in anger through full
+> **EUHF Challenge 2026** and **WAE DX Contest CW 2026** deployments — live
+> entry, macros, serials, dup checking, per-contest QSO validity and the
+> Cabrillo submissions all came from this app. Details and the milestone
+> plan: [`docs/SCOPE.md`](docs/SCOPE.md).
 
 ![Log for Linux — EUHFC 2026, CW on 20 m: entry row pre-filled from the radio over TCI, macro strip, live log](docs/img/main-window.png)
 
