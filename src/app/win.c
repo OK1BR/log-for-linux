@@ -1942,7 +1942,11 @@ on_export_ready (GObject *source, GAsyncResult *res, gpointer user_data)
       return;
     }
   guint n = 0;
-  char *data = logfl_adif_export_data (self->store, NULL, &n, &err);
+  /* Export what the window shows: the active contest's QSOs, or the main
+   * log (QSOs outside any contest) — never the whole store at once. */
+  LogflStoreQuery query = { .contest = self->contest ? self->contest->id
+                                                     : LOGFL_QUERY_CONTEST_NONE };
+  char *data = logfl_adif_export_data (self->store, &query, &n, &err);
   if (!data)
     {
       toast (self, "Export failed: %s", err->message);

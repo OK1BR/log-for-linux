@@ -788,6 +788,48 @@ test_adif_roundtrip (void)
   logfl_store_close (s3);
 }
 
+/* The window exports what it shows — a contest-scoped query must yield only
+ * that contest's QSOs and CONTEST_NONE only the main log. Guards the engine
+ * side of the 2026-08-09 bug where the UI exported the whole store. */
+static void
+test_adif_export_scoped (void)
+{
+  GError *err = NULL;
+  LogflStore *s = mem_store ();
+  guint np = 0;
+  const LogflContestPreset *p = logfl_contest_presets (&np);
+  LogflContest *c = mk_contest (s, "CQ WPX CW 2026", "CQ-WPX-CW",
+                                p[1].exch_def);
+
+  LogflQso *q = mk_qso ("OK1ABC", "40m", "CW", 1700000000);
+  q->contest_ref = c->id;
+  g_assert_true (logfl_store_add (s, q, &err));
+  logfl_qso_free (q);
+  q = mk_qso ("G4XYZ", "20m", "SSB", 1700000100);
+  g_assert_true (logfl_store_add (s, q, &err));
+  logfl_qso_free (q);
+
+  guint n = 0;
+  LogflStoreQuery in_contest = { .contest = c->id };
+  char *data = logfl_adif_export_data (s, &in_contest, &n, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (n, ==, 1);
+  g_assert_nonnull (strstr (data, "<CALL:6>OK1ABC"));
+  g_assert_null (strstr (data, "G4XYZ"));
+  g_free (data);
+
+  LogflStoreQuery main_log = { .contest = LOGFL_QUERY_CONTEST_NONE };
+  data = logfl_adif_export_data (s, &main_log, &n, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (n, ==, 1);
+  g_assert_nonnull (strstr (data, "<CALL:5>G4XYZ"));
+  g_assert_null (strstr (data, "OK1ABC"));
+  g_free (data);
+
+  logfl_contest_free (c);
+  logfl_store_close (s);
+}
+
 static void
 test_adif_serial_quirks (void)
 {
@@ -829,6 +871,7 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/serial-dup-scoping", test_serial_dup_scoping);
   g_test_add_func ("/contest/delete-semantics", test_delete_semantics);
   g_test_add_func ("/contest/adif-roundtrip", test_adif_roundtrip);
+  g_test_add_func ("/contest/adif-export-scoped", test_adif_export_scoped);
   g_test_add_func ("/contest/adif-serial-quirks", test_adif_serial_quirks);
   return g_test_run ();
 }
