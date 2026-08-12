@@ -1,5 +1,8 @@
 # Maintainer: Richard Fakenberg (OK1BR) <rifak@protonmail.com>
-# AUR package for the tagged release.
+# AUR package for the tagged release — aur.archlinux.org/packages/log-for-linux
+# Bump: raise _pkgtag, `updpkgsums`, verify with a full makepkg (check() runs
+# the meson gates), then push this file plus `makepkg --printsrcinfo > .SRCINFO`
+# to ssh://aur@aur.archlinux.org/log-for-linux.git.
 pkgname=log-for-linux
 _pkgtag=0.2.0
 pkgver=0.2.0

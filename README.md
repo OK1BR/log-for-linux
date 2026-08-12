@@ -75,16 +75,19 @@ of the retired Rust prototype (BRlog).
 
 ## Install
 
-Pick whichever fits your distribution — every release ships prebuilt
-packages on the [Releases page](https://github.com/OK1BR/log-for-linux/releases):
+Pick whichever fits your distribution — the
+[Releases page](https://github.com/OK1BR/log-for-linux/releases) carries
+prebuilt packages for every release, and Arch has an AUR package:
 
 - **AppImage** (any distro): download, `chmod +x Log_for_Linux-*.AppImage`,
   run. Everything bundled, nothing to install.
 - **Ubuntu 24.04+ / Debian 13+**: `sudo apt install ./log-for-linux_*.deb`
 - **Fedora 40+**: `sudo dnf install ./log-for-linux-*.rpm`
-- **Arch Linux**: `makepkg -si` in `packaging/` of a repo clone — the
-  [PKGBUILD](packaging/PKGBUILD) builds the tagged release tarball (AUR
-  package to follow)
+- **Arch Linux (AUR)** — [`log-for-linux`](https://aur.archlinux.org/packages/log-for-linux):
+  `paru -S log-for-linux` (or `yay -S log-for-linux`). Builds the tagged
+  release from source through the [PKGBUILD](packaging/PKGBUILD); without a
+  helper: `git clone https://aur.archlinux.org/log-for-linux.git && cd
+  log-for-linux && makepkg -si`
 
 Both distro packages are install-tested in clean containers before they are
 attached to a release.
@@ -100,7 +103,7 @@ libwebsockets` (equivalent `-dev`/`-devel` packages on other distributions).
 ```
 meson setup builddir
 meson compile -C builddir
-meson test -C builddir          # 9 offline gates, no hardware needed
+meson test -C builddir          # 10 offline gates, no hardware needed
 ./builddir/log-for-linux
 ```
 
