@@ -1,75 +1,19 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
-  <!-- Log for Linux application icon: QSO table rows, a fresh green entry,
-       cyan bookmark ribbon — same plate and palette as the sdr-for-linux
-       and skimmer-for-linux icons. -->
-  <defs>
-    <clipPath id="plate">
-      <rect x="8" y="8" width="112" height="112" rx="26"/>
-    </clipPath>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#232833"/>
-      <stop offset="1" stop-color="#0c0e13"/>
-    </linearGradient>
-    <linearGradient id="ribbon" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#bdf0ff" stop-opacity="0.95"/>
-      <stop offset="1" stop-color="#2f9fd8" stop-opacity="0.75"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </linearGradient>
-  </defs>
-
-  <g clip-path="url(#plate)">
-    <rect x="8" y="8" width="112" height="112" fill="url(#bg)"/>
-
-    <!-- faint row separators -->
-    <g stroke="#ffffff" stroke-opacity="0.05" stroke-width="1">
-      <path d="M8 40h112M8 60h112M8 80h112M8 100h112"/>
-    </g>
-
-    <!-- logged rows: time / callsign / report bars -->
-    <g fill="#ffffff">
-      <g opacity="0.55">
-        <rect x="20" y="26" width="14" height="8" rx="4" opacity="0.5"/>
-        <rect x="40" y="26" width="32" height="8" rx="4"/>
-        <rect x="78" y="26" width="10" height="8" rx="4" opacity="0.5"/>
-      </g>
-      <g opacity="0.40">
-        <rect x="20" y="66" width="14" height="8" rx="4" opacity="0.5"/>
-        <rect x="40" y="66" width="26" height="8" rx="4"/>
-        <rect x="72" y="66" width="10" height="8" rx="4" opacity="0.5"/>
-      </g>
-      <g opacity="0.30">
-        <rect x="20" y="86" width="14" height="8" rx="4" opacity="0.5"/>
-        <rect x="40" y="86" width="36" height="8" rx="4"/>
-        <rect x="82" y="86" width="10" height="8" rx="4" opacity="0.5"/>
-      </g>
-      <g opacity="0.22">
-        <rect x="20" y="106" width="14" height="8" rx="4" opacity="0.5"/>
-        <rect x="40" y="106" width="22" height="8" rx="4"/>
-        <rect x="68" y="106" width="10" height="8" rx="4" opacity="0.5"/>
-      </g>
-    </g>
-
-    <!-- the fresh QSO: green-highlighted row (family "new call" green) -->
-    <rect x="8" y="42" width="112" height="16" fill="#30c060" fill-opacity="0.16"/>
-    <rect x="8" y="42" width="4" height="16" fill="#30c060"/>
-    <g>
-      <rect x="20" y="46" width="14" height="8" rx="4" fill="#30c060" opacity="0.55"/>
-      <rect x="40" y="46" width="38" height="8" rx="4" fill="#30c060"/>
-      <rect x="84" y="46" width="10" height="8" rx="4" fill="#30c060" opacity="0.55"/>
-    </g>
-
-    <!-- bookmark ribbon (family cyan) -->
-    <path d="M94 8h16v42l-8-9-8 9z" fill="url(#ribbon)"/>
-
-    <!-- top gloss -->
-    <rect x="8" y="8" width="112" height="40" fill="url(#gloss)"/>
-  </g>
-
-  <!-- plate edge -->
-  <rect x="8.5" y="8.5" width="111" height="111" rx="25.5" fill="none"
-        stroke="#ffffff" stroke-opacity="0.08"/>
+<svg width="64" height="64" version="1.1" xmlns="http://www.w3.org/2000/svg">
+ <!-- Log for Linux — Papirus-style icon: dark plate, QSO rows, bookmark ribbon.
+      Construction and palette follow the Papirus icon set conventions. -->
+ <rect x="6" y="8" width="52" height="48" rx="3.319149" ry="3" style="opacity:.2"/>
+ <rect x="6" y="7" width="52" height="48" rx="3.319149" ry="3" style="fill:#4f4f4f"/>
+ <g transform="translate(0 1)" style="fill:none;stroke-linecap:round;stroke-width:4;stroke:#000000;opacity:.2">
+  <path d="m13 20h5m7 0h13"/>
+  <path d="m13 31h5m7 0h19"/>
+  <path d="m13 42h5m7 0h13"/>
+ </g>
+ <g style="fill:none;stroke-linecap:round;stroke-width:4">
+  <path d="m13 20h5m7 0h13" style="stroke:#ffffff"/>
+  <path d="m13 31h5m7 0h19" style="stroke:#4caf50"/>
+  <path d="m13 42h5m7 0h13" style="stroke:#ffffff"/>
+ </g>
+ <path d="m44 4h10v19l-5-4.5-5 4.5z" transform="translate(0 1)" style="opacity:.2"/>
+ <path d="m44 3h10v19l-5-4.5-5 4.5z" style="fill:#2196f3"/>
+ <path d="m9.3183594 7c-1.8388086 0-3.3183594 1.338-3.3183594 3v1c0-1.662 1.4795508-3 3.3183594-3h45.363282c1.838808 0 3.318359 1.338 3.318359 3v-1c0-1.662-1.479551-3-3.318359-3h-45.363282z" style="fill:#ffffff;opacity:.1"/>
 </svg>
