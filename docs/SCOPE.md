@@ -245,6 +245,15 @@ importing someone's log and exporting it again must never silently drop data.
   main loop spins. Gate: `log-dupq-test` — parser, loopback round trip,
   push to multiple peers, no-peer no-op. The skimmer side (querying,
   caching, coloring) lives in skimmer-for-linux (its SCOPE.md).
+- **Hand-typed call is always upper case. TODO (Richard, 2026-08-14),
+  next in line.** A callsign typed by hand into the Call entry must show in
+  capitals while it is being typed, whatever Caps Lock happens to be doing —
+  the operator never has to look at the keyboard mid-QSO. Force it in the
+  entry itself (uppercase the inserted text as it lands), not only at log
+  time: the store already normalizes `call` to upper and the spot-click
+  prefill upper-cases (`win.c:2142`, `:2187`), so today the only lower-case
+  path is the one the operator sees. Applies to the same field in the
+  inline cell editor of a saved QSO.
 - **M7 — callbook lookup.** QRZ.com XML (subscriber) / HamQTH (free) —
   name/QTH/grid auto-fill on callsign entry, on-disk cache, credentials in the
   keyring, never in config files.
