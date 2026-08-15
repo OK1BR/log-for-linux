@@ -211,6 +211,40 @@ entry_text (GtkWidget *e)
   return gtk_editable_get_text (GTK_EDITABLE (e));
 }
 
+/* A hand-typed callsign shows in capitals AS it is typed, whatever Caps
+ * Lock happens to be doing — the operator never looks at the keyboard
+ * mid-QSO (SCOPE 2026-08-14). The store already normalizes on log and the
+ * spot prefill arrives upper; this closes the one lower-case path, the one
+ * the operator sees. Replacing the emission (insert upcased, stop original)
+ * keeps the cursor and selection exactly where typing put them. */
+static void
+on_upper_insert_text (GtkEditable *editable, const char *text, int length,
+                      int *position, gpointer user_data)
+{
+  (void) user_data;
+  char *orig = g_strndup (text, length < 0 ? strlen (text) : (gsize) length);
+  char *up = g_utf8_strup (orig, -1);
+  if (strcmp (orig, up) != 0)
+    {
+      g_signal_handlers_block_by_func (editable, on_upper_insert_text, NULL);
+      gtk_editable_insert_text (editable, up, -1, position);
+      g_signal_handlers_unblock_by_func (editable, on_upper_insert_text, NULL);
+      g_signal_stop_emission_by_name (editable, "insert-text");
+    }
+  g_free (orig);
+  g_free (up);
+}
+
+/* insert-text is not forwarded from the GtkText delegate to the GtkEntry
+ * wrapper in GTK4 — hook the delegate itself. */
+static void
+entry_force_upper (GtkWidget *entry)
+{
+  GtkEditable *d = gtk_editable_get_delegate (GTK_EDITABLE (entry));
+  g_signal_connect (d, "insert-text", G_CALLBACK (on_upper_insert_text),
+                    NULL);
+}
+
 /* --- data reload -------------------------------------------------------- */
 
 /* Subtitle mirrors the active view: contest name + its counters when
@@ -4598,6 +4632,8 @@ col_setup (GtkSignalListItemFactory *factory, GObject *object,
   gtk_entry_set_has_frame (GTK_ENTRY (entry), FALSE);
   gtk_widget_add_css_class (entry, "flat");
   gtk_widget_add_css_class (entry, "logfl-cell-edit");
+  if (col == COL_CALL)
+    entry_force_upper (entry);
 
   gtk_box_append (GTK_BOX (box), label);
   gtk_box_append (GTK_BOX (box), entry);
@@ -5115,6 +5151,7 @@ logfl_window_init (LogflWindow *self)
 
   /* Entry row. */
   self->call = mk_entry (self, 10, NULL);
+  entry_force_upper (self->call);
   g_signal_connect_swapped (self->call, "changed",
                             G_CALLBACK (update_wb4), self);
   g_signal_connect_swapped (self->call, "changed",

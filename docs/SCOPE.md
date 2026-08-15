@@ -245,15 +245,18 @@ importing someone's log and exporting it again must never silently drop data.
   main loop spins. Gate: `log-dupq-test` — parser, loopback round trip,
   push to multiple peers, no-peer no-op. The skimmer side (querying,
   caching, coloring) lives in skimmer-for-linux (its SCOPE.md).
-- **Hand-typed call is always upper case. TODO (Richard, 2026-08-14),
-  next in line.** A callsign typed by hand into the Call entry must show in
+- **Hand-typed call is always upper case (Richard 2026-08-14, DONE
+  2026-08-15).** A callsign typed by hand into the Call entry shows in
   capitals while it is being typed, whatever Caps Lock happens to be doing —
-  the operator never has to look at the keyboard mid-QSO. Force it in the
-  entry itself (uppercase the inserted text as it lands), not only at log
-  time: the store already normalizes `call` to upper and the spot-click
-  prefill upper-cases (`win.c:2142`, `:2187`), so today the only lower-case
-  path is the one the operator sees. Applies to the same field in the
-  inline cell editor of a saved QSO.
+  the operator never has to look at the keyboard mid-QSO. Forced in the
+  entry itself, not only at log time: the store already normalizes `call`
+  to upper and the spot-click prefill upper-cases, this closed the one
+  lower-case path the operator sees. Implemented as an insert-text filter
+  on the entry's GtkText delegate (upcased re-insert + stop emission, so
+  cursor/selection stay put; GTK4 does not forward insert-text to the
+  GtkEntry wrapper) — `entry_force_upper` in win.c, applied to the Call
+  entry and to the Call column of the inline cell editor of a saved QSO.
+  GUI-only behavior, not gate-reachable; awaits the live check.
 - **M7 — callbook lookup.** QRZ.com XML (subscriber) / HamQTH (free) —
   name/QTH/grid auto-fill on callsign entry, on-disk cache, credentials in the
   keyring, never in config files.
