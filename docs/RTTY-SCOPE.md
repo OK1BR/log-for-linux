@@ -116,7 +116,13 @@ through tx_gate → mark tail → RX. Esc here → `rtty_macros_stop;` (+
 **Given by the assignment:** key RTTY from the existing macros through
 `rtty_macros:`; everything around the macros stays as it is.
 
-**Proposed here — confirm with Richard before implementation:**
+**Confirmed by Richard 2026-08-15 (whole package), with one addition: verify
+the mode really syncs from the radio — when the SDR lights up RTTY, the
+dropdown must never sit on CW. Covered: the radio broadcasts
+`modulation:0,rtty;` on every change AND in the handshake before `ready;`
+(tci_server.c:254/:359), the client tracks it unconditionally, and the new
+`rtty → "RTTY"` mapping was the only missing link; gate-tested end to end
+(mock push → state callback → map).**
 - **A.** Dispatch authority = the log mode dropdown (the existing gate's
   source), not the radio's reported mode.
 - **B.** Cut numbers auto-suppressed in RTTY — no new setting.
@@ -128,8 +134,10 @@ through tx_gate → mark tail → RX. Esc here → `rtty_macros_stop;` (+
 ## 7. Implementation order (after consent)
 
 1. `tci_client` pair + mode map + `log-tci-test` coverage (engine only,
-   gate-verified offline).
+   gate-verified offline). — **DONE 2026-08-15, gate 10/10.**
 2. `win.c`: macro_run dispatch, CW-only cuts, dual stops, Ctrl+K + texts.
+   — **DONE 2026-08-15** (builds; GUI paths await the live pass).
 3. Live pass against sdr-for-linux ≥ f38aafd: F-key keys a real FSK over
    in RTTY mode, Esc aborts mid-over, prefill flips the dropdown when the
    radio switches to RTTY; then the first macro-keyed RTTY QSO on air.
+   — **PENDING (Richard, at the radio).**

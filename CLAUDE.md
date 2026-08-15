@@ -13,6 +13,6 @@ Native ham radio logbook for Linux (OK1BR). Third app of the family with
 Scope/design: `docs/SCOPE.md` (written 2026-07-20 — read it first; it holds
 the decided store/integrations/milestones).
 
-Pending zadání: `docs/RTTY-SCOPE.md` (2026-08-15) — RTTY keying over the
-sdr-for-linux `rtty_macros:` TCI family (radio side DONE there, f38aafd);
-§6 decisions await Richard's confirm before implementation.
+RTTY keying: `docs/RTTY-SCOPE.md` (2026-08-15) — implemented same day
+(§6 confirmed by Richard, steps 1–2 done, gate green); the live pass
+against sdr-for-linux ≥ f38aafd (§7.3) is pending at the radio.

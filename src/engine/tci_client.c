@@ -526,26 +526,34 @@ logfl_tci_client_tune (LogflTciClient *c, double freq_hz)
                                  (long long) (freq_hz + 0.5)));
 }
 
-void
-logfl_tci_client_cw_send (LogflTciClient *c, const char *text)
+/* Shared by the cw and rtty pairs — both families take <rx>,<text> and both
+ * generators implement the same word-gap rule radio-side. TCI reserves
+ * ':' ',' ';' — scrub free text before queueing. The LEADING space is
+ * deliberate and mirrors what SDC sends: sdr-for-linux's generators insert
+ * the word gap between two queued messages only when the SECOND one asks for
+ * it up front (F2, F3 fired back to back); on an idle keyer the leading
+ * space is skipped, so an over never starts with dead air. A trailing space
+ * does nothing there — tried and reverted. */
+static void
+macros_send (LogflTciClient *c, const char *family, const char *text)
 {
-  if (!c || !c->thread || !text || !*text)
-    return;
-  /* TCI reserves ':' ',' ';' — scrub free text before queueing. The LEADING
-   * space is deliberate and mirrors what SDC sends: sdr-for-linux's CW
-   * generator inserts the word gap between two queued messages only when the
-   * SECOND one asks for it up front (F2, F3 fired back to back); on an idle
-   * keyer the leading space is skipped, so an over never starts with dead
-   * air. A trailing space does nothing there — tried and reverted. */
   char *t = g_strdup_printf (" %s", text);
   for (char *p = t; *p; p++)
     {
       if (*p == ':' || *p == ',' || *p == ';')
         *p = ' ';
     }
-  /* ExpertSDR / sdr-for-linux: cw_macros:<rx>,<text> */
-  cli_queue (c, g_strdup_printf ("cw_macros:0,%s;", t));
+  /* ExpertSDR / sdr-for-linux: <family>:<rx>,<text> */
+  cli_queue (c, g_strdup_printf ("%s:0,%s;", family, t));
   g_free (t);
+}
+
+void
+logfl_tci_client_cw_send (LogflTciClient *c, const char *text)
+{
+  if (!c || !c->thread || !text || !*text)
+    return;
+  macros_send (c, "cw_macros", text);
 }
 
 void
@@ -554,6 +562,22 @@ logfl_tci_client_cw_stop (LogflTciClient *c)
   if (!c || !c->thread)
     return;
   cli_queue (c, g_strdup ("cw_macros_stop;"));
+}
+
+void
+logfl_tci_client_rtty_send (LogflTciClient *c, const char *text)
+{
+  if (!c || !c->thread || !text || !*text)
+    return;
+  macros_send (c, "rtty_macros", text);
+}
+
+void
+logfl_tci_client_rtty_stop (LogflTciClient *c)
+{
+  if (!c || !c->thread)
+    return;
+  cli_queue (c, g_strdup ("rtty_macros_stop;"));
 }
 
 void
@@ -596,5 +620,7 @@ logfl_tci_mode_to_log (const char *tci_mode)
   if (g_ascii_strcasecmp (tci_mode, "digu") == 0 ||
       g_ascii_strcasecmp (tci_mode, "digl") == 0)
     return "FT8";
+  if (g_ascii_strcasecmp (tci_mode, "rtty") == 0)
+    return "RTTY";
   return NULL;
 }

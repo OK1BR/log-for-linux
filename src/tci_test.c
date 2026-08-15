@@ -32,6 +32,7 @@ static struct lws_context *s_ctx;
 static volatile gint s_run = 1;
 static volatile gint s_push_vfo;
 static volatile gint s_push_mode;
+static volatile gint s_push_rtty;
 static volatile gint s_push_wpm;
 static volatile gint s_push_spot;
 static volatile gint s_push_nul;
@@ -141,6 +142,13 @@ server_thread (gpointer data)
           g_atomic_int_set (&s_push_mode, 0);
           srv_queue_text ("modulation:0,usb;");
         }
+      if (g_atomic_int_get (&s_push_rtty))
+        {
+          g_atomic_int_set (&s_push_rtty, 0);
+          /* The radio switched itself to RTTY (family extension mode) —
+           * the logbook's dropdown must follow, never sit on CW. */
+          srv_queue_text ("modulation:0,rtty;");
+        }
       if (g_atomic_int_get (&s_push_wpm))
         {
           g_atomic_int_set (&s_push_wpm, 0);
@@ -246,6 +254,8 @@ test_mode_map (void)
   g_assert_cmpstr (logfl_tci_mode_to_log ("lsb"), ==, "SSB");
   g_assert_cmpstr (logfl_tci_mode_to_log ("am"), ==, "AM");
   g_assert_cmpstr (logfl_tci_mode_to_log ("digu"), ==, "FT8");
+  g_assert_cmpstr (logfl_tci_mode_to_log ("rtty"), ==, "RTTY");
+  g_assert_cmpstr (logfl_tci_mode_to_log ("RTTY"), ==, "RTTY");
   g_assert_null (logfl_tci_mode_to_log ("nonsense"));
   g_assert_null (logfl_tci_mode_to_log (NULL));
 }
@@ -259,6 +269,7 @@ test_handshake_and_live (void)
   g_atomic_int_set (&s_run, 1);
   g_atomic_int_set (&s_push_vfo, 0);
   g_atomic_int_set (&s_push_mode, 0);
+  g_atomic_int_set (&s_push_rtty, 0);
   g_atomic_int_set (&s_push_wpm, 0);
   g_atomic_int_set (&s_push_spot, 0);
   g_atomic_int_set (&c_states, 0);
@@ -328,6 +339,17 @@ test_handshake_and_live (void)
   g_assert_cmpstr (c_last_mode, ==, "usb");
   g_mutex_unlock (&c_lock);
 
+  /* Live RTTY mode push — when the SDR lights up rtty, the state callback
+   * must carry it (the UI maps it via logfl_tci_mode_to_log and follows;
+   * a stale CW dropdown would key Morse into an FSK over). */
+  before = g_atomic_int_get (&c_states);
+  g_atomic_int_set (&s_push_rtty, 1);
+  lws_cancel_service (s_ctx);
+  g_assert_true (wait_states (before + 1, 2000));
+  g_mutex_lock (&c_lock);
+  g_assert_cmpstr (c_last_mode, ==, "rtty");
+  g_mutex_unlock (&c_lock);
+
   /* Live keyer-speed push (radio-side change, e.g. the SDR's own control). */
   before = g_atomic_int_get (&c_states);
   g_atomic_int_set (&s_push_wpm, 1);
@@ -382,6 +404,27 @@ test_handshake_and_live (void)
     }
   g_assert_true (saw_speed);
   g_assert_true (saw_clamp);
+
+  /* RTTY keying (docs/RTTY-SCOPE.md §0) — the rtty_macros family with the
+   * exact CW-path treatment: reserved ':'/','/';' scrubbed to spaces and
+   * the deliberate leading space kept (word-gap rule, see tci_client.c). */
+  logfl_tci_client_rtty_send (cli, "DL1ABC 599:001;");
+  logfl_tci_client_rtty_stop (cli);
+  gboolean saw_rtty = FALSE, saw_rtty_stop = FALSE;
+  for (int i = 0; i < 500; i++)
+    {
+      g_mutex_lock (&s_lock);
+      if (strstr (s_rx->str, "rtty_macros:0, DL1ABC 599 001 ;"))
+        saw_rtty = TRUE;
+      if (strstr (s_rx->str, "rtty_macros_stop;"))
+        saw_rtty_stop = TRUE;
+      g_mutex_unlock (&s_lock);
+      if (saw_rtty && saw_rtty_stop)
+        break;
+      g_usleep (5000);
+    }
+  g_assert_true (saw_rtty);
+  g_assert_true (saw_rtty_stop);
 
   /* Spot click on the panadapter → the call for the entry-row prefill.
    * sdr-for-linux sends both spellings per click, so two callbacks for the

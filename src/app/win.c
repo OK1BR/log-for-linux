@@ -1136,8 +1136,12 @@ macro_run (LogflWindow *self, guint idx)
     {
       if (self->tci && logfl_tci_client_is_ready (self->tci))
         {
+          /* Panic semantics: both stops, always — an idle generator's stop
+           * is a no-op radio-side, and firing both never leaves the wrong
+           * queue running while the operator reads the mode dropdown. */
           logfl_tci_client_cw_stop (self->tci);
-          toast_short (self, "CW stop");
+          logfl_tci_client_rtty_stop (self->tci);
+          toast_short (self, "TX stop");
         }
       else
         toast_short (self, "TCI not connected");
@@ -1170,10 +1174,13 @@ macro_run (LogflWindow *self, guint idx)
 
   /* CW cut numbers — number tokens only, never the calls. The exchange is
    * cut only when it is purely digits (EUHFC year 99 → NN); text like an
-   * OK/OM DX district passes verbatim. */
+   * OK/OM DX district passes verbatim. A CW convention: in RTTY (and any
+   * other mode) the digits go out verbatim — "5NN" is nonsense on FSK. */
+  const char *mode = dd_selected (self->mode_dd, modes);
+  gboolean mode_rtty = mode && g_strcmp0 (mode, "RTTY") == 0;
   const char *rst = entry_text (self->rst_s);
   char *rst_cut = NULL, *exch_cut = NULL;
-  if (self->settings.cw_cut_numbers)
+  if (self->settings.cw_cut_numbers && mode && g_strcmp0 (mode, "CW") == 0)
     {
       const char *map = self->settings.cw_cut_map;
       rst_cut = logfl_macro_cut_apply (rst, map);
@@ -1215,17 +1222,21 @@ macro_run (LogflWindow *self, guint idx)
       return;
     }
 
-  /* CW path only (SSB wav/DVK out of scope for M5). */
-  const char *mode = dd_selected (self->mode_dd, modes);
-  if (mode && g_strcmp0 (mode, "CW") != 0 && g_strcmp0 (mode, "RTTY") != 0)
+  /* Keyer modes only (SSB wav/DVK out of scope for M5). The log mode
+   * dropdown is the dispatch authority — prefilled from the radio,
+   * overridable by the operator. */
+  if (mode && g_strcmp0 (mode, "CW") != 0 && !mode_rtty)
     {
-      toast (self, "Macros send CW via TCI — switch mode to CW (%s)", msg);
+      toast (self, "Macros key CW/RTTY via TCI — switch mode (%s)", msg);
       g_free (msg);
       g_free (slot);
       return;
     }
 
-  logfl_tci_client_cw_send (self->tci, msg);
+  if (mode_rtty)
+    logfl_tci_client_rtty_send (self->tci, msg);
+  else
+    logfl_tci_client_cw_send (self->tci, msg);
   toast_short (self, "TX %s: %s", cap, msg);
   g_free (msg);
   g_free (slot);
@@ -1484,7 +1495,7 @@ on_entry_activate (LogflWindow *self)
  * entry controller, so Esc must be handled here while a cell is open). */
 static void cell_end_edit (GtkWidget *box, gboolean commit);
 
-/* --- free CW text window (Ctrl+K, N1MM style) --------------------------- */
+/* --- free keyer text window (Ctrl+K, N1MM style) ------------------------ */
 
 static void
 on_cw_text_activate (GtkEntry *entry, gpointer user_data)
@@ -1498,13 +1509,20 @@ on_cw_text_activate (GtkEntry *entry, gpointer user_data)
       toast_short (self, "TCI not connected");
       return;
     }
-  /* CW has no case; uppercase mirrors what the macro strip keys. */
+  /* Neither CW nor Baudot has case; uppercase mirrors the macro strip. */
   char *up = g_ascii_strup (txt, -1);
   g_strstrip (up);
   if (*up)
     {
-      logfl_tci_client_cw_send (self->tci, up);
-      toast_short (self, "CW: %s", up);
+      /* Same dispatch authority as macro_run: the log mode dropdown.
+       * RTTY keys the FSK generator, everything else keys Morse. */
+      const char *mode = dd_selected (self->mode_dd, modes);
+      gboolean rtty = mode && g_strcmp0 (mode, "RTTY") == 0;
+      if (rtty)
+        logfl_tci_client_rtty_send (self->tci, up);
+      else
+        logfl_tci_client_cw_send (self->tci, up);
+      toast_short (self, "%s: %s", rtty ? "RTTY" : "CW", up);
     }
   g_free (up);
   gtk_editable_set_text (GTK_EDITABLE (entry), "");
@@ -1518,7 +1536,8 @@ on_cw_text_stop (GtkButton *btn, gpointer user_data)
   if (self->tci && logfl_tci_client_is_ready (self->tci))
     {
       logfl_tci_client_cw_stop (self->tci);
-      toast_short (self, "CW stop");
+      logfl_tci_client_rtty_stop (self->tci);
+      toast_short (self, "TX stop");
     }
 }
 
@@ -1532,9 +1551,13 @@ on_cw_text_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
   LogflWindow *self = user_data;
   if (keyval == GDK_KEY_Escape)
     {
-      /* Esc is the panic key everywhere in this app: stop, then close. */
+      /* Esc is the panic key everywhere in this app: stop, then close.
+       * Both stops — see macro_run's stop slot. */
       if (self->tci && logfl_tci_client_is_ready (self->tci))
-        logfl_tci_client_cw_stop (self->tci);
+        {
+          logfl_tci_client_cw_stop (self->tci);
+          logfl_tci_client_rtty_stop (self->tci);
+        }
       if (self->cw_text_win)
         gtk_window_destroy (GTK_WINDOW (self->cw_text_win));
       return TRUE;
@@ -1555,7 +1578,7 @@ cw_text_window_open (LogflWindow *self)
     }
 
   GtkWidget *win = gtk_window_new ();
-  gtk_window_set_title (GTK_WINDOW (win), "CW text");
+  gtk_window_set_title (GTK_WINDOW (win), "Send text");
   gtk_window_set_transient_for (GTK_WINDOW (win), GTK_WINDOW (self));
   gtk_window_set_destroy_with_parent (GTK_WINDOW (win), TRUE);
   gtk_window_set_default_size (GTK_WINDOW (win), 440, -1);
@@ -1600,8 +1623,8 @@ on_main_key (GtkEventControllerKey *ctl, guint keyval, guint keycode,
   LogflWindow *self = user_data;
   if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))
     {
-      /* Ctrl+K — free CW text window (N1MM style). Everything else with a
-       * modifier stays with GTK; dialogs and cell editors keep their keys. */
+      /* Ctrl+K — free keyer text window (N1MM style). Everything else with
+       * a modifier stays with GTK; dialogs and cell editors keep their keys. */
       if ((state & GDK_CONTROL_MASK) &&
           !(state & (GDK_ALT_MASK | GDK_SUPER_MASK)) &&
           (keyval == GDK_KEY_k || keyval == GDK_KEY_K) &&

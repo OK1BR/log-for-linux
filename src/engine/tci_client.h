@@ -75,6 +75,12 @@ void logfl_tci_client_tune (LogflTciClient *c, double freq_hz);
 void logfl_tci_client_cw_send (LogflTciClient *c, const char *text);
 void logfl_tci_client_cw_stop (LogflTciClient *c);
 
+/* RTTY keying via TCI (rtty_macros / rtty_macros_stop — family extension,
+ * radio side sdr-for-linux ≥ f38aafd; older servers ignore the command).
+ * Same scrub and leading-space semantics as the CW pair. */
+void logfl_tci_client_rtty_send (LogflTciClient *c, const char *text);
+void logfl_tci_client_rtty_stop (LogflTciClient *c);
+
 /* Keyer speed (Page Up/Down in the contest UI). Clamped to WPM_MIN..MAX and
  * sent as cw_macros_speed:<wpm>; the radio echoes the accepted value back,
  * which updates the state snapshot. No-op when not connected. */
