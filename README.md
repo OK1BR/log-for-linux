@@ -8,12 +8,13 @@ skimmer), sharing their technology and architecture: a headless, GLib-only
 engine under a GTK4/libadwaita front-end, plain C11, meson, SQLite. Successor
 of the retired Rust prototype (BRlog).
 
-> **Status: 0.2.0 — a usable daily logbook.** Everything below is implemented,
+> **Status: 0.3.0 — a usable daily logbook.** Everything below is implemented,
 > covered by offline test gates, and was run in anger through full
 > **EUHF Challenge 2026** and **WAE DX Contest CW 2026** deployments — live
 > entry, macros, serials, dup checking, per-contest QSO validity and the
-> Cabrillo submissions all came from this app. Details and the milestone
-> plan: [`docs/SCOPE.md`](docs/SCOPE.md).
+> Cabrillo submissions all came from this app. The RTTY keying is new in
+> 0.3.0: gate-verified against a mock radio, its first on-air pass is still
+> ahead. Details and the milestone plan: [`docs/SCOPE.md`](docs/SCOPE.md).
 
 ![Log for Linux — EUHFC 2026, CW on 20 m: entry row pre-filled from the radio over TCI, macro strip, live log](docs/img/main-window.png)
 
@@ -49,19 +50,21 @@ of the retired Rust prototype (BRlog).
 - **Cabrillo v3 export** of the active contest: category dialog with
   spec-value dropdowns (persisted), exact-QRG kHz, correct mode letters,
   chronological order — ready for robot submission
-- **CW contest messaging** via the radio's keyer (TCI): F1–F8 macro strip
-  with separate **Run and S&P banks**, right-click or Preferences editing,
-  tokens `{MYCALL}` `{CALL}` `{RST}` `{NR}` `{EXCH}`; optional **ESM**
-  (Enter Sends Message), opt-in **cut numbers** (0T 1A 9N …, log keeps real
-  digits), **Ctrl+K** free-text CW window, Esc stops the keyer,
-  **Page Up/Down nudges keyer WPM** from anywhere
+- **CW and RTTY contest messaging** via the radio's keyer (TCI): F1–F8 macro
+  strip with separate **Run and S&P banks**, right-click or Preferences
+  editing, tokens `{MYCALL}` `{CALL}` `{RST}` `{NR}` `{EXCH}`; optional
+  **ESM** (Enter Sends Message), opt-in **cut numbers** (0T 1A 9N …, CW only
+  — RTTY sends real digits, and the log always keeps them), **Ctrl+K**
+  free-text keying window, Esc stops the keyer in either mode,
+  **Page Up/Down nudges CW keyer WPM** from anywhere; the macro keys CW or
+  RTTY by the log-mode dropdown
 
 **Integration**
 - **TCI client** to `sdr-for-linux` (`ws://127.0.0.1:40001`): the entry row
   pre-fills frequency, band and mode from the live VFO; **clicking a skimmer
   spot on the panadapter drops the callsign into the Call entry** with the
-  worked-B4/dup verdict run as if typed; CW macros key the radio; automatic
-  reconnect
+  worked-B4/dup verdict run as if typed; CW/RTTY macros key the radio;
+  automatic reconnect
 - **WSJT-X / JTDX auto-logging** (UDP `127.0.0.1:2237`, schema 2/3): every
   *QSO Logged* lands in the store (dup-safe), and decode lists get
   worked-before **Highlight Callsign** replies (green = new, yellow = B4)
@@ -70,8 +73,8 @@ of the retired Rust prototype (BRlog).
   colors its spots from your log; verdict-changing edits are pushed to
   recent peers unsolicited, so spot colors update the moment you log
 - **Safety/etiquette by design**: the logbook never transmits and never
-  changes radio state except operator-triggered CW macros and keyer speed;
-  nothing leaves the machine without an explicit action
+  changes radio state except operator-triggered CW/RTTY macros and keyer
+  speed; nothing leaves the machine without an explicit action
 
 ## Install
 

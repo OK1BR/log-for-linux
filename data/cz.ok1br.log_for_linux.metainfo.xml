@@ -15,11 +15,11 @@
     </p>
     <p>
       Built to work with its sibling apps: pre-fills frequency and mode from
-      the live VFO of sdr-for-linux over TCI (including CW contest messaging
-      with Run/S&amp;P F-key banks), auto-logs WSJT-X QSOs over UDP with
-      worked-before highlighting, and answers duplicate lookups for
+      the live VFO of sdr-for-linux over TCI (including CW and RTTY contest
+      messaging with Run/S&amp;P F-key banks), auto-logs WSJT-X QSOs over UDP
+      with worked-before highlighting, and answers duplicate lookups for
       skimmer-for-linux. The store is a single SQLite file; the logbook never
-      transmits except operator-triggered CW macros.
+      transmits except operator-triggered CW/RTTY macros.
     </p>
   </description>
   <developer id="cz.ok1br">
@@ -35,6 +35,20 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.0" date="2026-08-17">
+      <description>
+        <p>
+          RTTY contest messaging: when the log mode is RTTY, the F-key
+          macros, ESM and the free-text keying window key the radio's
+          native RTTY generator through sdr-for-linux (rtty_macros TCI
+          family) — cut numbers stay a CW-only convention, digits go out
+          verbatim, and Esc stops both keyers. Mode pre-fill from the
+          radio now recognizes RTTY. Hand-typed callsigns are upper-cased
+          as you type. New application icon with a symbolic variant, and
+          the app is available from the AUR.
+        </p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-08-09">
       <description>
         <p>
