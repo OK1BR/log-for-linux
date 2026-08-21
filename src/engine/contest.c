@@ -462,6 +462,21 @@ static const LogflContestPreset presets[] = {
     "[exchange]\ntx_serial=true\nfields=nr;\n"
     "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
     NULL },
+  /* yodx.ro official rules ("Rules for the YO DX HF english.pdf", §5/§6.1):
+   * we send RS(T) + serial from 001, YO stations answer with a county
+   * abbreviation ("BU") — one AUTO field carries both, exactly like OK/OM
+   * DX. Everyone works everyone and nothing scores zero from our seat
+   * (8 pts YO / 4 other continent / 2 same continent / 1 same DXCC), hence
+   * neither counts= nor zero_own_country. The YO-side rules that do zero
+   * out (YO-YO = 0 pts, no county multipliers for YO stations, §6.2/§8.2)
+   * are not modeled — they never apply to an OK entry. §7.1 dup = same
+   * call+band+mode, which is the app's contest dup rule already. Cabrillo
+   * CONTEST is YO-DX-HF (WA7BNM master list), mapped in win.c; YOHFDX is
+   * the ADIF 3.1.5 Contest_ID value. */
+  { "YO DX", "YOHFDX",
+    "[exchange]\ntx_serial=true\nfields=exch;\n"
+    "[field:exch]\nlabel=Nr/County\ntype=auto\nrequired=true\n",
+    NULL },
   { "Custom", NULL,
     "[exchange]\ntx_serial=false\nfields=exch;\n"
     "[field:exch]\nlabel=Exch\ntype=auto\nrequired=false\n",

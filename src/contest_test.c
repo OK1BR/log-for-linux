@@ -372,7 +372,7 @@ test_presets (void)
 
   /* WAE/SARTG are serial contests; CVA's continent/state is TEXT (a PY
    * state like "SP" must never be reinterpreted as a number). */
-  gboolean wae = FALSE, cva = FALSE, sartg = FALSE;
+  gboolean wae = FALSE, cva = FALSE, sartg = FALSE, yodx = FALSE;
   for (guint i = 0; i < n; i++)
     {
       LogflExchFieldType want;
@@ -391,6 +391,14 @@ test_presets (void)
           want = LOGFL_EXCH_TEXT;
           want_serial = FALSE;
         }
+      else if (g_strcmp0 (p[i].name, "YO DX") == 0)
+        {
+          /* Mixed exchange: a YO county is text, a DX serial is digits. */
+          yodx = TRUE;
+          g_assert_cmpstr (p[i].adif_id, ==, "YOHFDX");
+          want = LOGFL_EXCH_AUTO;
+          want_serial = TRUE;
+        }
       else if (g_strcmp0 (p[i].name, "SARTG WW RTTY") == 0)
         {
           sartg = TRUE;
@@ -407,7 +415,16 @@ test_presets (void)
       g_assert_cmpint (def->tx_serial, ==, want_serial);
       logfl_exch_def_free (def);
     }
-  g_assert_true (wae && cva && sartg);
+  g_assert_true (wae && cva && sartg && yodx);
+
+  /* YO DX: everyone works everyone and no QSO scores zero from an OK seat
+   * (rules §6.1) — the preset must carry no validity rule at all. */
+  def = logfl_exch_def_parse (preset_named ("YO DX")->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
+  g_assert_false (def->zero_own_country);
+  g_assert_true (((LogflExchField *) def->fields->pdata[0])->required);
+  logfl_exch_def_free (def);
 }
 
 static void

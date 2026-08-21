@@ -3790,13 +3790,15 @@ on_cabrillo_file_ready (GObject *source, GAsyncResult *res,
   cab_export_free (ce);
 }
 
-/* Cabrillo CONTEST names are not ADIF ids — map the known difference,
+/* Cabrillo CONTEST names are not ADIF ids — map the known differences,
  * else fall back to the ADIF id / a name-derived guess. */
 static char *
 cabrillo_contest_guess (const LogflContest *c)
 {
   if (g_strcmp0 (c->adif_id, "EU-HF") == 0)
     return g_strdup ("EUHFC");
+  if (g_strcmp0 (c->adif_id, "YOHFDX") == 0)
+    return g_strdup ("YO-DX-HF");
   if (c->adif_id && *c->adif_id)
     return g_strdup (c->adif_id);
   char *up = g_ascii_strup (c->name, -1);
