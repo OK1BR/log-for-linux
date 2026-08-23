@@ -187,3 +187,108 @@ logfl_cabrillo_export_file (LogflStore *s, gint64 contest_id,
   g_free (data);
   return ok;
 }
+
+/* --- categories derived from the log --------------------------------- */
+
+/* ADIF mode -> CATEGORY-MODE family. Deliberately coarser than the QSO
+ * line's mode column (which uses PH/RY/DG): the header takes the entrant
+ * category names from the Cabrillo v3 tag list. */
+static const char *
+cat_mode_family (const char *adif_mode)
+{
+  if (!adif_mode || !*adif_mode)
+    return NULL;
+  if (g_ascii_strcasecmp (adif_mode, "CW") == 0)
+    return "CW";
+  if (g_ascii_strcasecmp (adif_mode, "SSB") == 0
+      || g_ascii_strcasecmp (adif_mode, "AM") == 0)
+    return "SSB";
+  if (g_ascii_strcasecmp (adif_mode, "FM") == 0)
+    return "FM";
+  if (g_ascii_strcasecmp (adif_mode, "RTTY") == 0)
+    return "RTTY";
+  return "DIGI";               /* FT8, FT4, PSK31, MFSK, … */
+}
+
+/* ADIF band -> CATEGORY-BAND value. NULL = this build cannot name it, and
+ * the caller must not guess (an unmapped band could belong to a category
+ * the entrant would have to pick by hand anyway). */
+static const char *
+cat_band_value (const char *adif_band)
+{
+  static const struct { const char *adif, *cab; } map[] = {
+    { "160m", "160M" }, { "80m", "80M" },   { "40m", "40M" },
+    { "20m", "20M" },   { "15m", "15M" },   { "10m", "10M" },
+    { "6m", "6M" },     { "4m", "4M" },     { "2m", "2M" },
+    { "1.25m", "222" }, { "70cm", "432" },  { "33cm", "902" },
+    { "23cm", "1.2G" },
+  };
+  if (!adif_band || !*adif_band)
+    return NULL;
+  for (gsize i = 0; i < G_N_ELEMENTS (map); i++)
+    if (g_ascii_strcasecmp (map[i].adif, adif_band) == 0)
+      return map[i].cab;
+  return NULL;
+}
+
+gboolean
+logfl_cabrillo_categories_from_log (LogflStore *s, gint64 contest_id,
+                                    char **cat_mode, char **cat_band,
+                                    GError **error)
+{
+  g_return_val_if_fail (s != NULL, FALSE);
+
+  if (cat_mode)
+    *cat_mode = NULL;
+  if (cat_band)
+    *cat_band = NULL;
+
+  LogflStoreQuery query = { .contest = contest_id };
+  GPtrArray *list = logfl_store_list (s, &query, error);
+  if (!list)
+    return FALSE;
+
+  const char *mode = NULL;
+  gboolean mode_mixed = FALSE, mode_seen = FALSE;
+  const char *band = NULL;
+  gboolean band_all = FALSE, band_seen = FALSE, band_unknown = FALSE;
+
+  for (guint i = 0; i < list->len; i++)
+    {
+      const LogflQso *q = list->pdata[i];
+
+      const char *m = cat_mode_family (q->mode);
+      if (m)
+        {
+          if (!mode_seen)
+            {
+              mode = m;
+              mode_seen = TRUE;
+            }
+          else if (g_strcmp0 (mode, m) != 0)
+            mode_mixed = TRUE;
+        }
+
+      const char *b = cat_band_value (q->band);
+      if (!b)
+        band_unknown = TRUE;
+      else if (!band_seen)
+        {
+          band = b;
+          band_seen = TRUE;
+        }
+      else if (g_strcmp0 (band, b) != 0)
+        band_all = TRUE;
+    }
+
+  if (cat_mode && mode_seen)
+    *cat_mode = g_strdup (mode_mixed ? "MIXED" : mode);
+  /* An unmapped band poisons the answer only while the log is otherwise
+   * single-band: once two known bands disagree the entry is ALL either
+   * way, and the unknown one cannot change that. */
+  if (cat_band && band_seen && !(band_unknown && !band_all))
+    *cat_band = g_strdup (band_all ? "ALL" : band);
+
+  g_ptr_array_unref (list);
+  return TRUE;
+}

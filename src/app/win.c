@@ -3995,14 +3995,37 @@ act_cabrillo (GSimpleAction *action, GVariant *param, gpointer user_data)
       "title", "Category",
       "description", "Cabrillo v3 values as announced by the contest.",
       NULL));
+  /* Band and Mode come from the log itself, not from what the last export
+   * happened to use: a remembered category outlives the contest it was
+   * picked for and silently mislabels the next one. Both stay editable —
+   * the log proves what was worked, not which category was entered. */
+  char *log_mode = NULL, *log_band = NULL;
+  if (self->store)
+    {
+      GError *cat_err = NULL;
+      if (!logfl_cabrillo_categories_from_log (self->store,
+                                               self->contest->id,
+                                               &log_mode, &log_band,
+                                               &cat_err))
+        g_clear_error (&cat_err);   /* prefill only — fall back, never fail */
+    }
+
   cd->op_row = cab_combo (cg, "Operator", CAB_OPERATOR_VALUES,
                           self->settings.cab_operator);
   cd->band_row = cab_combo (cg, "Band", CAB_BAND_VALUES,
-                            self->settings.cab_band);
+                            log_band ? log_band : self->settings.cab_band);
   cd->power_row = cab_combo (cg, "Power", CAB_POWER_VALUES,
                              self->settings.cab_power);
   cd->mode_row = cab_combo (cg, "Mode", CAB_MODE_VALUES,
-                            self->settings.cab_mode);
+                            log_mode ? log_mode : self->settings.cab_mode);
+  if (log_band)
+    adw_action_row_set_subtitle (ADW_ACTION_ROW (cd->band_row),
+                                 "From the logged QSOs");
+  if (log_mode)
+    adw_action_row_set_subtitle (ADW_ACTION_ROW (cd->mode_row),
+                                 "From the logged QSOs");
+  g_free (log_band);
+  g_free (log_mode);
   cd->tx_row = cab_combo (cg, "Transmitter", CAB_TX_VALUES,
                           self->settings.cab_transmitter);
   cd->assisted_row = cab_combo (cg, "Assisted", CAB_ASSISTED_VALUES,

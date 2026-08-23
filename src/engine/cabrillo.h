@@ -49,6 +49,23 @@ gboolean logfl_cabrillo_export_file (LogflStore *s, gint64 contest_id,
                                      const LogflCabrilloOpts *o,
                                      guint *n_exported, GError **error);
 
+/* Derives CATEGORY-MODE / CATEGORY-BAND from the contest's own QSOs, so a
+ * header can never claim something the log contradicts (2026-08-23: a CW
+ * log went out as CATEGORY-MODE: RTTY because the export dialog offered
+ * the value remembered from the previous contest).
+ *
+ * cat_mode: one mode family in the log -> CW / SSB / RTTY / DIGI / FM,
+ * several -> MIXED. cat_band: one band -> its Cabrillo designator,
+ * several -> ALL. Either is set to NULL when the log cannot say (no QSOs
+ * yet, or a band this build does not map) -- the caller then keeps its own
+ * prefill. Both are prefills for an editable dropdown, never a lock: a
+ * single-band log may still be entered in an all-band category.
+ *
+ * Out params are optional; caller frees the strings. */
+gboolean logfl_cabrillo_categories_from_log (LogflStore *s, gint64 contest_id,
+                                             char **cat_mode, char **cat_band,
+                                             GError **error);
+
 G_END_DECLS
 
 #endif /* LOGFL_CABRILLO_H */

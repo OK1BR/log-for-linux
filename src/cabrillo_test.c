@@ -178,6 +178,84 @@ test_required_fields (void)
   logfl_store_close (s);
 }
 
+/* The 2026-08-23 regression: a CW-only log must never offer RTTY just
+ * because the previous contest was RTTY. Categories come from the QSOs. */
+static void
+test_categories_from_log (void)
+{
+  GError *err = NULL;
+  LogflStore *s = mem_store ();
+  gint64 c = mk_contest (s);
+  const gint64 T = 1754049600;
+  char *mode = NULL, *band = NULL;
+
+  /* Empty contest: the log cannot say, both stay NULL. */
+  g_assert_true (logfl_cabrillo_categories_from_log (s, c, &mode, &band,
+                                                     &err));
+  g_assert_no_error (err);
+  g_assert_null (mode);
+  g_assert_null (band);
+
+  /* Single band, single mode. */
+  add_qso (s, c, "HA6NL", "20m", 14.005, "CW", T, "599", "599",
+           1, NULL, 23, NULL);
+  add_qso (s, c, "YR8E", "20m", 14.025, "CW", T + 60, "599", "599",
+           2, NULL, 0, "BT");
+  g_assert_true (logfl_cabrillo_categories_from_log (s, c, &mode, &band,
+                                                     &err));
+  g_assert_cmpstr (mode, ==, "CW");
+  g_assert_cmpstr (band, ==, "20M");
+  g_clear_pointer (&mode, g_free);
+  g_clear_pointer (&band, g_free);
+
+  /* A QSO in the main log must not move the contest's categories. */
+  add_qso (s, 0, "G3XYZ", "40m", 7.02, "SSB", T + 120, NULL, NULL,
+           0, NULL, 0, NULL);
+  g_assert_true (logfl_cabrillo_categories_from_log (s, c, &mode, &band,
+                                                     &err));
+  g_assert_cmpstr (mode, ==, "CW");
+  g_assert_cmpstr (band, ==, "20M");
+  g_clear_pointer (&mode, g_free);
+  g_clear_pointer (&band, g_free);
+
+  /* Second band and a phone QSO: ALL / MIXED. */
+  add_qso (s, c, "DL1AA", "40m", 7.012, "SSB", T + 180, "59", "59",
+           3, NULL, 82, NULL);
+  g_assert_true (logfl_cabrillo_categories_from_log (s, c, &mode, &band,
+                                                     &err));
+  g_assert_cmpstr (mode, ==, "MIXED");
+  g_assert_cmpstr (band, ==, "ALL");
+  g_clear_pointer (&mode, g_free);
+  g_clear_pointer (&band, g_free);
+  logfl_store_close (s);
+
+  /* Mode families, not raw ADIF modes: FT8 and PSK31 are one DIGI entry. */
+  s = mem_store ();
+  c = mk_contest (s);
+  add_qso (s, c, "OK2ABC", "20m", 14.074, "FT8", T, "-10", "-12",
+           0, NULL, 0, NULL);
+  add_qso (s, c, "OK2DEF", "20m", 14.070, "PSK31", T + 60, "599", "599",
+           0, NULL, 0, NULL);
+  g_assert_true (logfl_cabrillo_categories_from_log (s, c, &mode, &band,
+                                                     &err));
+  g_assert_cmpstr (mode, ==, "DIGI");
+  g_assert_cmpstr (band, ==, "20M");
+  g_clear_pointer (&mode, g_free);
+  g_clear_pointer (&band, g_free);
+
+  /* An unmapped band cannot be named — band goes back to NULL, mode
+   * (which the band cannot spoil) still answers. */
+  add_qso (s, c, "OK2GHI", "13cm", 2320.1, "CW", T + 120, "599", "599",
+           0, NULL, 0, NULL);
+  g_assert_true (logfl_cabrillo_categories_from_log (s, c, &mode, &band,
+                                                     &err));
+  g_assert_cmpstr (mode, ==, "MIXED");
+  g_assert_null (band);
+  g_free (mode);
+
+  logfl_store_close (s);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -186,5 +264,7 @@ main (int argc, char **argv)
   g_test_add_func ("/cabrillo/freq-mode-fallbacks",
                    test_freq_mode_fallbacks);
   g_test_add_func ("/cabrillo/required-fields", test_required_fields);
+  g_test_add_func ("/cabrillo/categories-from-log",
+                   test_categories_from_log);
   return g_test_run ();
 }
