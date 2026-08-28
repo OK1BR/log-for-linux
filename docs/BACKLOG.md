@@ -52,15 +52,18 @@ in `exch_def` (today YO DX's 8/4/2/1 structure exists only as a comment at
 
 ## Open — debt
 
-### LOG-5 — SCOPE's Cabrillo section no longer matches the code
-- **Type:** debt · **Severity:** low · **Status:** open
-- **Source:** fallout of LOG-4, 2026-08-23
-
-`SCOPE.md:337–340` still says the `CATEGORY-*` values are "persisted in
-settings.ini `[cabrillo]`". Since LOG-4 that is only true for Operator, Power,
-Transmitter and Assisted — Band and Mode are derived from the logged QSOs.
+(none)
 
 ## Done
+
+### LOG-5 — SCOPE's Cabrillo section no longer matches the code
+- **Type:** debt · **Severity:** low · **Status:** done 2026-08-28
+- **Source:** fallout of LOG-4, 2026-08-23
+
+SCOPE's Cabrillo entry said all `CATEGORY-*` values are "persisted in
+settings.ini `[cabrillo]`". Since LOG-4 that is only true for Operator,
+Power, Transmitter and Assisted; the entry now records that Band and Mode
+are derived from the logged QSOs, why, and that both stay editable.
 
 ### LOG-1 — Exchange fields do not upper-case while typing
 - **Type:** bug · **Severity:** medium · **Status:** done 2026-08-28
@@ -130,7 +133,6 @@ Milestones and their order live in `docs/SCOPE.md`; `docs/M3-CHECKLIST.md` is
 the manual UI gate. This section only records what is next in practice:
 
 1. **LOG-3** — the first feature-sized piece of work, scoped in SCOPE.md:387.
-2. **LOG-5** — a few sentences in SCOPE, fallout of LOG-4.
 
-Done 2026-08-28: **LOG-2** and **LOG-1** (their live checks at the radio are
-listed in the Done entries and ride along with the RTTY §7.3 pass).
+Done 2026-08-28: **LOG-2**, **LOG-1** and **LOG-5** (the live checks at the
+radio are listed in the Done entries and ride along with the RTTY §7.3 pass).

@@ -340,10 +340,17 @@ importing someone's log and exporting it again must never silently drop data.
   CW/PH/FM/RY/DG; missing RSTs default 599/59; sent serial zero-padded +
   exchange text. Gate: `log-cabrillo-test`. UI: menu → Export Cabrillo…
   (exports the ACTIVE contest), header dialog with CATEGORY-* as
-  spec-value dropdowns (incl. optional ASSISTED, "—" = omit), values
-  persisted in settings.ini `[cabrillo]`; CONTEST prefilled via a
-  known-map (ADIF `EU-HF` → Cabrillo `EUHFC`); file defaults to
-  `<call>.log`. Claimed score / scoring itself stays out (Later).
+  spec-value dropdowns (incl. optional ASSISTED, "—" = omit). Operator,
+  Power, Transmitter and Assisted are persisted in settings.ini
+  `[cabrillo]`; **CATEGORY-MODE and CATEGORY-BAND are derived from the
+  contest's own QSOs** (`logfl_cabrillo_categories_from_log()`, LOG-4
+  2026-08-23, after a remembered RTTY from SARTG mislabelled the all-CW
+  YO DX entry) — mode families collapsing to MIXED, bands to ALL, the
+  remembered value only a fallback for a contest with no QSOs yet, and
+  both rows staying editable because the log proves what was worked, not
+  which category was entered. CONTEST prefilled via a known-map (ADIF
+  `EU-HF` → Cabrillo `EUHFC`); file defaults to `<call>.log`. Claimed
+  score / scoring itself stays out (Later).
 - **A GNOME-correct About dialog. IMPLEMENTED 2026-08-04** (family-wide
   contract written down that day; closed here the same day, Richard checked
   the dialog visually). The contract: every app opens the same kind of
