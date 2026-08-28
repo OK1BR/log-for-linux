@@ -74,7 +74,7 @@ Transmitter and Assisted — Band and Mode are derived from the logged QSOs.
 ## Done
 
 ### LOG-2 — Exchange from the previous station survives a spot switch
-- **Type:** bug · **Severity:** high · **Status:** done 2026-08-28 (not committed)
+- **Type:** bug · **Severity:** high · **Status:** done 2026-08-28, committed `935a07d`
 - **Source:** Richard, live, YO DX HF 2026-08-22
 - **Detail:** `docs/CONTEST-NOTES-2026-08-22.md` §3
 
