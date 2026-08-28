@@ -1154,9 +1154,10 @@ static const LogflContestPreset presets[] = {
     /* Scoring §5/§6/§8 (darc.de WAE rules, 2026-08-28): 1 point per QSO
      * (derived from §8 "total QSOs plus QTCs"); mults = worked entities
      * with numerical call areas split in W VE VK ZL ZS JA BY PY RA8/9/0,
-     * weighted 80m×4 / 40m×3 / 20-10m×2. The eu-dx validity already
-     * restricts an EU seat's mults to non-EU, and drops that restriction
-     * for the RTTY leg exactly as §12 does. QTC points are NOT counted
+     * weighted 80m×4 / 40m×3 / 20-10m×2. The eu-dx validity restricts an
+     * EU seat's mults to non-EU; for the RTTY leg (no continental limit,
+     * §12) the operator edits counts= and the mult rule then counts every
+     * side's entities, which is what §12 asks. QTC points are NOT counted
      * (QTC traffic is a deferred SCOPE item) — the claimed score is a
      * documented underestimate until then. */
     "[exchange]\ntx_serial=true\nfields=nr;\ncounts=eu-dx\n"

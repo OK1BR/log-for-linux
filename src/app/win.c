@@ -4168,8 +4168,10 @@ act_cabrillo (GSimpleAction *action, GVariant *param, gpointer user_data)
         && self->score.have_mult)
       claimed = g_strdup_printf ("%" G_GINT64_FORMAT, self->score.total);
     cd->score_row = cab_row (cg, "Claimed score", claimed);
+    /* AdwEntryRow has no subtitle (it is a PreferencesRow, not an
+     * ActionRow like the combos above) — the hint rides as a tooltip. */
     if (claimed)
-      adw_action_row_set_subtitle (ADW_ACTION_ROW (cd->score_row),
+      gtk_widget_set_tooltip_text (cd->score_row,
                                    "Estimated from the logged QSOs");
     g_free (claimed);
   }
@@ -5335,7 +5337,8 @@ logfl_window_init (LogflWindow *self)
           g_clear_error (&bf_err);
         }
       else if (fixed > 0)
-        g_message ("validity rules added to %u stored contest(s)", fixed);
+        g_message ("validity/scoring rules added to %u stored contest(s)",
+                   fixed);
     }
 
   /* M9: restore the active contest; a stale id (deleted elsewhere) falls
