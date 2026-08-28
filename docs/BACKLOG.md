@@ -33,26 +33,6 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 
 ## Open — bugs
 
-### LOG-2 — Exchange from the previous station survives a spot switch
-- **Type:** bug · **Severity:** high · **Status:** open
-- **Source:** Richard, live, YO DX HF 2026-08-22
-- **Detail:** `docs/CONTEST-NOTES-2026-08-22.md` §3
-
-Clicking spot A, typing the received exchange, then clicking spot B replaces
-the callsign but leaves A's exchange in the fields — a wrong exchange can be
-logged against B. `on_call_changed_drop_spot` is connected to the Call entry
-only (`win.c:5183`); the exchange rows built in `rebuild_exch_fields()` carry
-no signal, so `call_from_spot` never drops and `tci_apply_spot()` rewrites just
-the call. A second, independent path: with a table cell editor open, the QSY
-branch (`win.c:453`) deliberately narrows the reset to clearing Call, leaving
-RST/name/exchange behind.
-
-Note this is also a gap in the written contract, not only in the code:
-`SCOPE.md:181` states the intent — *"leftovers of a QSO that never happened
-cannot leak into the next one"* — while `SCOPE.md:172` defines the prefill as
-tracked *"until the operator touches Call"*. The code implements the letter and
-misses the intent. Fixing this item should tighten that wording too.
-
 ### LOG-1 — Exchange fields do not upper-case while typing
 - **Type:** bug · **Severity:** medium · **Status:** open
 - **Source:** Richard, live, YO DX HF 2026-08-22
@@ -93,8 +73,39 @@ Transmitter and Assisted — Band and Mode are derived from the logged QSOs.
 
 ## Done
 
+### LOG-2 — Exchange from the previous station survives a spot switch
+- **Type:** bug · **Severity:** high · **Status:** done 2026-08-28 (not committed)
+- **Source:** Richard, live, YO DX HF 2026-08-22
+- **Detail:** `docs/CONTEST-NOTES-2026-08-22.md` §3
+
+Clicking spot A, typing the received exchange, then clicking spot B replaced
+the callsign but left A's exchange in the fields — a wrong exchange could be
+logged against B. Fixed by widening the "operator touched it" contract from
+Call to the whole QSO row: a new `changed` handler (`on_row_edited_drop_spot`)
+on RST s/r, Sent, every exchange field, Name and Comment drops
+`call_from_spot` as soon as the operator types. **Chosen semantics: once the
+row is typed into, a spot click is a no-op** — spot B does not fill until the
+row is logged or cleared by hand; nothing ever swaps the call out from under
+a half-copied exchange. Programmatic writes (row reset, serial/RST prefill,
+TCI mode echo rewriting RST defaults) run under a new `syncing_row` guard
+(plus the existing `syncing_tci`) so they keep the mark alive; Call's own
+handler stays deliberately unguarded — `tci_apply_spot` re-arms after its
+write. Second path fixed too: QSY with an open cell editor now resets the
+whole row (`entry_reset_defaults`), only the focus grab is skipped
+(`clear_entry_row` checks `cell_edit_box`). SCOPE.md:172/179 wording
+tightened to match.
+
+Verified: build + `meson test` 10/10 (engine tests cannot see this UI path).
+**Live checks pending at the radio:** (1) spot A → type exchange → spot B:
+the call must NOT change and the row stays the operator's (the contest note's
+original "exchange must disappear" phrasing predates the chosen design);
+(2) QSY >200 Hz with a cell editor open: whole row clears, focus stays in the
+cell; (3) spot click on a different-mode station: the TCI mode flip rewrites
+RST defaults and must NOT kill the prefill — a second spot click still
+replaces the call; (4) after logging a QSO focus still lands in Call.
+
 ### LOG-4 — Cabrillo CATEGORY-MODE/BAND came from the previous contest
-- **Type:** bug · **Severity:** high · **Status:** done 2026-08-23 (not committed)
+- **Type:** bug · **Severity:** high · **Status:** done 2026-08-23, committed `9b99622`
 - **Source:** Richard, after YO DX HF submission
 - **Detail:** `docs/CONTEST-NOTES-2026-08-22.md` §4
 
@@ -113,6 +124,8 @@ Live check of the dialog still pending.
 Milestones and their order live in `docs/SCOPE.md`; `docs/M3-CHECKLIST.md` is
 the manual UI gate. This section only records what is next in practice:
 
-1. **LOG-2** — wrong data reaches the log; nothing else outranks that.
-2. **LOG-1** — two lines, immediately visible every contest.
-3. **LOG-3** — the first feature-sized piece of work, scoped in SCOPE.md:387.
+1. **LOG-1** — two lines, immediately visible every contest.
+2. **LOG-3** — the first feature-sized piece of work, scoped in SCOPE.md:387.
+
+Done 2026-08-28: **LOG-2** (its live checks at the radio are listed in the
+Done entry and ride along with the RTTY §7.3 pass).

@@ -80,6 +80,7 @@ struct _LogflWindow {
   guint tci_retry_id;          /* reconnect timer when TCI is down */
   gboolean syncing_freq;       /* guard against freq↔band feedback */
   gboolean syncing_tci;        /* guard: applying radio state to entry */
+  gboolean syncing_row;        /* guard: programmatic write into the QSO row */
   gboolean tci_connecting;     /* connect thread in flight */
   guint tci_epoch;             /* bumps on reconnect; stale jobs drop */
   int cw_wpm;                  /* keyer speed shown in status; 0 = unknown */
@@ -446,11 +447,9 @@ tci_apply_state (gpointer user_data)
       spot_prefill_forget (self);
       /* The whole row resets, not just Call — typed RST/exchange/name of
        * a QSO that never happened must not haunt the next station. With a
-       * cell editor open only the call goes; nothing yanks the focus. */
-      if (!self->cell_edit_box)
-        entry_reset_defaults (self);
-      else
-        gtk_editable_set_text (GTK_EDITABLE (self->call), ""); /* → forget */
+       * cell editor open the row still clears; only the focus grab is
+       * skipped (clear_entry_row), so nothing yanks the operator out. */
+      entry_reset_defaults (self);
     }
 
   /* Prefill entry from live VFO (entry strip is for new QSOs only). */
@@ -487,10 +486,26 @@ typedef struct {
 } TciSpotIdle;
 
 /* Any edit of Call — by hand or by us — clears the "this is a spot prefill"
- * mark. tci_apply_spot re-arms it right after its own write. */
+ * mark. tci_apply_spot re-arms it right after its own write. Deliberately
+ * unguarded: programmatic Call writes (row clear after logging) must drop
+ * the mark too — do not unify with on_row_edited_drop_spot below. */
 static void
 on_call_changed_drop_spot (LogflWindow *self)
 {
+  spot_prefill_forget (self);
+}
+
+/* Typing anywhere else in the QSO row claims it the same as typing over
+ * Call: the row stops being an untouched prefill, so a later spot click
+ * must not swap the call out from under a half-copied exchange, and QSY
+ * must not clear fields under the operator's hands. Only real typing
+ * counts — row resets, serial/RST prefills and TCI echoes run under
+ * syncing_row/syncing_tci and keep the mark alive. */
+static void
+on_row_edited_drop_spot (LogflWindow *self)
+{
+  if (self->syncing_row || self->syncing_tci)
+    return;
   spot_prefill_forget (self);
 }
 
@@ -858,8 +873,11 @@ entry_reset_defaults (LogflWindow *self)
 {
   clear_entry_row (self);
   const char *def = rst_default_for_mode (dd_selected (self->mode_dd, modes));
+  gboolean prev = self->syncing_row;
+  self->syncing_row = TRUE;
   gtk_editable_set_text (GTK_EDITABLE (self->rst_s), def);
   gtk_editable_set_text (GTK_EDITABLE (self->rst_r), def);
+  self->syncing_row = prev;
   refresh_serial (self);
 }
 
@@ -869,10 +887,13 @@ on_mode_changed (LogflWindow *self)
   /* Refresh the RST defaults, but never stomp a hand-edited report. */
   const char *mode = dd_selected (self->mode_dd, modes);
   const char *def = rst_default_for_mode (mode);
+  gboolean prev = self->syncing_row;
+  self->syncing_row = TRUE;
   if (rst_looks_default (entry_text (self->rst_s)))
     gtk_editable_set_text (GTK_EDITABLE (self->rst_s), def);
   if (rst_looks_default (entry_text (self->rst_r)))
     gtk_editable_set_text (GTK_EDITABLE (self->rst_r), def);
+  self->syncing_row = prev;
   update_wb4 (self);
 }
 
@@ -936,13 +957,19 @@ on_band_changed (LogflWindow *self)
 static void
 clear_entry_row (LogflWindow *self)
 {
+  gboolean prev = self->syncing_row;
+  self->syncing_row = TRUE;
   gtk_editable_set_text (GTK_EDITABLE (self->call), "");
   gtk_editable_set_text (GTK_EDITABLE (self->name), "");
   gtk_editable_set_text (GTK_EDITABLE (self->comment), "");
   for (guint i = 0; self->exch_entries && i < self->exch_entries->len; i++)
     gtk_editable_set_text (GTK_EDITABLE (self->exch_entries->pdata[i]), "");
+  self->syncing_row = prev;
   gtk_label_set_text (GTK_LABEL (self->wb4_label), "");
-  gtk_widget_grab_focus (self->call);
+  /* An open cell editor is never interrupted: the row still clears, but
+   * focus stays where the operator is editing. */
+  if (!self->cell_edit_box)
+    gtk_widget_grab_focus (self->call);
 }
 
 /* Resolve MHz for a new log: typed entry → live TCI VFO → band mid-point. */
@@ -2802,7 +2829,10 @@ refresh_serial (LogflWindow *self)
         s = g_strdup (self->contest->my_exch);
       else
         s = g_strdup ("");
+      gboolean prev = self->syncing_row;
+      self->syncing_row = TRUE;
       gtk_editable_set_text (GTK_EDITABLE (self->serial_value), s);
+      self->syncing_row = prev;
       g_free (s);
     }
 }
@@ -2828,6 +2858,8 @@ rebuild_exch_fields (LogflWindow *self)
    * without one. Prefilled but editable — a mis-sent number can be fixed
    * before logging; the prefill refreshes after every logged QSO. */
   self->serial_value = mk_entry (self, 6, NULL);
+  g_signal_connect_swapped (self->serial_value, "changed",
+                            G_CALLBACK (on_row_edited_drop_spot), self);
   gtk_widget_add_css_class (self->serial_value, "numeric");
   gtk_box_append (GTK_BOX (self->exch_box),
                   labeled ("Sent", self->serial_value));
@@ -2835,6 +2867,8 @@ rebuild_exch_fields (LogflWindow *self)
     {
       const LogflExchField *f = self->exch_def->fields->pdata[i];
       GtkWidget *e = mk_entry (self, 7, NULL);
+      g_signal_connect_swapped (e, "changed",
+                                G_CALLBACK (on_row_edited_drop_spot), self);
       if (f->required)
         gtk_widget_set_tooltip_text (e, "Contest exchange (required)");
       gtk_box_append (GTK_BOX (self->exch_box), labeled (f->label, e));
@@ -5185,6 +5219,10 @@ logfl_window_init (LogflWindow *self)
   self->rst_r = mk_entry (self, 4, NULL);
   gtk_editable_set_text (GTK_EDITABLE (self->rst_s), "599");
   gtk_editable_set_text (GTK_EDITABLE (self->rst_r), "599");
+  g_signal_connect_swapped (self->rst_s, "changed",
+                            G_CALLBACK (on_row_edited_drop_spot), self);
+  g_signal_connect_swapped (self->rst_r, "changed",
+                            G_CALLBACK (on_row_edited_drop_spot), self);
   self->band_dd = gtk_drop_down_new_from_strings (bands);
   gtk_drop_down_set_selected (GTK_DROP_DOWN (self->band_dd), 5); /* 40m */
   g_signal_connect_swapped (self->band_dd, "notify::selected",
@@ -5207,6 +5245,10 @@ logfl_window_init (LogflWindow *self)
   }
   self->name = mk_entry (self, 12, NULL);
   self->comment = mk_entry (self, 18, NULL);
+  g_signal_connect_swapped (self->name, "changed",
+                            G_CALLBACK (on_row_edited_drop_spot), self);
+  g_signal_connect_swapped (self->comment, "changed",
+                            G_CALLBACK (on_row_edited_drop_spot), self);
   gtk_widget_set_hexpand (self->comment, TRUE);
 
   self->log_btn = gtk_button_new_with_label ("Log QSO");

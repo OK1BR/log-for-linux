@@ -169,17 +169,22 @@ importing someone's log and exporting it again must never silently drop data.
   the SCOPE's no-cluster-window rule leaves room for, not a spot window. An
   already-typed call is never overwritten and an open cell editor is never
   interrupted, which also makes the two spellings of one click idempotent.
-  The prefill is tracked as such until the operator touches Call: clicking
-  another spot replaces it, and tuning more than 200 Hz off the spot clears
-  it (that call is no longer on frequency). Once typed into, the call is the
-  operator's — QSY never deletes it and a spot click never overwrites it.
+  The prefill is tracked as such until the operator types anywhere into the
+  QSO row — Call, RST, exchange, Sent, Name or Comment (LOG-2, 2026-08-28;
+  before that only Call counted, so a spot click could pair a new call with
+  the previous station's half-copied exchange): clicking another spot
+  replaces it, and tuning more than 200 Hz off the spot clears it (that call
+  is no longer on frequency). Once typed into, the row is the operator's —
+  QSY never deletes it and a spot click never overwrites it.
   **Live-EUHFC hardening (2026-08-01, tuned mid-contest):** the click also
   presents the logbook window and focuses Call with the text selected
   (double-click feel — Tab/Enter keeps, typing replaces); QSY off an
   untouched spot resets the WHOLE entry row via `entry_reset_defaults`
   (RST to the mode default, Sent back to the serial/exchange prefill,
-  focus in Call) so leftovers of a QSO that never happened cannot leak
-  into the next one. The New-call / worked-B4 / DUP verdict line is
+  focus in Call — with an open cell editor the row still resets but focus
+  stays in the cell; LOG-2, 2026-08-28, before that only Call cleared
+  there) so leftovers of a QSO that never happened cannot leak into the
+  next one. The New-call / worked-B4 / DUP verdict line is
   1.3em bold with family colors: New = #30C060 (the skimmer's own spot
   green on the panadapter), DUP = saturated #ED333B.
 - **M5 — macros v2 (contest-style messaging). IMPLEMENTED 2026-07-21
