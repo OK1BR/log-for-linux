@@ -291,7 +291,10 @@ test_backfill_validity (void)
   cust->exch_def = g_strdup (OLD_DEF);
   g_assert_true (logfl_store_contest_add (s, cust, &err));
 
-  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 2);
+  /* All three preset-mapped contests get repaired: WAE and EUHFC gain
+   * validity + scoring, the counts=all one keeps its validity edit but
+   * still gains the scoring keys (independent knobs, LOG-3). */
+  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 3);
   g_assert_no_error (err);
 
   LogflContest *back = logfl_store_contest_get (s, wae->id, &err);
@@ -300,18 +303,23 @@ test_backfill_validity (void)
   g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_EU_DX);
   g_assert_true (def->tx_serial);          /* the rest of the def survived */
   g_assert_cmpuint (def->fields->len, ==, 1);
+  g_assert_nonnull (def->points);          /* LOG-3 scoring rode along */
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_COUNTRY_AREAS);
+  g_assert_nonnull (def->mult_weight);
   logfl_exch_def_free (def);
   logfl_contest_free (back);
 
   back = logfl_store_contest_get (s, euhfc->id, &err);
   def = logfl_exch_def_parse (back->exch_def, &err);
   g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_EU_ONLY);
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_EXCH);
   logfl_exch_def_free (def);
   logfl_contest_free (back);
 
   back = logfl_store_contest_get (s, own->id, &err);
   def = logfl_exch_def_parse (back->exch_def, &err);
   g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
+  g_assert_nonnull (def->points);
   logfl_exch_def_free (def);
   logfl_contest_free (back);
 
@@ -873,10 +881,391 @@ test_adif_serial_quirks (void)
   logfl_store_close (s);
 }
 
+/* --- LOG-3 scoring ------------------------------------------------------ */
+
+static const char *cty_path;     /* data/cty.dat, argv[1] from meson */
+
+static LogflCty *
+load_cty (void)
+{
+  GError *err = NULL;
+  LogflCty *c = logfl_cty_load (cty_path, &err);
+  g_assert_no_error (err);
+  g_assert_nonnull (c);
+  return c;
+}
+
+/* A scored QSO; the array mirrors logfl_store_list order (newest FIRST),
+ * so tests must prepend chronologically — or insert at index 0. */
+static void
+add_sqso (GPtrArray *a, gint64 id, const char *call, const char *band,
+          const char *mode, const char *srx_string)
+{
+  LogflQso *q = mk_qso (call, band, mode, 1000 + id);
+  q->id = id;
+  q->srx_string = g_strdup (srx_string);
+  g_ptr_array_insert (a, 0, q);
+}
+
+static const LogflQsoScore *
+score_of (GHashTable *scores, gint64 id)
+{
+  const LogflQsoScore *sc = g_hash_table_lookup (scores, &id);
+  g_assert_nonnull (sc);
+  return sc;
+}
+
+static void
+test_score_roundtrip (void)
+{
+  GError *err = NULL;
+  LogflExchDef *def = logfl_exch_def_parse (
+      "[exchange]\ntx_serial=true\nfields=nr;\n"
+      "points=country:YO=8;own-country=1;same-cont=2;other-cont=3/6;\n"
+      "mult=exch:YO+country\nmult_scope=contest\n"
+      "mult_weight=80m:4;40m:3;\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\n", &err);
+  g_assert_no_error (err);
+  g_assert_nonnull (def->points);
+  g_assert_cmpuint (def->points->len, ==, 4);
+  LogflPtsTerm *t = &g_array_index (def->points, LogflPtsTerm, 0);
+  g_assert_cmpint (t->kind, ==, LOGFL_PTS_COUNTRY);
+  g_assert_cmpstr (t->arg, ==, "YO");
+  g_assert_cmpint (t->points, ==, 8);
+  g_assert_cmpint (t->points_low, ==, 8);
+  t = &g_array_index (def->points, LogflPtsTerm, 3);
+  g_assert_cmpint (t->points, ==, 3);
+  g_assert_cmpint (t->points_low, ==, 6);
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_EXCH | LOGFL_MULT_COUNTRY);
+  g_assert_cmpstr (def->mult_exch_from, ==, "YO");
+  g_assert_true (def->mult_per_contest);
+  g_assert_nonnull (def->mult_weight);
+  g_assert_cmpint (
+      GPOINTER_TO_INT (g_hash_table_lookup (def->mult_weight, "40m")),
+      ==, 3);
+
+  /* Serialize → parse keeps every scoring detail. */
+  char *text = logfl_exch_def_serialize (def);
+  LogflExchDef *back = logfl_exch_def_parse (text, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (back->points->len, ==, 4);
+  t = &g_array_index (back->points, LogflPtsTerm, 3);
+  g_assert_cmpint (t->points_low, ==, 6);
+  g_assert_cmpuint (back->mult, ==, def->mult);
+  g_assert_cmpstr (back->mult_exch_from, ==, "YO");
+  g_assert_true (back->mult_per_contest);
+  g_assert_cmpint (
+      GPOINTER_TO_INT (g_hash_table_lookup (back->mult_weight, "80m")),
+      ==, 4);
+  g_free (text);
+  logfl_exch_def_free (back);
+  logfl_exch_def_free (def);
+}
+
+static void
+test_score_errors (void)
+{
+  /* An unknown rule must fail the parse loudly, like counts= does —
+   * silently scoring wrong is the one forbidden failure mode. */
+  static const char *const bad[] = {
+    "[exchange]\nfields=nr;\npoints=frobnicate=3;\n",
+    "[exchange]\nfields=nr;\npoints=own-country;\n",
+    "[exchange]\nfields=nr;\nmult=nonsense\n",
+    "[exchange]\nfields=nr;\nmult=exch\nmult_scope=weekly\n",
+    "[exchange]\nfields=nr;\nmult=exch\nmult_weight=80m:x;\n",
+  };
+  for (gsize i = 0; i < G_N_ELEMENTS (bad); i++)
+    {
+      GError *err = NULL;
+      g_assert_null (logfl_exch_def_parse (bad[i], &err));
+      g_assert_error (err, LOGFL_CONTEST_ERROR, LOGFL_CONTEST_ERROR_PARSE);
+      g_clear_error (&err);
+    }
+}
+
+static void
+test_wpx_prefix (void)
+{
+  static const struct { const char *call, *pfx; } cases[] = {
+    { "OK1BR", "OK1" },     { "N8ABC", "N8" },
+    { "LY1000XX", "LY1000" }, { "7M4XYZ", "7M4" },
+    { "XEFTJW", "XE0" },    { "PA/N8BJQ", "PA0" },
+    { "K5DJ/1", "K1" },     { "OK1BR/P", "OK1" },
+  };
+  for (gsize i = 0; i < G_N_ELEMENTS (cases); i++)
+    {
+      char *p = logfl_wpx_prefix (cases[i].call);
+      g_assert_cmpstr (p, ==, cases[i].pfx);
+      g_free (p);
+    }
+}
+
+static void
+test_score_yodx (void)
+{
+  GError *err = NULL;
+  guint n = 0;
+  const LogflContestPreset *p = logfl_contest_presets (&n);
+  const char *yodx = NULL;
+  for (guint i = 0; i < n; i++)
+    if (g_strcmp0 (p[i].adif_id, "YOHFDX") == 0)
+      yodx = p[i].exch_def;
+  LogflExchDef *def = logfl_exch_def_parse (yodx, &err);
+  g_assert_no_error (err);
+
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "YO3GCL", "20m", "CW", "BU");   /* 8 pts, YO + BU  */
+  add_sqso (qsos, 2, "DL1AB", "20m", "CW", NULL);    /* 2 pts, DL       */
+  add_sqso (qsos, 3, "K1AB", "20m", "CW", NULL);     /* 4 pts, K        */
+  add_sqso (qsos, 4, "OK2XYZ", "20m", "CW", NULL);   /* 1 pt,  OK       */
+  add_sqso (qsos, 5, "YO3GCL", "20m", "CW", "BU");   /* dupe: 0, none   */
+  add_sqso (qsos, 6, "YR8D", "40m", "CW", "SV");     /* 8 pts, YO + SV
+                                                        again — per band */
+  add_sqso (qsos, 7, "CT7XX", "20m", "CW", NULL);    /* 2 pts, CT country */
+  add_sqso (qsos, 8, "YO4NF", "20m", "CW", "CT");    /* 8 pts, CT county —
+                                                        must NOT be
+                                                        swallowed by the
+                                                        Portugal prefix */
+  LogflContestTotals tot;
+  GHashTable *scores =
+    logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+  g_assert_nonnull (scores);
+  g_assert_true (tot.have_points);
+  g_assert_true (tot.have_mult);
+  g_assert_cmpint (tot.points, ==, 33);
+  g_assert_cmpint (tot.mults, ==, 9);
+  g_assert_cmpint (tot.total, ==, 297);
+  g_assert_cmpstr (score_of (scores, 8)->mult, ==, "CT");
+
+  g_assert_cmpint (score_of (scores, 1)->points, ==, 8);
+  g_assert_cmpstr (score_of (scores, 1)->mult, ==, "YO BU");
+  g_assert_cmpint (score_of (scores, 4)->points, ==, 1);
+  g_assert_cmpstr (score_of (scores, 4)->mult, ==, "OK");
+  g_assert_cmpint (score_of (scores, 5)->points, ==, 0);
+  g_assert_null (score_of (scores, 5)->mult);
+  g_assert_cmpstr (score_of (scores, 6)->mult, ==, "YO SV");
+
+  g_hash_table_unref (scores);
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (def);
+}
+
+static void
+test_score_cqww (void)
+{
+  GError *err = NULL;
+  LogflExchDef *def = logfl_exch_def_parse (
+      "[exchange]\nfields=zone;\nzero_own_country=true\n"
+      "points=own-country=0;same-cont=1;other-cont=3;\n"
+      "mult=cqzone+country\n"
+      "[field:zone]\nlabel=Zone\ntype=number\nadif_num=CQZ\n", &err);
+  g_assert_no_error (err);
+
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "OK2XYZ", "20m", "CW", "15");  /* 0 pts, mults 15+OK */
+  add_sqso (qsos, 2, "DL1AB", "20m", "CW", "14");   /* 1 pt,  14 + DL    */
+  add_sqso (qsos, 3, "K1AB", "20m", "CW", "5");     /* 3 pts, 5 + K      */
+  LogflContestTotals tot;
+  GHashTable *scores =
+    logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+  g_assert_nonnull (scores);
+  g_assert_cmpint (tot.points, ==, 4);
+  g_assert_cmpint (tot.mults, ==, 6);
+  g_assert_cmpint (tot.total, ==, 24);
+  /* Zero-point own country still brought two multipliers — the CQ WW
+   * trap the rules call out explicitly. */
+  g_assert_cmpint (score_of (scores, 1)->points, ==, 0);
+  g_assert_cmpstr (score_of (scores, 1)->mult, ==, "OK 15");
+
+  g_hash_table_unref (scores);
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (def);
+}
+
+static void
+test_score_wpx (void)
+{
+  GError *err = NULL;
+  LogflExchDef *def = logfl_exch_def_parse (
+      "[exchange]\ntx_serial=true\nfields=nr;\n"
+      "points=own-country=1;same-cont=1/2;other-cont=3/6;\n"
+      "mult=prefix\nmult_scope=contest\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\n", &err);
+  g_assert_no_error (err);
+
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "OK1AAA", "20m", "CW", NULL);  /* 1 pt, OK1        */
+  add_sqso (qsos, 2, "OK1BBB", "40m", "CW", NULL);  /* 1 pt (flat), dup
+                                                       OK1 contest-wide */
+  add_sqso (qsos, 3, "DL1CC", "40m", "CW", NULL);   /* 2 pts (low), DL1 */
+  add_sqso (qsos, 4, "K2DD", "40m", "CW", NULL);    /* 6 pts (low), K2  */
+  add_sqso (qsos, 5, "K2EE", "20m", "CW", NULL);    /* 3 pts, K2 dup    */
+  LogflContestTotals tot;
+  GHashTable *scores =
+    logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+  g_assert_nonnull (scores);
+  g_assert_cmpint (tot.points, ==, 13);
+  g_assert_cmpint (tot.mults, ==, 3);
+  g_assert_cmpint (tot.total, ==, 39);
+  g_assert_null (score_of (scores, 2)->mult);
+  g_assert_cmpstr (score_of (scores, 4)->mult, ==, "K2");
+
+  g_hash_table_unref (scores);
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (def);
+}
+
+static void
+test_score_euhfc (void)
+{
+  GError *err = NULL;
+  LogflExchDef *def = logfl_exch_def_parse (
+      "[exchange]\nfields=year;\ncounts=eu-only\n"
+      "points=default=1;\nmult=exch\n"
+      "[field:year]\nlabel=Year\ntype=text\n", &err);
+  g_assert_no_error (err);
+
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "OK1AAA", "80m", "CW", "82");  /* 1 pt, mult 82    */
+  add_sqso (qsos, 2, "OK2BBB", "80m", "CW", "82");  /* 1 pt, 82 known   */
+  add_sqso (qsos, 3, "DL1CC", "40m", "CW", "82");   /* 1 pt, 82 new band */
+  add_sqso (qsos, 4, "K1AB", "20m", "CW", "99");    /* non-EU: nothing  */
+  LogflContestTotals tot;
+  GHashTable *scores =
+    logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+  g_assert_nonnull (scores);
+  g_assert_cmpint (tot.points, ==, 3);
+  g_assert_cmpint (tot.mults, ==, 2);
+  g_assert_cmpint (tot.total, ==, 6);
+  g_assert_cmpint (score_of (scores, 4)->points, ==, 0);
+  g_assert_null (score_of (scores, 4)->mult);
+
+  g_hash_table_unref (scores);
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (def);
+}
+
+static void
+test_score_wae (void)
+{
+  GError *err = NULL;
+  LogflExchDef *def = logfl_exch_def_parse (
+      "[exchange]\ntx_serial=true\nfields=nr;\ncounts=eu-dx\n"
+      "points=default=1;\nmult=country-areas\n"
+      "mult_weight=80m:4;40m:3;20m:2;15m:2;10m:2;\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\n", &err);
+  g_assert_no_error (err);
+
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "K1AB", "80m", "CW", NULL);    /* 1 pt, K1 ×4      */
+  add_sqso (qsos, 2, "K3CD/1", "80m", "CW", NULL);  /* 1 pt, K1 known   */
+  add_sqso (qsos, 3, "JR4AAA", "40m", "CW", NULL);  /* 1 pt, JA4 ×3     */
+  add_sqso (qsos, 4, "UA9ABC", "20m", "CW", NULL);  /* 1 pt, RA9 ×2     */
+  add_sqso (qsos, 5, "DL1AB", "20m", "CW", NULL);   /* EU-EU: nothing   */
+  LogflContestTotals tot;
+  GHashTable *scores =
+    logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+  g_assert_nonnull (scores);
+  g_assert_cmpint (tot.points, ==, 4);
+  g_assert_cmpint (tot.mults, ==, 9);
+  g_assert_cmpint (tot.total, ==, 36);
+  g_assert_cmpstr (score_of (scores, 1)->mult, ==, "K1");
+  g_assert_null (score_of (scores, 2)->mult);
+  g_assert_cmpstr (score_of (scores, 4)->mult, ==, "RA9");
+  g_assert_cmpint (score_of (scores, 5)->points, ==, 0);
+
+  g_hash_table_unref (scores);
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (def);
+}
+
+static void
+test_score_iaru (void)
+{
+  GError *err = NULL;
+  LogflExchDef *def = logfl_exch_def_parse (
+      "[exchange]\nfields=exch;\n"
+      "points=exch-text=1;same-zone=1;same-cont=3;other-cont=5;\n"
+      "mult=zone+exch-text\n"
+      "[field:exch]\nlabel=Zone/HQ\ntype=auto\nadif_num=ITUZ\n", &err);
+  g_assert_no_error (err);
+
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "OM3AA", "20m", "CW", "28");   /* same zone: 1     */
+  add_sqso (qsos, 2, "DL1AB", "20m", "CW", "27");   /* EU, diff zone: 3 */
+  add_sqso (qsos, 3, "K1AB", "20m", "CW", "8");     /* other cont: 5    */
+  add_sqso (qsos, 4, "DA0HQ", "20m", "SSB", "DARC");/* HQ text: 1       */
+  LogflContestTotals tot;
+  GHashTable *scores =
+    logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+  g_assert_nonnull (scores);
+  g_assert_cmpint (tot.points, ==, 10);
+  g_assert_cmpint (tot.mults, ==, 4);    /* zones 28 27 8 + DARC */
+  g_assert_cmpint (tot.total, ==, 40);
+  g_assert_cmpint (score_of (scores, 4)->points, ==, 1);
+  g_assert_cmpstr (score_of (scores, 4)->mult, ==, "DARC");
+
+  g_hash_table_unref (scores);
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (def);
+}
+
+static void
+test_score_unavailable (void)
+{
+  GError *err = NULL;
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "DL1AB", "20m", "CW", NULL);
+  LogflContestTotals tot;
+
+  /* No scoring rule → no score, never zeros pretending to be one. */
+  LogflExchDef *plain = logfl_exch_def_parse (
+      "[exchange]\nfields=nr;\n[field:nr]\nlabel=Nr\ntype=serial\n", &err);
+  g_assert_no_error (err);
+  g_assert_null (logfl_contest_score (plain, cty, "OK1BR", qsos, &tot));
+  g_assert_false (tot.have_points);
+  logfl_exch_def_free (plain);
+
+  /* An unresolvable own seat cannot judge relations → also no score. */
+  LogflExchDef *def = logfl_exch_def_parse (
+      "[exchange]\nfields=nr;\npoints=own-country=1;\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\n", &err);
+  g_assert_no_error (err);
+  g_assert_null (logfl_contest_score (def, cty, NULL, qsos, &tot));
+  g_assert_null (logfl_contest_score (def, cty, "1234", qsos, &tot));
+  g_assert_null (logfl_contest_score (def, NULL, "OK1BR", qsos, &tot));
+  logfl_exch_def_free (def);
+
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+}
+
 int
 main (int argc, char **argv)
 {
   g_test_init (&argc, &argv, NULL);
+  g_assert_cmpint (argc, >=, 2);   /* meson passes data/cty.dat */
+  cty_path = argv[1];
   g_test_add_func ("/contest/exch-def-roundtrip", test_exch_def_roundtrip);
   g_test_add_func ("/contest/exch-def-errors", test_exch_def_errors);
   g_test_add_func ("/contest/qso-validity", test_qso_validity);
@@ -890,5 +1279,15 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/adif-roundtrip", test_adif_roundtrip);
   g_test_add_func ("/contest/adif-export-scoped", test_adif_export_scoped);
   g_test_add_func ("/contest/adif-serial-quirks", test_adif_serial_quirks);
+  g_test_add_func ("/contest/score/roundtrip", test_score_roundtrip);
+  g_test_add_func ("/contest/score/errors", test_score_errors);
+  g_test_add_func ("/contest/score/wpx-prefix", test_wpx_prefix);
+  g_test_add_func ("/contest/score/yodx", test_score_yodx);
+  g_test_add_func ("/contest/score/cqww", test_score_cqww);
+  g_test_add_func ("/contest/score/wpx", test_score_wpx);
+  g_test_add_func ("/contest/score/euhfc", test_score_euhfc);
+  g_test_add_func ("/contest/score/wae", test_score_wae);
+  g_test_add_func ("/contest/score/iaru", test_score_iaru);
+  g_test_add_func ("/contest/score/unavailable", test_score_unavailable);
   return g_test_run ();
 }

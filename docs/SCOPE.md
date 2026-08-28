@@ -396,14 +396,35 @@ importing someone's log and exporting it again must never silently drop data.
   on top of the cty resolver), WAE QTC traffic (next bullet), linking
   imported CONTEST_ID QSOs to contests, and — only if ever revisited — the
   skimmer cluster client.
-- **Contest score calculation. IDEA (Richard, 2026-08-08).** Live claimed
-  score in the contest UI + Cabrillo CLAIMED-SCORE: per-contest QSO points
-  (the per-preset rules verified 2026-08-08 from official sources — WAE
-  weighted band multipliers ×4/×3/×2, CQ WW 0-point own country, OK/OM DX
-  2/3/5+10, IARU 1/3/5, CVA 2/3/4, SARTG 5/10/15, EUHFC 1) and multiplier
-  tracking per band. Builds directly on the cty.dat resolver and the
-  per-preset validity rules (2026-08-08); the scoring tables are already
-  researched and sourced in the preset comments.
+- **Contest score calculation. IDEA (Richard, 2026-08-08), raised to a
+  requirement live at YO DX HF (LOG-3). IMPLEMENTED 2026-08-28.** The
+  claimed score is an ESTIMATE from the operator's own seat — the
+  sponsor's robot rescoring is the authority; that framing bounds the
+  whole feature. Machine-readable `points=` / `mult=` rules live in the
+  contest's own exch_def (terms judged via the cty resolver; unknown
+  terms fail the parse loudly), so a contest keeps the rule it was
+  operated under. Every preset rule was re-verified 2026-08-28 against
+  the sponsor's official rules, from an OK seat: CQ WW 0/1/3 +
+  zones+countries, WPX 1, 1/2, 3/6 + prefixes once per contest, IARU
+  1/1/3/5 with HQ text exchanges + zones+HQ mults, OK/OM DX 2/3/5 +
+  counties+countries, EUHFC 1 + years per band, WAE 1 + call-area mults
+  weighted ×4/×3/×2 (QTCs deferred — a documented underestimate), CVA
+  2/3/4 + PY states+countries, YO DX 8/1/2/4 + counties+countries.
+  SARTG carries points only — its multiplier wording is genuinely
+  ambiguous and an ambiguity is not encoded. Engine scorer
+  (`logfl_contest_score`) walks the contest chronologically: dupes
+  (call+band+mode) score 0 and bring nothing, validity applies
+  (CQ WW's 0-point own country still brings its multipliers), mult
+  sources are namespaced (a YO county "CT" never collides with
+  Portugal's prefix — caught against the real YO DX log). UI: live
+  "pts × mult = total" in the contest subtitle, Pts/Mult table columns
+  (computed, not editable, shown only while a rule runs — Mult shows
+  what the QSO brought first), CLAIMED-SCORE prefilled in the Cabrillo
+  dialog (editable, never persisted). The startup backfill gives
+  contests created before LOG-3 the preset rule their ADIF id implies —
+  never overriding a def that names points/mult itself. Gate:
+  /contest/score/* incl. the real-log collision case; verified against
+  the live YO DX HF log (107 QSO → 307 pts × 49 mult = 15043).
 - **WAE QTC traffic. DEFERRED (Richard's call, 2026-08-04).** A QTC is the
   report of a prior contest QSO back to a European station (DARC WAE rules
   §7): DX stations transmit numbered series ("QTC 3/7") of time/call/serial

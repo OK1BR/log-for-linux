@@ -37,24 +37,36 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 
 ## Open — ideas
 
-### LOG-3 — Contest score and multipliers, mult visible per QSO
-- **Type:** idea · **Severity:** — · **Status:** open
-- **Source:** Richard 2026-08-08 (`SCOPE.md:387`), re-raised live 2026-08-22
-- **Detail:** `docs/CONTEST-NOTES-2026-08-22.md` §2
-
-`SCOPE.md:387` already carries the IDEA: live claimed score, Cabrillo
-`CLAIMED-SCORE`, per-contest QSO points, multiplier tracking per band. Live
-operation added two things to it: the priority (score is counted by hand today)
-and a new requirement — seeing **on the QSO row** that it brought a new
-multiplier, which the IDEA does not cover. Needs a machine-readable points rule
-in `exch_def` (today YO DX's 8/4/2/1 structure exists only as a comment at
-`contest.c:465`) and a new `COL_*` column.
+(none)
 
 ## Open — debt
 
 (none)
 
 ## Done
+
+### LOG-3 — Contest score and multipliers, mult visible per QSO
+- **Type:** idea · **Severity:** — · **Status:** done 2026-08-28
+- **Source:** Richard 2026-08-08 (SCOPE IDEA), re-raised live 2026-08-22
+- **Detail:** `docs/CONTEST-NOTES-2026-08-22.md` §2; full write-up now in
+  SCOPE's "Contest score calculation" entry
+
+Implemented as machine-readable `points=` / `mult=` rules in the contest's
+exch_def + an engine scorer (`logfl_contest_score`), with every preset rule
+re-verified 2026-08-28 from the sponsors' official rules (three parallel
+research passes with verbatim quotes; SARTG ships points-only because its
+multiplier wording is ambiguous, WAE scores without the deferred QTCs).
+UI: live "pts × mult = total" in the contest subtitle, computed Pts/Mult
+table columns (Mult shows what the QSO brought first — the requirement live
+operation added), CLAIMED-SCORE prefilled in the Cabrillo dialog, startup
+backfill for existing contests. Gate: 10 new /contest/score/* cases against
+the bundled cty.dat, including a mult-namespace collision (YO county CT vs
+Portugal's prefix) caught by running the scorer on the real YO DX log —
+which scores 107 QSO → 307 pts × 49 mult = 15043.
+
+**Live checks pending:** subtitle + Pts/Mult columns and Cabrillo claimed
+score over the real DB after restart (the backfill writes the rules on
+first start); Richard's own hand-counted YO DX score vs the 15043 estimate.
 
 ### LOG-5 — SCOPE's Cabrillo section no longer matches the code
 - **Type:** debt · **Severity:** low · **Status:** done 2026-08-28
@@ -132,7 +144,7 @@ Live check of the dialog still pending.
 Milestones and their order live in `docs/SCOPE.md`; `docs/M3-CHECKLIST.md` is
 the manual UI gate. This section only records what is next in practice:
 
-1. **LOG-3** — the first feature-sized piece of work, scoped in SCOPE.md:387.
-
-Done 2026-08-28: **LOG-2**, **LOG-1** and **LOG-5** (the live checks at the
-radio are listed in the Done entries and ride along with the RTTY §7.3 pass).
+The queue is empty — everything from YO DX HF (LOG-1…LOG-5) is done as of
+2026-08-28. What remains is live verification at the machine/radio: the
+checklists in the Done entries (LOG-2 spot behavior, LOG-3 score UI, LOG-4
+export dialog) and the RTTY §7.3 pass.

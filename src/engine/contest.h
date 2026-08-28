@@ -61,11 +61,60 @@ typedef enum {
   LOGFL_COUNTS_EU_ONLY,
 } LogflExchCounts;
 
+/* --- scoring rules (LOG-3, 2026-08-28) -----------------------------------
+ * Every encoded preset value was verified against the sponsor's official
+ * rules on 2026-08-28 (sources at each preset, house rule: never encode
+ * unverified). The claimed score is an ESTIMATE from my seat — the
+ * sponsor's robot rescoring is the authority. */
+
+/* One points-rule term. An ordered list, first match wins, judged from my
+ * seat via the cty resolver. */
+typedef enum {
+  LOGFL_PTS_COUNTRY,           /* their DXCC primary prefix equals arg */
+  LOGFL_PTS_OWN_COUNTRY,       /* same DXCC entity as mine */
+  LOGFL_PTS_SAME_CONT,
+  LOGFL_PTS_OTHER_CONT,
+  LOGFL_PTS_SAME_ZONE,         /* same ITU zone; theirs from the received
+                                  exchange when numeric, cty fallback */
+  LOGFL_PTS_EXCH_TEXT,         /* received exchange is text, not a number
+                                  (IARU HQ/official stations) */
+  LOGFL_PTS_DEFAULT,           /* always matches */
+} LogflPtsKind;
+
+typedef struct {
+  LogflPtsKind kind;
+  char *arg;                   /* COUNTRY: the prefix ("YO"); else NULL */
+  int points;                  /* 20 m and shorter */
+  int points_low;              /* 160/80/40 m (== points unless "N/L") */
+} LogflPtsTerm;
+
+/* Multiplier sources — OR-able, each new value = one multiplier. */
+typedef enum {
+  LOGFL_MULT_COUNTRY       = 1 << 0, /* DXCC/WAE entity (cty prefix) */
+  LOGFL_MULT_COUNTRY_AREAS = 1 << 1, /* … with numerical call areas split in
+                                        W VE VK ZL ZS JA BY PY RA8/9/0
+                                        (WAE DX rules §6) */
+  LOGFL_MULT_CQZONE        = 1 << 2, /* CQ zone (exchange, cty fallback) */
+  LOGFL_MULT_ZONE          = 1 << 3, /* ITU zone (exchange, cty fallback) */
+  LOGFL_MULT_EXCH          = 1 << 4, /* received exchange text, digits too
+                                        (EUHFC years, YO counties) */
+  LOGFL_MULT_EXCH_TEXT     = 1 << 5, /* … non-numeric only (IARU HQ) */
+  LOGFL_MULT_PREFIX        = 1 << 6, /* WPX prefix of the call */
+} LogflMultSource;
+
 typedef struct {
   gboolean tx_serial;          /* sent exchange includes an auto serial */
   GPtrArray *fields;           /* received exchange, LogflExchField* */
   LogflExchCounts counts;      /* which QSOs are valid at all */
   gboolean zero_own_country;   /* valid but 0 points (CQ WW own country) */
+  GArray *points;              /* LogflPtsTerm, ordered; NULL = no rule */
+  guint mult;                  /* LogflMultSource mask; 0 = no rule */
+  char *mult_exch_from;        /* EXCH counts only from this DXCC prefix
+                                  (CVA: PY states; NULL = from anyone) */
+  gboolean mult_per_contest;   /* mults once per contest (WPX prefixes),
+                                  not once per band */
+  GHashTable *mult_weight;     /* band ("80m") → weight int; NULL = ×1
+                                  everywhere (WAE band bonus) */
 } LogflExchDef;
 
 /* Serialized form is GKeyFile text:
@@ -74,13 +123,25 @@ typedef struct {
  *   fields=nr;
  *   counts=eu-dx           # all|eu-dx|eu-only, missing = all
  *   zero_own_country=false
+ *   points=country:YO=8;own-country=1;same-cont=2;other-cont=4;
+ *                          # ordered, first match wins; N/L = low-band
+ *                          # (160/80/40) override, e.g. other-cont=3/6
+ *   mult=exch:YO+country   # country|country-areas|cqzone|zone|exch[:PFX]|
+ *                          # exch-text|prefix, joined with +
+ *   mult_scope=contest     # band (default) | contest
+ *   mult_weight=80m:4;40m:3;20m:2;15m:2;10m:2   # WAE band bonus
  *   [field:nr]
  *   label=Nr
  *   type=serial            # serial|number|text|auto
  *   adif_num=SRX           # defaults: SRX / SRX_STRING when omitted
  *   adif_text=SRX_STRING
  *   required=true
- */
+ * An unknown points term or mult source fails the parse loudly, like an
+ * unknown counts= rule — a build must never silently score wrong. NB the
+ * round-trip asymmetry: this build carries points/mult through
+ * parse→serialize, but an older build editing the contest drops them on
+ * reserialize (same as counts= before it existed) — the failure mode is
+ * the score display disappearing, never wrong data. */
 LogflExchDef *logfl_exch_def_parse     (const char *text, GError **error);
 char         *logfl_exch_def_serialize (const LogflExchDef *def);
 void          logfl_exch_def_free      (LogflExchDef *def);
@@ -115,11 +176,51 @@ LogflQsoValidity logfl_contest_qso_validity (const LogflExchDef *def,
 /* One-time repair for contests created before validity rules existed: a
  * stored exch_def carrying neither counts nor zero_own_country gets the
  * rule its ADIF id implies (DARC-WAEDC* → eu-dx, EU-HF → eu-only,
- * CQ-WW* → zero_own_country) written back to the store. Defs that name
- * either key — including an explicit counts=all — are left alone, so an
+ * CQ-WW* → zero_own_country) written back to the store. Since LOG-3 the
+ * same pass also backfills points=/mult= for contests whose ADIF id maps
+ * to a preset scoring rule and whose def names neither key. Defs that
+ * name a key — including an explicit counts=all — are left alone, so an
  * operator's own edit is never overridden. Returns how many contests were
  * updated; on a store error returns what was done and sets error. */
 guint logfl_contest_backfill_validity (LogflStore *s, GError **error);
+
+/* --- scoring ------------------------------------------------------------ */
+
+/* Per-QSO score annotation. */
+typedef struct {
+  int points;
+  char *mult;                  /* space-joined labels of the multipliers
+                                  this QSO brought first; NULL = none */
+} LogflQsoScore;
+
+typedef struct {
+  gboolean have_points;        /* def carries points= */
+  gboolean have_mult;          /* def carries mult= */
+  gint64 points;               /* QSO points over the whole contest */
+  gint64 mults;                /* multipliers, band-weighted (WAE) */
+  gint64 total;                /* points × mults; just points w/o mult= */
+} LogflContestTotals;
+
+/* Scores one contest's QSOs from my seat. qsos is the logfl_store_list
+ * result (ts DESC, id DESC) — walked oldest-first internally. Dupes (same
+ * call+band+mode as an earlier QSO) score 0 and bring no multiplier;
+ * validity applies (NOT_VALID = nothing, ZERO_POINTS = 0 points but the
+ * multiplier still counts — CQ WW own country). Returns a qso-id →
+ * LogflQsoScore* table (free with g_hash_table_unref) and fills totals;
+ * NULL (totals zeroed) when the def carries no rule, or when my own call
+ * is missing or unresolved — an estimate from an unknown seat would be a
+ * guess, not a score. */
+GHashTable *logfl_contest_score (const LogflExchDef *def,
+                                 LogflCty *cty, const char *my_call,
+                                 const GPtrArray *qsos,
+                                 LogflContestTotals *totals);
+
+/* WPX prefix of a call (cqwpx.com/rules §V.C, the common cases): up to and
+ * including the last digit ("OK1BR"→"OK1", "LY1000XX"→"LY1000"); no digit →
+ * first two characters + "0" ("XEFTJW"→"XE0"); a portable designator
+ * becomes the prefix — lettered one directly ("PA/N8BJQ"→"PA0"), digit one
+ * swaps the call area ("K5DJ/1"→"K1"). /P /M /MM /AM /QRP are ignored. */
+char *logfl_wpx_prefix (const char *call);
 
 /* Built-in presets: name + ADIF CONTEST_ID prefill + serialized definition.
  * A new contest copies (and may edit) the definition — the preset list is a

@@ -47,7 +47,8 @@ static const char *modes[] = { "CW", "SSB", "FT8", "FT4", "RTTY", "PSK31",
                                "FM", "AM", NULL };
 
 enum { COL_UTC, COL_CALL, COL_BAND, COL_FREQ, COL_MODE, COL_RST_S,
-       COL_RST_R, COL_NAME, COL_COMMENT, COL_STX, COL_EXCH };
+       COL_RST_R, COL_NAME, COL_COMMENT, COL_STX, COL_EXCH,
+       COL_PTS, COL_MULT };     /* computed (LOG-3) — never editable */
 
 struct _LogflWindow {
   AdwApplicationWindow parent_instance;
@@ -108,6 +109,9 @@ struct _LogflWindow {
                                 * serial (or static exchange) — editable */
   GtkWidget *contest_btn;      /* header switcher (menu button) */
   GtkColumnViewColumn *col_stx, *col_exch; /* contest-only table columns */
+  GtkColumnViewColumn *col_pts, *col_mult; /* shown when a score rule runs */
+  LogflContestTotals score;    /* cached by rescore() for the subtitle */
+  gboolean score_valid;        /* score holds a real estimate */
   GtkColumnViewColumn *col_name, *col_comment; /* hidden while in contest */
   guint next_serial;           /* next sent serial (0 = no serial contest) */
   gint64 pending_contest_delete; /* contest id in the open delete confirm */
@@ -120,6 +124,8 @@ static void dup_notify (LogflWindow *self, const char *call,
                         const char *band, const char *mode);
 static void entry_reset_defaults (LogflWindow *self);
 static void clear_entry_row (LogflWindow *self);
+static void rescore (LogflWindow *self);
+static void score_repaint_visible (LogflWindow *self);
 static GtkWidget *labeled (const char *caption, GtkWidget *child);
 static void contest_ui_refresh (LogflWindow *self);
 static void refresh_serial (LogflWindow *self);
@@ -261,8 +267,26 @@ update_subtitle (LogflWindow *self)
     {
       if (logfl_store_contest_stats (self->store, self->contest->id, &st,
                                      NULL))
-        sub = g_strdup_printf ("%s — %u QSO · %u calls",
-                               self->contest->name, st.n_qso, st.n_calls);
+        {
+          /* Live claimed score (LOG-3) — an estimate; the robot's
+           * rescoring is the authority. */
+          if (self->score_valid && self->score.have_points
+              && self->score.have_mult)
+            sub = g_strdup_printf (
+                "%s — %u QSO · %u calls · %" G_GINT64_FORMAT " pts × %"
+                G_GINT64_FORMAT " mult = %" G_GINT64_FORMAT,
+                self->contest->name, st.n_qso, st.n_calls,
+                self->score.points, self->score.mults, self->score.total);
+          else if (self->score_valid && self->score.have_points)
+            sub = g_strdup_printf (
+                "%s — %u QSO · %u calls · %" G_GINT64_FORMAT " pts",
+                self->contest->name, st.n_qso, st.n_calls,
+                self->score.points);
+          else
+            sub = g_strdup_printf ("%s — %u QSO · %u calls",
+                                   self->contest->name, st.n_qso,
+                                   st.n_calls);
+        }
     }
   else if (logfl_store_stats (self->store, &st, NULL))
     sub = g_strdup_printf ("%u QSO · %u calls", st.n_qso, st.n_calls);
@@ -271,6 +295,55 @@ update_subtitle (LogflWindow *self)
       adw_window_title_set_subtitle (self->title, sub);
       g_free (sub);
     }
+}
+
+/* Recompute the contest score: totals for the subtitle plus per-row
+ * Pts/Mult annotations. Always over the FULL contest list — the visible
+ * rows may be a search-filtered subset, and multiplier chronology must
+ * not depend on what the filter shows. Cheap enough to run on every
+ * reload (one query + one pass over the contest's QSOs). */
+static void
+rescore (LogflWindow *self)
+{
+  self->score_valid = FALSE;
+  memset (&self->score, 0, sizeof self->score);
+
+  GHashTable *scores = NULL;
+  if (self->store && self->contest && self->exch_def && self->cty)
+    {
+      LogflStoreQuery q = { .contest = self->contest->id };
+      GPtrArray *list = logfl_store_list (self->store, &q, NULL);
+      if (list)
+        {
+          scores = logfl_contest_score (self->exch_def, self->cty,
+                                        self->settings.station_callsign,
+                                        list, &self->score);
+          g_ptr_array_unref (list);
+        }
+    }
+  self->score_valid = scores != NULL;
+
+  guint n = self->rows
+              ? g_list_model_get_n_items (G_LIST_MODEL (self->rows)) : 0;
+  for (guint i = 0; i < n; i++)
+    {
+      LogflQsoRow *row =
+        g_list_model_get_item (G_LIST_MODEL (self->rows), i);
+      const LogflQso *q = logfl_qso_row_qso (row);
+      const LogflQsoScore *sc =
+        scores && q ? g_hash_table_lookup (scores, &q->id) : NULL;
+      if (sc)
+        logfl_qso_row_set_score (row, sc->points, sc->mult);
+      else
+        logfl_qso_row_clear_score (row);
+      g_object_unref (row);
+    }
+  g_clear_pointer (&scores, g_hash_table_unref);
+
+  if (self->col_pts)
+    gtk_column_view_column_set_visible (self->col_pts, self->score_valid);
+  if (self->col_mult)
+    gtk_column_view_column_set_visible (self->col_mult, self->score_valid);
 }
 
 static void
@@ -310,6 +383,7 @@ reload (LogflWindow *self)
     }
   g_ptr_array_unref (list);
 
+  rescore (self);              /* annotate rows before they bind */
   update_subtitle (self);
 }
 
@@ -2957,6 +3031,15 @@ contest_ui_refresh (LogflWindow *self)
   if (self->col_comment)
     gtk_column_view_column_set_visible (self->col_comment,
                                         self->contest == NULL);
+  /* Pts/Mult show only while a score rule runs — rescore() flips them on;
+   * here just make sure leaving a contest hides them. */
+  if (!self->contest)
+    {
+      if (self->col_pts)
+        gtk_column_view_column_set_visible (self->col_pts, FALSE);
+      if (self->col_mult)
+        gtk_column_view_column_set_visible (self->col_mult, FALSE);
+    }
   update_wb4 (self);
 }
 
@@ -3739,6 +3822,7 @@ typedef struct {
   char *contest, *callsign;
   char *op, *band, *mode, *power, *tx, *assisted;
   char *name, *email, *location, *club, *grid;
+  char *claimed;               /* CLAIMED-SCORE text; empty = omit */
 } CabExport;
 
 /* The CATEGORY-* tags take only the values the Cabrillo v3 spec lists
@@ -3775,6 +3859,7 @@ cab_export_free (CabExport *ce)
   g_free (ce->location);
   g_free (ce->club);
   g_free (ce->grid);
+  g_free (ce->claimed);
   g_free (ce);
 }
 
@@ -3809,6 +3894,7 @@ on_cabrillo_file_ready (GObject *source, GAsyncResult *res,
     .cat_mode = ce->mode,
     .cat_transmitter = ce->tx,
     .cat_assisted = ce->assisted,
+    .claimed_score = ce->claimed,
     .name = ce->name,
     .email = ce->email,
     .location = ce->location,
@@ -3851,6 +3937,7 @@ typedef struct {
   GtkWidget *op_row, *band_row, *mode_row, *power_row, *tx_row,
             *assisted_row;
   GtkWidget *name_row, *email_row, *loc_row, *club_row;
+  GtkWidget *score_row;        /* CLAIMED-SCORE, prefilled estimate */
 } CabDialog;
 
 /* Combo over a fixed Cabrillo value list, preselected on the persisted
@@ -3956,6 +4043,10 @@ on_cab_dialog_export (GtkButton *btn, gpointer user_data)
   ce->location = g_strdup (st->cab_location);
   ce->club = g_strdup (st->cab_club);
   ce->grid = g_strdup (st->station_grid);
+  /* Claimed score is per-contest, derived — taken from the row, never
+   * persisted in settings (LOG-4 taught where remembering leads). */
+  ce->claimed = g_strstrip (
+      g_strdup (gtk_editable_get_text (GTK_EDITABLE (cd->score_row))));
   adw_dialog_close (cd->dlg);
 
   GtkFileDialog *fd = gtk_file_dialog_new ();
@@ -4069,6 +4160,19 @@ act_cabrillo (GSimpleAction *action, GVariant *param, gpointer user_data)
                           self->settings.cab_transmitter);
   cd->assisted_row = cab_combo (cg, "Assisted", CAB_ASSISTED_VALUES,
                                 self->settings.cab_assisted);
+  /* CLAIMED-SCORE prefilled from the live estimate when the active
+   * contest carries a full points+mult rule; editable, empty = omit. */
+  {
+    char *claimed = NULL;
+    if (self->score_valid && self->score.have_points
+        && self->score.have_mult)
+      claimed = g_strdup_printf ("%" G_GINT64_FORMAT, self->score.total);
+    cd->score_row = cab_row (cg, "Claimed score", claimed);
+    if (claimed)
+      adw_action_row_set_subtitle (ADW_ACTION_ROW (cd->score_row),
+                                   "Estimated from the logged QSOs");
+    g_free (claimed);
+  }
   adw_preferences_page_add (page, cg);
 
   AdwPreferencesGroup *og = ADW_PREFERENCES_GROUP (g_object_new (
@@ -4159,6 +4263,21 @@ static char *
 cell_edit_text (int col, const LogflQso *q)
 {
   return cell_display_text (col, q);
+}
+
+/* Row-aware display text: the score columns read the row's transient
+ * Pts/Mult annotation (rescore), everything else the stored QSO. */
+static char *
+cell_display_text_row (int col, LogflQsoRow *row)
+{
+  if (col == COL_PTS)
+    return logfl_qso_row_scored (row)
+             ? g_strdup_printf ("%d", logfl_qso_row_points (row))
+             : g_strdup ("");
+  if (col == COL_MULT)
+    return g_strdup (logfl_qso_row_mult (row)
+                       ? logfl_qso_row_mult (row) : "");
+  return cell_display_text (col, logfl_qso_row_qso (row));
 }
 
 /* Exchange cell text → serial + uppercased text remainder. WYSIWYG but
@@ -4440,6 +4559,10 @@ commit_cell_edit (LogflWindow *self, LogflQsoRow *row, int col,
   if (out_changed)
     *out_changed = TRUE;
 
+  /* Rescore before the subtitle paints, and repaint every visible Pts/Mult
+   * cell — the edit may have moved a multiplier to a different QSO. */
+  rescore (self);
+  score_repaint_visible (self);
   update_subtitle (self);
   /* Editing the highest sent serial moves the next-serial prefill. */
   refresh_serial (self);
@@ -4502,7 +4625,7 @@ cell_repaint_from_row (GtkWidget *box)
   if (!row || cell_is_editing (box))
     return;
   int col = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (box), "logfl-col"));
-  char *txt = cell_display_text (col, logfl_qso_row_qso (row));
+  char *txt = cell_display_text_row (col, row);
   cell_set_display (box, txt);
   g_free (txt);
 }
@@ -4525,6 +4648,33 @@ row_repaint_siblings (GtkWidget *box)
       if (b && cell_label (b))
         cell_repaint_from_row (b);
     }
+}
+
+/* Repaint the Pts/Mult cells of every visible row straight from the row
+ * annotations — an edit can move a multiplier to a different QSO, so the
+ * edited row's siblings are not enough. Same defensive widget walk as
+ * row_repaint_siblings: a GTK layout change degrades to repainting
+ * nothing, never to a crash. */
+static void
+score_repaint_visible (LogflWindow *self)
+{
+  if (!self->table_view)
+    return;
+  for (GtkWidget *lv = gtk_widget_get_first_child (self->table_view);
+       lv != NULL; lv = gtk_widget_get_next_sibling (lv))
+    for (GtkWidget *rw = gtk_widget_get_first_child (lv); rw != NULL;
+         rw = gtk_widget_get_next_sibling (rw))
+      for (GtkWidget *c = gtk_widget_get_first_child (rw); c != NULL;
+           c = gtk_widget_get_next_sibling (c))
+        {
+          GtkWidget *b = gtk_widget_get_first_child (c);
+          if (!b || !cell_label (b))
+            continue;
+          int col =
+            GPOINTER_TO_INT (g_object_get_data (G_OBJECT (b), "logfl-col"));
+          if (col == COL_PTS || col == COL_MULT)
+            cell_repaint_from_row (b);
+        }
 }
 
 static void
@@ -4557,7 +4707,7 @@ cell_end_edit (GtkWidget *box, gboolean commit)
    * swap entry → label. Do not wait for list items-changed / rebind. */
   if (row)
     {
-      char *txt = cell_display_text (col, logfl_qso_row_qso (row));
+      char *txt = cell_display_text_row (col, row);
       cell_set_display (box, txt);
       g_free (txt);
     }
@@ -4664,6 +4814,10 @@ on_cell_click (GtkGestureClick *gesture, gint n_press, gdouble x, gdouble y,
     return;
   if (cell_is_editing (box))
     return;
+  /* Pts/Mult are computed — there is nothing to edit in them. */
+  int col = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (box), "logfl-col"));
+  if (col == COL_PTS || col == COL_MULT)
+    return;
   gtk_gesture_set_state (GTK_GESTURE (gesture), GTK_EVENT_SEQUENCE_CLAIMED);
   cell_begin_edit (box);
 }
@@ -4755,7 +4909,7 @@ col_bind (GtkSignalListItemFactory *factory, GObject *object,
   if (cell_is_editing (box))
     return;
 
-  char *txt = cell_display_text (col, logfl_qso_row_qso (row));
+  char *txt = cell_display_text_row (col, row);
   cell_set_display (box, txt);
   g_free (txt);
 }
@@ -4949,6 +5103,8 @@ logfl_window_dispose (GObject *obj)
   self->contest_btn = NULL;
   self->col_stx = NULL;
   self->col_exch = NULL;
+  self->col_pts = NULL;
+  self->col_mult = NULL;
   self->col_name = NULL;
   self->col_comment = NULL;
   g_clear_pointer (&self->contest, logfl_contest_free);
@@ -5076,8 +5232,14 @@ build_qso_table (LogflWindow *self)
                               72, FALSE, self);
   self->col_exch = add_column (GTK_COLUMN_VIEW (view), "Rcvd", COL_EXCH,
                                96, FALSE, self);
+  self->col_pts = add_column (GTK_COLUMN_VIEW (view), "Pts", COL_PTS,
+                              56, FALSE, self);
+  self->col_mult = add_column (GTK_COLUMN_VIEW (view), "Mult", COL_MULT,
+                               72, FALSE, self);
   gtk_column_view_column_set_visible (self->col_stx, FALSE);
   gtk_column_view_column_set_visible (self->col_exch, FALSE);
+  gtk_column_view_column_set_visible (self->col_pts, FALSE);
+  gtk_column_view_column_set_visible (self->col_mult, FALSE);
   self->col_name = add_column (GTK_COLUMN_VIEW (view), "Name", COL_NAME,
                                120, TRUE, self);
   self->col_comment = add_column (GTK_COLUMN_VIEW (view), "Comment",

@@ -112,14 +112,16 @@ log_dupq_test = executable('log-dupq-test',
 )
 test('dupq', log_dupq_test, timeout : 30)
 
-# M9: contests — exchange templates, v1→v2 migration, scoping, delete, ADIF.
+# M9: contests — exchange templates, v1→v2 migration, scoping, delete, ADIF;
+# LOG-3 scoring runs against the bundled cty.dat like the cty gate does.
 log_contest_test = executable('log-contest-test',
   ['src/contest_test.c'],
   include_directories : engine_inc,
   dependencies : engine_deps,
   link_with : engine_lib,
 )
-test('contest', log_contest_test, timeout : 30)
+test('contest', log_contest_test, timeout : 30,
+  args : [meson.current_source_dir() / 'data' / 'cty.dat'])
 
 # M9: Cabrillo — header tags, QSO line shape, ordering, freq/mode mapping.
 log_cabrillo_test = executable('log-cabrillo-test',
