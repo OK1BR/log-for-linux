@@ -33,18 +33,7 @@ that leaves the machine wrong; `medium` = gets in the operator's way;
 
 ## Open — bugs
 
-### LOG-1 — Exchange fields do not upper-case while typing
-- **Type:** bug · **Severity:** medium · **Status:** open
-- **Source:** Richard, live, YO DX HF 2026-08-22
-- **Detail:** `docs/CONTEST-NOTES-2026-08-22.md` §1
-
-Stored data is fine (`logfl_exch_apply()` upper-cases on the way in, verified
-against the real YO DX log and both exports); what the operator sees mid-QSO is
-not. `entry_force_upper()` (`win.c:241`) is attached to the Call entry and to
-the Call column of the cell editor only. The exchange rows (`win.c:2837`) and
-the Sent serial (`win.c:2830`) are plain `mk_entry()`. The reasoning already
-written down for the callsign at `win.c:214` applies verbatim: in a contest the
-field is typed blind, with Caps Lock in an unknown state.
+(none)
 
 ## Open — ideas
 
@@ -72,6 +61,22 @@ settings.ini `[cabrillo]`". Since LOG-4 that is only true for Operator, Power,
 Transmitter and Assisted — Band and Mode are derived from the logged QSOs.
 
 ## Done
+
+### LOG-1 — Exchange fields do not upper-case while typing
+- **Type:** bug · **Severity:** medium · **Status:** done 2026-08-28
+- **Source:** Richard, live, YO DX HF 2026-08-22
+- **Detail:** `docs/CONTEST-NOTES-2026-08-22.md` §1
+
+Stored data was always fine (`logfl_exch_apply()` and `parse_exch_cell()`
+upper-case on the way in, verified against the real YO DX log and both
+exports); what the operator saw mid-QSO was not. Fixed by attaching
+`entry_force_upper()` to the same fields the store normalizes: the exchange
+entries and Sent in the entry row (`rebuild_exch_fields()`), and the
+Sent/Rcvd columns of the table cell editor next to the existing Call one.
+No per-field-type branching — `g_utf8_strup` is a no-op on digits, so
+serial-only fields are unaffected. Gate: build + `meson test` 10/10 (UI
+path). Live check: typing `bu` into Nr/County must show `BU`; serial
+prefill and the row clear after logging must keep working.
 
 ### LOG-2 — Exchange from the previous station survives a spot switch
 - **Type:** bug · **Severity:** high · **Status:** done 2026-08-28, committed `935a07d`
@@ -124,8 +129,8 @@ Live check of the dialog still pending.
 Milestones and their order live in `docs/SCOPE.md`; `docs/M3-CHECKLIST.md` is
 the manual UI gate. This section only records what is next in practice:
 
-1. **LOG-1** — two lines, immediately visible every contest.
-2. **LOG-3** — the first feature-sized piece of work, scoped in SCOPE.md:387.
+1. **LOG-3** — the first feature-sized piece of work, scoped in SCOPE.md:387.
+2. **LOG-5** — a few sentences in SCOPE, fallout of LOG-4.
 
-Done 2026-08-28: **LOG-2** (its live checks at the radio are listed in the
-Done entry and ride along with the RTTY §7.3 pass).
+Done 2026-08-28: **LOG-2** and **LOG-1** (their live checks at the radio are
+listed in the Done entries and ride along with the RTTY §7.3 pass).

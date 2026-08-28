@@ -2858,6 +2858,7 @@ rebuild_exch_fields (LogflWindow *self)
    * without one. Prefilled but editable — a mis-sent number can be fixed
    * before logging; the prefill refreshes after every logged QSO. */
   self->serial_value = mk_entry (self, 6, NULL);
+  entry_force_upper (self->serial_value);
   g_signal_connect_swapped (self->serial_value, "changed",
                             G_CALLBACK (on_row_edited_drop_spot), self);
   gtk_widget_add_css_class (self->serial_value, "numeric");
@@ -2867,6 +2868,10 @@ rebuild_exch_fields (LogflWindow *self)
     {
       const LogflExchField *f = self->exch_def->fields->pdata[i];
       GtkWidget *e = mk_entry (self, 7, NULL);
+      /* Same reasoning as Call (win.c: on_upper_insert_text): the exchange
+       * is typed blind mid-QSO, Caps Lock unknown; the store upper-cases on
+       * log, this shows what will actually go out. No-op on digits. */
+      entry_force_upper (e);
       g_signal_connect_swapped (e, "changed",
                                 G_CALLBACK (on_row_edited_drop_spot), self);
       if (f->required)
@@ -4691,7 +4696,10 @@ col_setup (GtkSignalListItemFactory *factory, GObject *object,
   gtk_entry_set_has_frame (GTK_ENTRY (entry), FALSE);
   gtk_widget_add_css_class (entry, "flat");
   gtk_widget_add_css_class (entry, "logfl-cell-edit");
-  if (col == COL_CALL)
+  /* Same fields that force upper case in the entry row: the call and the
+   * contest exchange (Sent/Rcvd). parse_exch_cell already stores them
+   * upper — this makes the editor show what will be kept. */
+  if (col == COL_CALL || col == COL_STX || col == COL_EXCH)
     entry_force_upper (entry);
 
   gtk_box_append (GTK_BOX (box), label);
