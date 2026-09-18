@@ -1,0 +1,23 @@
+media-playlist-consecutive-symbolic.svg, edit-find-symbolic.svg —
+Adwaita icon theme by the GNOME Project (https://www.gnome.org)
+Source:   https://gitlab.gnome.org/GNOME/adwaita-icon-theme
+          Adwaita/symbolic/status/media-playlist-consecutive-symbolic.svg
+          Adwaita/symbolic/actions/edit-find-symbolic.svg
+Snapshot: tag 50.0, both files copied unmodified
+
+License (COPYING in the source tree at tag 50.0):
+
+This work is licenced under the terms of either the GNU LGPL v3 or
+Creative Commons Attribution-Share Alike 3.0 United States License.
+
+To view a copy of the CC-BY-SA licence, visit
+http://creativecommons.org/licenses/by-sa/3.0/ or send a letter to Creative
+Commons, 171 Second Street, Suite 300, San Francisco, California 94105, USA.
+
+When attributing the artwork, using "GNOME Project" is enough.
+Please link to http://www.gnome.org where available.
+
+log-for-linux takes the GNU LGPL v3 option: the FSF licence list
+(https://www.gnu.org/licenses/license-list.html) names LGPLv3 as compatible
+with GPLv3, the licence of the app. The LGPL text is COPYING.LGPL-3 next to
+this file; the GNU GPL v3 it builds on is LICENSE at the top of the tree.

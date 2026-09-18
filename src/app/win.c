@@ -1537,7 +1537,11 @@ refresh_bank_btn (LogflWindow *self)
   if (!self->bank_btn)
     return;
   gboolean snp = self->settings.macro_bank == LOGFL_MACRO_BANK_SNP;
-  /* Run = continuous CQ; S&P = search for stations. */
+  /* Run = continuous CQ; S&P = search for stations. Both glyphs are also
+   * compiled into the binary (data/log-for-linux.gresource.xml): libgtk
+   * bundles no Run glyph, and with an icon theme chain that ends at hicolor
+   * the button — the only at-a-glance sign of the active bank — would show
+   * image-missing. */
   gtk_button_set_icon_name (GTK_BUTTON (self->bank_btn),
                             snp ? "edit-find-symbolic"
                                 : "media-playlist-consecutive-symbolic");

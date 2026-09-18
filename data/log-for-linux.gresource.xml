@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <!-- The two glyphs of the Run/S&P header button, compiled into the binary.
+       The button is the only at-a-glance sign of which bank the F-keys fire,
+       so it must not depend on what the desktop icon theme carries: libgtk
+       bundles no Run glyph, and when the configured theme cannot be loaded
+       the chain ends at hicolor and the button shows image-missing.
+       GtkApplication adds <resource base path>/icons to the icon theme by
+       itself and GTK treats it as part of hicolor — a theme that has the
+       names still wins, these are only the last resort. Stock Adwaita files
+       under their stock names; licence in icons/LICENSE. -->
+  <gresource prefix="/cz/ok1br/log_for_linux/icons/scalable/actions">
+    <file alias="media-playlist-consecutive-symbolic.svg">icons/media-playlist-consecutive-symbolic.svg</file>
+    <file alias="edit-find-symbolic.svg">icons/edit-find-symbolic.svg</file>
+  </gresource>
+</gresources>

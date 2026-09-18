@@ -10,7 +10,7 @@ project('log-for-linux', 'c',
 
 add_project_arguments('-D_GNU_SOURCE', language : 'c')
 
-gnome = import('gnome')  # used in data/ for post-install icon/desktop DB refresh
+gnome = import('gnome')  # app gresource; data/ post-install icon/desktop DB refresh
 add_project_arguments('-DLOGFL_VERSION="@0@"'.format(meson.project_version()),
                       language : 'c')
 
@@ -144,8 +144,14 @@ test('cty', log_cty_test, timeout : 30,
   args : [meson.current_source_dir() / 'data' / 'cty.dat'])
 
 # --- App --------------------------------------------------------------------
+# The Run/S&P header button's two glyphs, compiled into the binary so they
+# resolve whatever icon theme the desktop has (or fails to load).
+logfl_res = gnome.compile_resources('logfl-resources',
+  'data/log-for-linux.gresource.xml', source_dir : 'data', c_name : 'logfl')
+
 executable('log-for-linux',
   [
+    logfl_res,
     'src/app/main.c',
     'src/app/win.c',        # M3 UI + M4 TCI + M5 macros + M6 WSJT-X
     'src/app/qso_row.c',    # M3: GObject row wrapper for GtkColumnView
