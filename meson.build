@@ -144,8 +144,8 @@ test('cty', log_cty_test, timeout : 30,
   args : [meson.current_source_dir() / 'data' / 'cty.dat'])
 
 # --- App --------------------------------------------------------------------
-# The Run/S&P header button's two glyphs, compiled into the binary so they
-# resolve whatever icon theme the desktop has (or fails to load).
+# Every icon name the app uses, compiled into the binary so it resolves
+# whatever icon theme the desktop has (or fails to load).
 logfl_res = gnome.compile_resources('logfl-resources',
   'data/log-for-linux.gresource.xml', source_dir : 'data', c_name : 'logfl')
 

@@ -1,16 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
-  <!-- The two glyphs of the Run/S&P header button, compiled into the binary.
-       The button is the only at-a-glance sign of which bank the F-keys fire,
-       so it must not depend on what the desktop icon theme carries: libgtk
-       bundles no Run glyph, and when the configured theme cannot be loaded
-       the chain ends at hicolor and the button shows image-missing.
+  <!-- Every icon name the app uses, compiled into the binary, so none of them
+       depends on what the desktop icon theme carries. When the configured
+       theme cannot be loaded the chain ends at hicolor: the Run/S&P button,
+       the only at-a-glance sign of which bank the F-keys fire, and the
+       Preferences page icons showed image-missing. open-menu, list-add and
+       user-trash survived only because libgtk bundles them — a detail of
+       GTK, not a contract — so they ship here too. The rule: an icon name
+       in src/app has a file in icons/.
        GtkApplication adds <resource base path>/icons to the icon theme by
        itself and GTK treats it as part of hicolor — a theme that has the
        names still wins, these are only the last resort. Stock Adwaita files
-       under their stock names; licence in icons/LICENSE. -->
+       under their stock names and contexts; licence in icons/LICENSE. -->
   <gresource prefix="/cz/ok1br/log_for_linux/icons/scalable/actions">
-    <file alias="media-playlist-consecutive-symbolic.svg">icons/media-playlist-consecutive-symbolic.svg</file>
     <file alias="edit-find-symbolic.svg">icons/edit-find-symbolic.svg</file>
+    <file alias="list-add-symbolic.svg">icons/list-add-symbolic.svg</file>
+    <file alias="open-menu-symbolic.svg">icons/open-menu-symbolic.svg</file>
+  </gresource>
+  <gresource prefix="/cz/ok1br/log_for_linux/icons/scalable/devices">
+    <file alias="input-keyboard-symbolic.svg">icons/input-keyboard-symbolic.svg</file>
+    <file alias="network-wireless-symbolic.svg">icons/network-wireless-symbolic.svg</file>
+  </gresource>
+  <gresource prefix="/cz/ok1br/log_for_linux/icons/scalable/places">
+    <file alias="user-trash-symbolic.svg">icons/user-trash-symbolic.svg</file>
+  </gresource>
+  <gresource prefix="/cz/ok1br/log_for_linux/icons/scalable/status">
+    <file alias="avatar-default-symbolic.svg">icons/avatar-default-symbolic.svg</file>
+    <file alias="media-playlist-consecutive-symbolic.svg">icons/media-playlist-consecutive-symbolic.svg</file>
+    <file alias="network-transmit-receive-symbolic.svg">icons/network-transmit-receive-symbolic.svg</file>
   </gresource>
 </gresources>

@@ -1537,11 +1537,12 @@ refresh_bank_btn (LogflWindow *self)
   if (!self->bank_btn)
     return;
   gboolean snp = self->settings.macro_bank == LOGFL_MACRO_BANK_SNP;
-  /* Run = continuous CQ; S&P = search for stations. Both glyphs are also
-   * compiled into the binary (data/log-for-linux.gresource.xml): libgtk
-   * bundles no Run glyph, and with an icon theme chain that ends at hicolor
-   * the button — the only at-a-glance sign of the active bank — would show
-   * image-missing. */
+  /* Run = continuous CQ; S&P = search for stations. Like every icon name in
+   * this file, both glyphs are also compiled into the binary
+   * (data/log-for-linux.gresource.xml): libgtk bundles no Run glyph, and
+   * with an icon theme chain that ends at hicolor the button — the only
+   * at-a-glance sign of the active bank — would show image-missing. A new
+   * icon name here needs its file there. */
   gtk_button_set_icon_name (GTK_BUTTON (self->bank_btn),
                             snp ? "edit-find-symbolic"
                                 : "media-playlist-consecutive-symbolic");
@@ -2683,7 +2684,9 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
 
   /* Same pattern as sdr-for-linux: one AdwPreferencesPage per topic with
    * title + icon so the dialog shows a header page switcher (tabs), not a
-   * single long scroll of mixed groups. */
+   * single long scroll of mixed groups. The page icons are compiled into
+   * the binary (data/log-for-linux.gresource.xml) — libgtk bundles none of
+   * them, so without a loadable Adwaita the switcher showed image-missing. */
   AdwDialog *dlg = adw_preferences_dialog_new ();
   adw_dialog_set_title (dlg, "Preferences");
 

@@ -1,9 +1,16 @@
-media-playlist-consecutive-symbolic.svg, edit-find-symbolic.svg —
+All *-symbolic.svg files in this directory —
 Adwaita icon theme by the GNOME Project (https://www.gnome.org)
 Source:   https://gitlab.gnome.org/GNOME/adwaita-icon-theme
-          Adwaita/symbolic/status/media-playlist-consecutive-symbolic.svg
           Adwaita/symbolic/actions/edit-find-symbolic.svg
-Snapshot: tag 50.0, both files copied unmodified
+          Adwaita/symbolic/actions/list-add-symbolic.svg
+          Adwaita/symbolic/actions/open-menu-symbolic.svg
+          Adwaita/symbolic/devices/input-keyboard-symbolic.svg
+          Adwaita/symbolic/devices/network-wireless-symbolic.svg
+          Adwaita/symbolic/places/user-trash-symbolic.svg
+          Adwaita/symbolic/status/avatar-default-symbolic.svg
+          Adwaita/symbolic/status/media-playlist-consecutive-symbolic.svg
+          Adwaita/symbolic/status/network-transmit-receive-symbolic.svg
+Snapshot: tag 50.0, all files copied unmodified
 
 License (COPYING in the source tree at tag 50.0):
 
