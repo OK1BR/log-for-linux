@@ -1,49 +1,38 @@
-# Log for Linux — backlog
+# Log for Linux — backlog (archive)
 
-The single work queue for this app: shortcomings, ideas for new features and
-bugs reported from real operation. `docs/SCOPE.md` says what the app **is** and
-why it is built that way; this file says what is **queued, in progress or just
-done**. When the two disagree, that is itself a backlog item.
+**The work queue moved to GitHub Issues on 2026-09-18:**
+<https://github.com/OK1BR/log-for-linux/issues> — bugs, ideas, debt and
+everything still waiting for a live check are issues there. This file stays
+as the archive of the `LOG-N` items from before the move; nothing new is
+added here. `docs/SCOPE.md` still says what the app **is** and why it is
+built that way; when SCOPE and the code disagree, that is itself an issue.
 
-## How things get in here
+## How things get in now
 
 - **Found during a contest or live operation** — first written up in
   `docs/CONTEST-NOTES-<date>.md` (raw observation + analysis, no code touched
-  while operating), then triaged into an item here.
-- **Reported by someone else** — GitHub issue stays the conversation with the
-  reporter; the item here mirrors it and carries the `gh#N` link, so one list
-  still shows all the work.
-- **Own idea / design gap** — straight in, marked `idea`.
+  while operating), then triaged into issues that point back at the note.
+- **Reported by someone else** — their GitHub issue is the item; no mirror.
+- **Own idea / design gap** — an issue labelled `enhancement` or `debt`. A
+  feature too big for an issue body gets its own `docs/<NAME>-SCOPE.md`
+  (the zadání, versioned with the code); the issue links to it.
 
-## Item format
+## Labels
 
-```
-### LOG-N — one-line title
-- **Type:** bug | idea | debt · **Severity:** high | medium | low · **Status:** open | doing | done | deferred
-- **Source:** who/where/when
-- **Detail:** pointer to the full write-up
-Short statement of the problem and where in the code it lives.
-```
+Type: `bug`, `enhancement` (the former "idea"), `debt`. Severity is about the
+damage, not the effort: `severity: high` = wrong data or something that
+leaves the machine wrong; `severity: medium` = gets in the operator's way;
+`severity: low` = cosmetic or log noise.
 
-Severity is about the damage, not the effort: `high` = wrong data or something
-that leaves the machine wrong; `medium` = gets in the operator's way;
-`low` = cosmetic or log noise.
+`needs-live-check` = done in code and the gate is green, but the issue
+**stays open until the behaviour was seen live**; `at-the-radio` marks the
+checks that need the rig. A commit closes its issue with `Fixes #N` only
+when nothing is left to verify live — otherwise it says `Refs #N` and the
+issue is closed by hand once the check passed.
 
 ---
 
-## Open — bugs
-
-(none)
-
-## Open — ideas
-
-(none)
-
-## Open — debt
-
-(none)
-
-## Done
+## Archive — LOG-1…LOG-5 (done before the move)
 
 ### LOG-3 — Contest score and multipliers, mult visible per QSO
 - **Type:** idea · **Severity:** — · **Status:** done 2026-08-28
@@ -67,6 +56,7 @@ which scores 107 QSO → 307 pts × 49 mult = 15043.
 **Live checks pending:** subtitle + Pts/Mult columns and Cabrillo claimed
 score over the real DB after restart (the backfill writes the rules on
 first start); Richard's own hand-counted YO DX score vs the 15043 estimate.
+Tracked in #2.
 
 ### LOG-5 — SCOPE's Cabrillo section no longer matches the code
 - **Type:** debt · **Severity:** low · **Status:** done 2026-08-28
@@ -123,6 +113,7 @@ original "exchange must disappear" phrasing predates the chosen design);
 cell; (3) spot click on a different-mode station: the TCI mode flip rewrites
 RST defaults and must NOT kill the prefill — a second spot click still
 replaces the call; (4) after logging a QSO focus still lands in Call.
+Tracked in #1.
 
 ### LOG-4 — Cabrillo CATEGORY-MODE/BAND came from the previous contest
 - **Type:** bug · **Severity:** high · **Status:** done 2026-08-23, committed `9b99622`
@@ -137,14 +128,13 @@ CATEGORY-MODE and CATEGORY-BAND from the contest's own QSOs
 a fallback for a contest with no QSOs yet. Both stay editable — the log proves
 what was worked, not which category was entered. Gate:
 `/cabrillo/categories-from-log`; verified against the real log (CW / 20M).
-Live check of the dialog still pending.
+Live check of the dialog still pending (tracked in #3).
 
 ## Roadmap
 
 Milestones and their order live in `docs/SCOPE.md`; `docs/M3-CHECKLIST.md` is
-the manual UI gate. This section only records what is next in practice:
-
-The queue is empty — everything from YO DX HF (LOG-1…LOG-5) is done as of
-2026-08-28. What remains is live verification at the machine/radio: the
-checklists in the Done entries (LOG-2 spot behavior, LOG-3 score UI, LOG-4
-export dialog) and the RTTY §7.3 pass.
+the manual UI gate. What is next in practice is the open issue list. At the
+move (2026-09-18) everything from YO DX HF (LOG-1…LOG-5) was done in code and
+the open issues were all live verification: #1 LOG-2 spot behavior, #2 LOG-3
+score UI, #3 LOG-4 export dialog, #4 the RTTY §7 step 3 pass, #5 the two
+optional M3 failure paths.
