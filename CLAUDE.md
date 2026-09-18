@@ -10,15 +10,25 @@ Native ham radio logbook for Linux (OK1BR). Third app of the family with
 - Build: `meson setup builddir && meson compile -C builddir`.
 - On Arch always build from source; install goes to `~/.local`, not `/usr`.
 
-Scope/design: `docs/SCOPE.md` (written 2026-07-20 — read it first; it holds
-the decided store/integrations/milestones).
+Scope/design: `docs/SCOPE.md` — read it first. It is the only design doc:
+what the app is and why (decisions, architecture, milestones, the RTTY
+keying decisions). How things were built is the git history, not a doc.
 
 Work queue: **GitHub Issues** (`gh issue list`) since 2026-09-18 — bugs,
-ideas, debt, and anything still waiting for a live check. Labels and the
-"stays open until seen live" rule (`Refs #N` vs `Fixes #N`) are in
-`docs/BACKLOG.md`, which is now only the archive of LOG-1…LOG-5. The zadání
-and analyses stay in `docs/` (`*-SCOPE.md`, `CONTEST-NOTES-<date>.md`).
-
-RTTY keying: `docs/RTTY-SCOPE.md` (2026-08-15) — implemented same day
-(§6 confirmed by Richard, steps 1–2 done, gate green); the live pass
-against sdr-for-linux ≥ f38aafd (§7.3) is pending at the radio (#4).
+ideas, debt, and anything still waiting for a live check. Nothing of that
+kind goes into `docs/`.
+- Labels: type `bug` / `enhancement` / `debt`; `severity: high` = wrong data
+  or something that leaves the machine wrong, `medium` = gets in the
+  operator's way, `low` = cosmetic or log noise; `needs-live-check` = done
+  in code, gate green, but the issue **stays open until the behaviour was
+  seen live**; `at-the-radio` = the check needs the rig.
+- A commit closes its issue with `Fixes #N` only when nothing is left to
+  verify live — otherwise it says `Refs #N` and the issue is closed by hand
+  once the check passed.
+- Notes from live operation (contest days) are taken with no code touched,
+  then triaged into issues. A feature too big for an issue body gets a
+  `docs/<NAME>-SCOPE.md` zadání, which is folded into SCOPE.md and removed
+  once implemented.
+- The pre-move backlog (LOG-1…LOG-5), the YO DX HF contest notes, the M3
+  checklist and the RTTY zadání left the tree on 2026-09-18; their last
+  versions are at commit 2a08503.

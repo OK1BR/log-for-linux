@@ -405,7 +405,7 @@ test_handshake_and_live (void)
   g_assert_true (saw_speed);
   g_assert_true (saw_clamp);
 
-  /* RTTY keying (docs/RTTY-SCOPE.md §0) — the rtty_macros family with the
+  /* RTTY keying (docs/SCOPE.md) — the rtty_macros family with the
    * exact CW-path treatment: reserved ':'/','/';' scrubbed to spaces and
    * the deliberate leading space kept (word-gap rule, see tci_client.c). */
   logfl_tci_client_rtty_send (cli, "DL1ABC 599:001;");
