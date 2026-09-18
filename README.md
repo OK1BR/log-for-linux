@@ -10,11 +10,12 @@ of the retired Rust prototype (BRlog).
 
 > **Status: 0.3.0 — a usable daily logbook.** Everything below is implemented,
 > covered by offline test gates, and was run in anger through full
-> **EUHF Challenge 2026** and **WAE DX Contest CW 2026** deployments — live
-> entry, macros, serials, dup checking, per-contest QSO validity and the
-> Cabrillo submissions all came from this app. The RTTY keying is new in
-> 0.3.0: gate-verified against a mock radio, its first on-air pass is still
-> ahead. Details and the milestone plan: [`docs/SCOPE.md`](docs/SCOPE.md).
+> **EUHF Challenge 2026**, **WAE DX Contest CW 2026** and **SARTG WW RTTY
+> 2026** deployments — and **YO DX HF 2026** on `main` after the release —
+> live entry, macros, serials, dup checking, per-contest QSO validity and the
+> Cabrillo submissions all came from this app. The RTTY keying, new in 0.3.0,
+> had its first on-air pass in SARTG. The decisions behind the design:
+> [`docs/SCOPE.md`](docs/SCOPE.md).
 
 ![Log for Linux — EUHFC 2026, CW on 20 m: entry row pre-filled from the radio over TCI, macro strip, live log](docs/img/main-window.png)
 
@@ -41,7 +42,8 @@ of the retired Rust prototype (BRlog).
 **Contesting**
 - **Contests as first-class log sections**: create/switch/delete from the
   header, each contest copies its exchange template at creation. Presets for
-  CQ WW, CQ WPX, IARU HF, OK/OM DX, EUHFC, plus a custom template editor
+  CQ WW, CQ WPX, IARU HF, OK/OM DX, EUHFC, WAE DX, CVA DX, SARTG WW RTTY and
+  YO DX (YO DX on `main`, after 0.3.0), plus a custom template editor
   (serial / number / text / auto fields mapped onto ADIF). The main-log view
   stays clean — contest QSOs live in their section, while worked-B4 and
   statistics stay global
@@ -50,6 +52,10 @@ of the retired Rust prototype (BRlog).
 - **Cabrillo v3 export** of the active contest: category dialog with
   spec-value dropdowns (persisted), exact-QRG kHz, correct mode letters,
   chronological order — ready for robot submission
+- **Live claimed-score estimate** *(on `main`, after 0.3.0)*: points ×
+  multipliers in the contest subtitle, Pts/Mult columns showing what each QSO
+  brought, CLAIMED-SCORE prefilled in the Cabrillo dialog — an estimate from
+  your own seat; the sponsor's rescoring is the authority
 - **CW and RTTY contest messaging** via the radio's keyer (TCI): F1–F8 macro
   strip with separate **Run and S&P banks**, right-click or Preferences
   editing, tokens `{MYCALL}` `{CALL}` `{RST}` `{NR}` `{EXCH}`; optional
@@ -69,7 +75,8 @@ of the retired Rust prototype (BRlog).
   *QSO Logged* lands in the store (dup-safe), and decode lists get
   worked-before **Highlight Callsign** replies (green = new, yellow = B4)
 - **Duplicate lookup service for `skimmer-for-linux`** (UDP `127.0.0.1:2238`,
-  always on): `DUP? <call> <freq_hz> <mode>` → `NEW|B4|DUP`, so the skimmer
+  always on): `DUP? <call> <freq_hz> <mode>` → `NEW|B4|DUP|INV` (INV = not a
+  valid QSO in the active contest), so the skimmer
   colors its spots from your log; verdict-changing edits are pushed to
   recent peers unsolicited, so spot colors update the moment you log
 - **Safety/etiquette by design**: the logbook never transmits and never
@@ -133,15 +140,25 @@ portable backup.
 
 ## Roadmap
 
-Next milestones (see [`docs/SCOPE.md`](docs/SCOPE.md) for the full plan and
-the decisions behind it):
+The plan lives in
+[GitHub Issues](https://github.com/OK1BR/log-for-linux/issues); the decisions
+behind the design are in [`docs/SCOPE.md`](docs/SCOPE.md).
 
-- **M7 — callbook lookup**: QRZ.com / HamQTH auto-fill of name/QTH/grid on
-  callsign entry, on-disk cache, credentials in the system keyring
-- **M8 — QSL sync**: LoTW (sign + upload via `tqsl`, confirmation pull),
-  eQSL, Club Log; per-QSO sent/confirmed state per service
-- Later: DXCC/awards tracking (worked/confirmed matrices per band/mode),
-  contest scoring/multipliers
+- **M7 — callbook lookup**
+  ([#8](https://github.com/OK1BR/log-for-linux/issues/8)): QRZ.com / HamQTH
+  auto-fill of name/QTH/grid on callsign entry, on-disk cache, credentials in
+  the system keyring
+- **M8 — QSL sync**
+  ([#9](https://github.com/OK1BR/log-for-linux/issues/9)): LoTW (sign + upload
+  via `tqsl`, confirmation pull), eQSL, Club Log; per-QSO sent/confirmed state
+  per service
+- Later: DXCC/awards tracking
+  ([#10](https://github.com/OK1BR/log-for-linux/issues/10)), linking imported
+  `CONTEST_ID` QSOs to contests
+  ([#11](https://github.com/OK1BR/log-for-linux/issues/11))
+- Parked on purpose: WAE QTC traffic
+  ([#12](https://github.com/OK1BR/log-for-linux/issues/12)), FT8/FT4 contests
+  through WSJT-X ([#13](https://github.com/OK1BR/log-for-linux/issues/13))
 
 A cluster/telnet spot window is deliberately **out of scope** — the skimmer
 already renders spots on the panadapter, and one click there pre-fills the

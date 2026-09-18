@@ -1,4 +1,4 @@
-# Log for Linux — scope & plan
+# Log for Linux — scope & design
 
 Goal: a native Linux **ham radio logbook** — the third app of the family around
 **[`sdr-for-linux`](https://github.com/OK1BR/sdr-for-linux)** (SDR transceiver)
@@ -9,10 +9,14 @@ front-end, plain C11, meson. Successor of the deleted Rust prototype (BRlog).
 
 Author: Richard Fakenberg, **OK1BR**. Licence: GPL-3.0-or-later.
 
-This file says what the app **is** and **why** it is built that way. What is
-open — bugs, ideas, pending live checks — lives in
+This file holds the **decisions and their reasons** — what the app is, why it
+is built that way, and what it deliberately does not do. What the app does is
+the [README](../README.md); what is open or planned — bugs, ideas, pending live
+checks, future milestones — lives in
 [GitHub Issues](https://github.com/OK1BR/log-for-linux/issues); how each piece
-was built is the git history.
+was built is the git history. The last version that still walked through every
+finished milestone in detail is
+[commit 372d390](https://github.com/OK1BR/log-for-linux/blob/372d390239a45c1851c4b8bcd35a7983e5c16a17/docs/SCOPE.md).
 
 ## Why this exists
 
@@ -37,8 +41,8 @@ entry row always pre-filled with the live VFO — nearly free.
   ADIF import/export + dup check. Everything else lands in later phases, each
   independently testable — the `skimmer-for-linux` milestone discipline.
 - **Integrations in scope**: **TCI client** to `sdr-for-linux`, **WSJT-X UDP**
-  auto-logging, **callbook lookup** (QRZ.com/HamQTH) and **QSL sync** (LoTW
-  via `tqsl`, eQSL, Club Log).
+  auto-logging, **callbook lookup** (QRZ.com/HamQTH, #8) and **QSL sync** (LoTW
+  via `tqsl`, eQSL, Club Log, #9).
 - **Not in scope** (decided 2026-07-20): a cluster/telnet spot client. The
   skimmer's M6 telnet feed (port 7300) was built to serve local loggers, so
   the hook exists on the other side if this is ever revisited — but this app
@@ -57,8 +61,8 @@ entry row always pre-filled with the live VFO — nearly free.
     ├─ WSJT-X UDP      GSocket server · QSO-logged ingest, worked-B4 replies
     ├─ contests        exchange templates · validity · score · Cabrillo · cty resolver
     ├─ dup service     UDP line protocol for skimmer-for-linux
-    ├─ callbook        (M7) libsoup · QRZ.com / HamQTH XML lookup
-    └─ QSL sync        (M8) tqsl subprocess (LoTW) · eQSL · Club Log upload/download
+    ├─ callbook        (M7, planned) libsoup · QRZ.com / HamQTH XML lookup
+    └─ QSL sync        (M8, planned) tqsl subprocess (LoTW) · eQSL · Club Log
  src/app/     (GTK4 + libadwaita)
     └─ main window: entry row (pre-filled from TCI) + macro strip + QSO table
 ```
@@ -83,122 +87,71 @@ importing someone's log and exporting it again must never silently drop data.
 
 ## Milestones
 
+One entry per milestone: status, module, gate — and the decisions made in it
+that the code alone does not explain. The M-labels are cited from the code.
+
 - **M0 — scaffold. DONE.** Engine/app split, sqlite3 dependency, test
   harness (`log-engine-test`).
-- **M1 — log store. DONE.** `src/engine/log_store.c`: schema + `PRAGMA
-  user_version` migrations (a newer-than-app file is refused), WAL, CRUD,
-  worked-B4 query, dup check (same call+band+mode within a time window),
-  stats counters; normalized call/band/mode (upper/lower/upper),
-  NULL-for-unset columns, the `extras` column for the lossless ADIF round
-  trip, an explicit tx API for bulk import, list with text/band/mode filters
-  + paging. Measured in-memory: 50k inserts in ~0.2 s inside one tx;
-  worked-B4 + dup + list-20 in 0.1 ms. Gate: `log-store-test`.
-- **M2 — ADIF import/export. DONE.** `src/engine/adif.c`, ADIF 3.1.x.
-  Parser: byte-exact length-prefixed tag walk, tolerant of lowercase tags,
-  CRLF, `:type` suffixes, inter-field garbage, a missing `<EOH>` (header iff
-  the first non-ws char isn't `<`), 4-digit TIME_ON and a final record
-  without `<EOR>`; a truncated declared length marks the record bad rather
-  than eating the next one. Unmodeled fields → `extras` verbatim; BAND falls
-  back to a freq→band table (2190m–23cm); bad records are counted, never
-  abort; import is one tx with dup skipping (window 0 = exact-ts only).
-  Writer: deterministic header (no timestamp — same log ⇒ byte-identical
-  file), fixed field order, locale-safe trimmed numbers, oldest-first.
-  Gate: `log-adif-test` (quirks corpus, UTF-8 names, multiline comments,
-  dedup accounting, export(import(x)) byte-stability).
+- **M1 — log store. DONE.** `src/engine/log_store.c`; gate `log-store-test`.
+  Migrations by `PRAGMA user_version` — a newer-than-app file is refused.
+- **M2 — ADIF import/export. DONE.** `src/engine/adif.c`, ADIF 3.1.x; gate
+  `log-adif-test`. The parser tolerates real-world quirks; bad records are
+  counted, never abort; import is one tx with dup skipping. The writer is
+  deterministic (no timestamp in the header — same log ⇒ byte-identical
+  file).
 - **M3 — UI v1: the usable logbook. DONE — manual checklist signed off by
-  Richard 2026-07-21; the app is v1 for daily use.** `src/app/win.c`
-  (+ `qso_row.c` GObject row wrapper): entry row with UTC clock, live
-  worked-B4 hint (green "New call" / yellow B4 counts per band/band+mode
-  with last-worked date), RST defaults per mode (phone 59 / CW-like 599 /
-  FT8·FT4 blank; never stomping a hand-edited report), freq → band dropdown
-  auto-sync via the M2 band table (the dropdown lists every ADIF band the
-  engine knows), Enter anywhere logs; a 5-min same call+band+mode duplicate
-  asks first (default Cancel). The QSO table lives in the main window under
-  the macro strip — virtualized GtkColumnView (newest first), search with
-  250 ms debounce, inline cell edit + right-click delete (confirm); the
-  footer holds UTC + TCI status. ADIF import/export via GtkFileDialog +
-  GFile I/O with a result toast; import dedup is exact-timestamp only;
-  QSO+calls counters in the window subtitle. A store open failure surfaces
-  a dialog instead of aborting.
+  Richard 2026-07-21.** `src/app/win.c` (+ `qso_row.c`).
+  Enter anywhere logs; a 5-min same call+band+mode duplicate asks first
+  (default Cancel); RST defaults per mode never stomp a hand-edited report;
+  ADIF import dedup is exact-timestamp only; a store open failure surfaces a
+  dialog instead of aborting.
 - **M4 — TCI integration. DONE, in live contest use since EUHFC
   2026-08-01.** `src/engine/tci_client.c` (libwebsockets, text plane only —
-  no IQ) connects to `sdr-for-linux` (`ws://127.0.0.1:40001`): handshake to
-  `ready;`, tracks `vfo`/`modulation`/`device`/`protocol`, maps the radio
-  mode into the logbook dropdown (cw→CW, usb/lsb→SSB, digu/digl→FT8,
-  rtty→RTTY, …). UI: background connect + 5 s reconnect, status line next
-  to the UTC clock, auto-prefill of MHz/band/mode from the radio. TCI
-  host/port and the station callsign live in Preferences → GKeyFile
-  `~/.config/log-for-linux/settings.ini` (`src/app/settings.c`, family
-  house style: `AdwPreferencesDialog`, save on dialog close; a host/port
-  change reconnects immediately). Table-driven QSY was tried and dropped
-  (2026-07-21): not useful enough for a toolbar control, and a click on a
-  cell is reserved for inline edit; `tune()` stays in the engine API. The
-  logbook never changes radio state except operator-triggered CW/RTTY
-  macros and keyer speed. Gate: `log-tci-test` (mock TCI server, skimmer
-  house pattern).
-  **Keyer speed:** Page Up/Down nudge WPM by 1 from anywhere in the entry
-  window (contest-logger style, focus stays in Call), sent as TCI
-  `cw_macros_speed:<wpm>` and clamped 5–60 to match sdr-for-linux; the
-  radio's echo (handshake, own controls, our set) is the authority and
-  shows in the TCI status line. Falls through to default scrolling while a
-  cell is edited or when no speed is known yet.
-  **Spot-click prefill:** clicking a skimmer spot on the sdr-for-linux
-  panadapter makes it broadcast `rx_clicked_on_spot` / `clicked_on_spot`;
-  the logbook takes the callsign into the Call entry (upper-cased,
-  sanity-checked, receiver 0 only), presents its window and focuses Call
-  with the text selected (double-click feel — Tab/Enter keeps, typing
-  replaces), and the worked-B4 / dup check runs on it as if typed. Spots
-  themselves stay one-way client→server in TCI, so the logbook never sees
-  the spot list — this is the tiny prefill the no-cluster-window rule
-  leaves room for, not a spot window. An already-typed call is never
-  overwritten and an open cell editor is never interrupted, which also
-  makes the two spellings of one click idempotent. The prefill stays a
-  prefill until the operator types anywhere into the QSO row — Call, RST,
-  exchange, Sent, Name or Comment. Until then clicking another spot
-  replaces it, and tuning more than 200 Hz off the spot (that call is no
-  longer on frequency) resets the WHOLE entry row: RST to the mode default,
-  Sent back to the serial/exchange prefill, focus in Call — with an open
-  cell editor the row still resets but focus stays in the cell — so
-  leftovers of a QSO that never happened cannot leak into the next one.
-  Once typed into, the row is the operator's: QSY never deletes it and a
-  spot click never overwrites it. The New-call / worked-B4 / DUP verdict
-  line is 1.3em bold with family colors: New = #30C060 (the skimmer's own
-  spot green on the panadapter), DUP = saturated #ED333B.
+  no IQ) to `sdr-for-linux` (`ws://127.0.0.1:40001`); gate `log-tci-test`
+  (mock TCI server, skimmer house pattern).
+  - The logbook never changes radio state except operator-triggered CW/RTTY
+    macros and keyer speed.
+  - Table-driven QSY was tried and dropped (2026-07-21): not useful enough
+    for a toolbar control, and a click on a cell is reserved for inline
+    edit; `tune()` stays in the engine API.
+  - **Keyer speed:** Page Up/Down nudge WPM by 1 from anywhere in the entry
+    window (contest-logger style, focus stays in Call), clamped 5–60 to
+    match sdr-for-linux; the radio's echo (handshake, own controls, our
+    set) is the authority.
+  - **Spot-click prefill:** clicking a skimmer spot on the sdr-for-linux
+    panadapter (`rx_clicked_on_spot` / `clicked_on_spot`, receiver 0 only)
+    puts the callsign into Call, selected, and the worked-B4 / dup check
+    runs on it as if typed. Spots themselves stay one-way client→server in
+    TCI, so the logbook never sees the spot list — this is the tiny prefill
+    the no-cluster-window rule leaves room for, not a spot window. The
+    prefill stays a prefill until the operator types anywhere into the QSO
+    row — Call, RST, exchange, Sent, Name or Comment. Until then clicking
+    another spot replaces it, and tuning more than 200 Hz off the spot
+    (that call is no longer on frequency) resets the WHOLE entry row, so
+    leftovers of a QSO that never happened cannot leak into the next one.
+    Once typed into, the row is the operator's: QSY never deletes it, a
+    spot click never overwrites it, and an open cell editor is never
+    interrupted.
+  - The New-call / worked-B4 / DUP verdict line uses family colors: New =
+    #30C060 (the skimmer's own spot green on the panadapter), DUP =
+    saturated #ED333B.
 - **M5 — macros v2 (contest-style messaging). DONE; in live contest use
-  since EUHFC 2026-08-01** (where `{NR}`/`{EXCH}`, cut numbers, the word
-  gap and Ctrl+K were verified live). The F-key strip (F1–F8 + Esc stop) is
-  a messaging layer inspired by N1MM+, not a clone; expansion lives in the
-  engine (`logfl_macro_expand`). Gate: `log-macro-test` (expand, bank
-  defaults/edit, ESM transitions).
-  1. **Editable macros** — right-click an F-key → caption + template
-     dialog, plus a full editor in Preferences → Messaging (both banks
-     behind a Run/S&P switcher, one expander per key, edits apply live and
-     save on dialog close). Persisted in `settings.ini` groups `macros_run`
-     / `macros_snp`. Tokens: `{MYCALL}` `{CALL}` `{RST}` `!`, `{NR}` (sent
-     serial, "001" form) and `{EXCH}` (static sent exchange), both fed from
-     the Sent entry; empty tokens collapse, so nothing changes outside
-     contests. The default F2 is `{CALL} {RST} {NR} {EXCH}` (S&P: `{RST}
-     {NR} {EXCH}`) and S&P F7 asks `NR?` in the spirit of F6's `AGN?`.
-  2. **Run vs S&P** — two 8-key banks with distinct defaults; Run/S&P
-     toggle on the entry window; active bank persisted as `contest.bank`.
-  3. **ESM — Enter sends message** — optional (`contest.esm` /
-     Preferences), off by default so daily logging keeps Enter = log.
-     Enter advances READY→EXCH→LOG→TU (empty call → CQ; after log with a
-     cleared call still TU). The **Log QSO** button always logs.
-  4. **Cut numbers** (opt-in, Preferences → Messaging → CW keyer):
-     `logfl_macro_cut_apply` rewrites digits per `[cw] cut_map` pairs, one
-     switch per standard substitution (0T 1A 2U 3V 5E 8D 9N) — applied at
-     send time to RST/serial/all-digit exchange only, never callsigns, and
-     only in CW; the log keeps real digits.
-  5. **Queued-message word gap:** text goes out with a leading space,
-     SDC-style — sdr-for-linux's generator inserts the inter-message gap
-     only when the following text asks for it (a trailing space does
-     nothing; skipped on an idle keyer, so overs never start with dead
-     air).
-  6. **Ctrl+K free text** (N1MM style): small non-modal window, Enter keys
-     the line and clears for the next, Esc stops the keyer and closes, the
-     Stop button just stops.
-  7. **SSB "wav" / DVK — OUT OF SCOPE**: text keying via TCI only.
+  since EUHFC 2026-08-01.** The F-key strip (F1–F8 + Esc stop) is a
+  messaging layer inspired by N1MM+, not a clone; expansion lives in the
+  engine (`logfl_macro_expand`). Gate: `log-macro-test`.
+  - Empty tokens collapse, so nothing changes outside contests.
+  - **Run vs S&P** — two 8-key banks with distinct defaults.
+  - **ESM** is optional and off by default so daily logging keeps Enter =
+    log; the **Log QSO** button always logs.
+  - **Cut numbers** are opt-in, applied at send time to RST/serial/all-digit
+    exchange only, never callsigns, and only in CW; the log keeps real
+    digits.
+  - **Queued-message word gap:** text goes out with a leading space,
+    SDC-style — sdr-for-linux's generator inserts the inter-message gap
+    only when the following text asks for it (a trailing space does
+    nothing; skipped on an idle keyer, so overs never start with dead
+    air).
+  - **SSB "wav" / DVK — OUT OF SCOPE**: text keying via TCI only.
 - **RTTY keying. DONE 2026-08-15; in live contest use since SARTG WW RTTY
   2026-08-15/16.** The same F-key macros key a complete RTTY exchange
   through sdr-for-linux's TCI family extension `rtty_macros:0,<text>;` /
@@ -222,22 +175,12 @@ importing someone's log and exporting it again must never silently drop data.
   - No RTTY speed UI (45.45 Bd is fixed radio-side); PgUp/PgDn stay CW WPM.
   - Same text treatment as CW: reserved `:`/`,`/`;` scrubbed to spaces, the
     deliberate leading space kept.
-
-  Reference sequence (the whole family): the skimmer spots an RTTY CQ (pair
-  centre) → operator clicks → sdr-for-linux tunes dial = pair centre and
-  relays the click → the logbook prefills Call, the dropdown reads RTTY →
-  F2 → `{CALL} 599 {NR}` expands → `rtty_macros:0, DL1ABC 599 001;` → the
-  radio keys direct FSK → mark tail → RX. Esc → both stops → the radio
-  ramps down within one block.
 - **M6 — WSJT-X UDP. CODE DONE (offline gate green); the live check with a
-  real FT8 QSO is #6.** `src/engine/wsjtx_udp.c` (QDataStream BE,
-  utf8=QByteArray, schema 2/3): GSocket server on the GLib main loop
-  (default `127.0.0.1:2237`), heartbeat reply; `QSO Logged` is decoded into
-  the store (exact-ts dup skip, toast, table reload), `Status` is answered
-  with worked-B4 via `Highlight Callsign` (green = new, yellow = worked).
-  Preferences → WSJT-X (enable + port); footer status line. Gate:
-  `log-udp-test` (synthetic QSO Logged/Status round-trip, store insert,
-  loopback server).
+  real FT8 QSO is still ahead.** `src/engine/wsjtx_udp.c`: GSocket server on the
+  GLib main loop (default `127.0.0.1:2237`); `QSO Logged` is decoded into
+  the store (exact-ts dup skip), `Status` is answered with worked-B4 via
+  `Highlight Callsign`. Auto-logged QSOs always land in the main log — FT8
+  contest support is #13, deliberately later. Gate: `log-udp-test`.
 - **Dup lookup service for skimmer-for-linux. DONE, live-verified in EUHFC
   2026-08-01.** Read-only UDP line protocol on `127.0.0.1:2238`, always on
   with the app: `DUP? <call> <freq_hz> <mode>` → `NEW|B4|DUP|INV <call>`
@@ -247,56 +190,37 @@ importing someone's log and exporting it again must never silently drop data.
   paints it grey); malformed requests get silence, so the skimmer treats a
   timeout as unknown and spotting survives the logbook being closed.
   **Push:** the service remembers peers with a valid `DUP?` in the last
-  10 min (8 slots) and any verdict-changing mutation — manual log, WSJT-X
-  QSO, delete, cell edit (old + new identity) — sends them the same answer
-  datagram unsolicited, so the skimmer regrays the live panadapter label at
-  once instead of on its ≤180 s re-announce. The logbook deliberately never
-  writes TCI `spot:` — the label color is the skimmer's to own (two writers
-  would race). Engine transport in `src/engine/dup_srv.c` (the verdict
-  callback in the app owns store + contest context); both UDP handlers
-  (dup + WSJT-X) receive regardless of the wake condition — Linux delivers
-  async ICMP errors on unconnected UDP sockets and a G_IO_ERR-only wake
-  must be drained by the recv or the main loop spins. Gate:
-  `log-dupq-test`. The skimmer side (querying, caching, coloring) lives in
-  skimmer-for-linux (its SCOPE.md).
+  10 min (8 slots) and any verdict-changing mutation sends them the same
+  answer datagram unsolicited, so the skimmer regrays the live panadapter
+  label at once instead of on its ≤180 s re-announce. The logbook
+  deliberately never writes TCI `spot:` — the label color is the skimmer's
+  to own (two writers would race). Gate: `log-dupq-test`. The skimmer side
+  (querying, caching, coloring) lives in skimmer-for-linux (its SCOPE.md).
 - **Hand-typed text is upper case as it is typed (Richard 2026-08-14;
   exchange added after YO DX HF 2026-08-22).** Call, the exchange fields
   and Sent — in the entry row and in the inline cell editor of a saved
   QSO — show capitals while being typed, whatever Caps Lock happens to be
   doing: the operator never looks at the keyboard mid-QSO and must see what
-  will really go out. The store normalizes anyway; this closes the
-  lower-case path the operator sees. `entry_force_upper` in win.c is an
-  insert-text filter on the entry's GtkText delegate (upcased re-insert +
-  stop emission, so cursor/selection stay put; GTK4 does not forward
-  insert-text to the GtkEntry wrapper).
+  will really go out.
 - **Edit saved QSO. DONE (decided with Richard 2026-07-21).** Correcting a
   logged QSO is first-class and inline-only; the entry strip stays for
-  **new** QSOs (no pencil / load-into-entry). No row selection
-  (GtkNoSelection): the theme's row hover marks the edit target and a
-  single click on a cell opens an inline `GtkEntry` — single-click beats
-  double-click, the hover then reads as "click to edit", not as a pointless
-  flash. Fields: UTC, call, band, MHz, mode[/submode], RST (`sent/rcvd`),
-  Sent/Rcvd exchange, name, comment; Enter commits (the label updates
-  immediately) — everything else discards: Esc, a click anywhere outside
-  the cell, focus-out, scroll-away. Delete is right-click on the row →
-  confirm dialog (names the QSO, targets the clicked row; no intermediate
-  context menu). No table QSY. The engine path is `logfl_store_get` +
-  `logfl_store_update`, so extras, QSL flags, grid/QTH/power and station
-  fields stay intact when a single cell is changed.
+  **new** QSOs (no pencil / load-into-entry). No row selection: the theme's
+  row hover marks the edit target and a single click on a cell opens the
+  editor — single-click beats double-click, the hover then reads as "click
+  to edit", not as a pointless flash. Enter commits — everything else
+  discards: Esc, a click anywhere outside the cell, focus-out, scroll-away.
+  Delete is right-click on the row → confirm dialog (no intermediate
+  context menu). A single-cell edit keeps extras, QSL flags, grid/QTH/power
+  and station fields intact.
 - **Freq is always stored exactly.** `freq REAL` is filled from: typed MHz
   → live TCI VFO at log time → band mid-point fallback; a band change seeds
   MHz when empty; TCI overwrites with the real VFO.
-- **M7 — callbook lookup.** QRZ.com XML (subscriber) / HamQTH (free) —
-  name/QTH/grid auto-fill on callsign entry, on-disk cache, credentials in the
-  keyring, never in config files.
-  Gate: `log-callbook-test` against canned XML; live smoke against both APIs.
-- **M8 — QSL sync.** LoTW: sign+upload via `tqsl` CLI, pull confirmations
-  (`lotwreport.adi`) and mark QSLs; eQSL upload + inbox; Club Log upload.
-  Per-QSO sent/confirmed state per service, retry-safe (idempotent re-upload).
-  Gate: `log-qsl-test` over mocked endpoints; live check with a small batch.
+- **M7 — callbook lookup. PLANNED — #8.**
+- **M8 — QSL sync. PLANNED — #9.**
 - **M9 — contest management. DONE (decided 2026-07-27 with Richard, pulled
   ahead of M7/M8).** Contests are first-class log sections: create/delete/
-  switch, each contest with its own exchange template.
+  switch, each contest with its own exchange template. Gate:
+  `log-contest-test`.
   1. **One DB, `qso.contest_ref`** (NULL = main log) — contest QSOs stay in
      the canonical store (worked-B4/DXCC/LoTW see them); switching is a
      filter. Rejected: per-contest DB files (N1MM style) — would fragment
@@ -314,80 +238,44 @@ importing someone's log and exporting it again must never silently drop data.
      contest's QSOs are visible when switched into it. Worked-B4 and stats
      stay global. ADIF export always exports everything by default.
 
-  Engine: schema v2 (contest table + contest_ref/stx/srx/stx_string/
-  srx_string), contest CRUD, per-contest serial (`max(stx)+1`),
-  whole-contest dup check (call+band+mode), list scoping (all/main/contest),
-  `contest.c` exchange templates (GKeyFile serialization) +
-  `logfl_exch_apply` routing; ADIF: STX/SRX[_STRING] modeled as columns,
-  CONTEST_ID written from the linked contest's `adif_id`; an imported
-  CONTEST_ID stays verbatim in extras (no auto-created contests —
-  deliberate). Gate: `log-contest-test`.
-  UI: header switcher (Main log / contests / New contest… / Manage…),
-  new-contest dialog (name, preset, editable fields, my exchange, ADIF id),
-  the entry row grows template fields + next-serial display, per-contest
-  dup warning, exchange column in the table, active contest persisted in
-  settings.ini (`contest.active`). WSJT-X auto-logged QSOs always land in
-  the main log (FT8 contest support would come later, deliberately).
+  ADIF: CONTEST_ID is written from the linked contest's `adif_id`; an
+  imported CONTEST_ID stays verbatim in extras (no auto-created contests —
+  deliberate; linking such QSOs afterwards is #11).
 - **Cabrillo export. DONE.** `src/engine/cabrillo.c`: WWROF v3 shape
-  verified against wwrof.org and the official EUHFC sample (log.s5cc.eu):
-  tag header (empty fields omitted, CREATED-BY stamped), chronological QSO
-  lines — kHz from the exact QRG, generic band edge without one (per EUHFC
-  rules note), VHF+ band designators; modes CW/PH/FM/RY/DG; missing RSTs
-  default 599/59; sent serial zero-padded + exchange text. Gate:
-  `log-cabrillo-test`. UI: menu → Export Cabrillo… (exports the ACTIVE
-  contest), header dialog with CATEGORY-* as spec-value dropdowns (incl.
-  optional ASSISTED, "—" = omit). Operator, Power, Transmitter and Assisted
-  are persisted in settings.ini `[cabrillo]`; **CATEGORY-MODE and
-  CATEGORY-BAND are derived from the contest's own QSOs**
-  (`logfl_cabrillo_categories_from_log()` — a remembered RTTY from SARTG
-  once mislabelled the all-CW YO DX entry): mode families collapse to
-  MIXED, bands to ALL, the remembered value is only a fallback for a
-  contest with no QSOs yet, and both rows stay editable because the log
-  proves what was worked, not which category was entered. CONTEST is
-  prefilled via a known-map (ADIF `EU-HF` → Cabrillo `EUHFC`); the file
-  defaults to `<call>.log`; CLAIMED-SCORE is prefilled from the score
-  estimate below (editable, never persisted).
+  verified against wwrof.org and the official EUHFC sample (log.s5cc.eu);
+  gate `log-cabrillo-test`. Exports the ACTIVE contest. **CATEGORY-MODE and
+  CATEGORY-BAND are derived from the contest's own QSOs** (a remembered
+  RTTY from SARTG once mislabelled the all-CW YO DX entry): mode families
+  collapse to MIXED, bands to ALL, the remembered value is only a fallback
+  for a contest with no QSOs yet, and both rows stay editable because the
+  log proves what was worked, not which category was entered.
+  CLAIMED-SCORE is prefilled from the score estimate below (editable, never
+  persisted).
 - **cty resolver + contest validity rules. DONE (triggered mid-WAE
   2026-08-08: an EU station gave Richard no serial — WAE scores EU↔non-EU
   only, and the log had no idea).** `src/engine/cty.c`: parser for the AD1C
   cty.dat (MIT; snapshot + license note in `data/`, installed to the app
-  data dir, user-replaceable) — exact `=CALL` entries, longest prefix,
-  zone/continent overrides, portable-call heuristics; gate `log-cty-test`
-  runs format corners plus the real snapshot. Presets carry a validity rule
-  in exch_def (`counts=all|eu-dx|eu-only`, `zero_own_country`), each
-  verified against the sponsor's official rules (sources in preset
-  comments; house rule: never add a preset unverified): WAE=eu-dx,
-  EUHFC=eu-only, CQ WW=zero own country, others all-valid.
-  `logfl_contest_qso_validity` judges my-side × their-side; unresolved
-  calls never alarm. UI: the B4 line leads with "No contest QSO — EU
-  station (Finland)" (error) / "0 pts — own country" (warning), and a fresh
-  call shows "New call from Czech Republic". Worked-B4 answers within the
-  active contest only.
+  data dir, user-replaceable); gate `log-cty-test`. Presets carry a
+  validity rule in exch_def (`counts=all|eu-dx|eu-only`,
+  `zero_own_country`), each verified against the sponsor's official rules
+  (house rule: never add a preset unverified). Unresolved calls never
+  alarm. Worked-B4 answers within the active contest only.
 - **Contest score. DONE 2026-08-28; the UI seen live over the real log
-  2026-09-18.** The
-  claimed score is an ESTIMATE from the operator's own seat — the sponsor's
-  robot rescoring is the authority; that framing bounds the whole feature.
+  2026-09-18.** The claimed score is an ESTIMATE from the operator's own
+  seat — the sponsor's robot rescoring is the authority; that framing
+  bounds the whole feature.
   Machine-readable `points=` / `mult=` rules live in the contest's own
-  exch_def (terms judged via the cty resolver; unknown terms fail the parse
-  loudly), so a contest keeps the rule it was operated under. Every preset
-  rule was verified 2026-08-28 against the sponsor's official rules, from
-  an OK seat: CQ WW 0/1/3 + zones+countries, WPX 1, 1/2, 3/6 + prefixes
-  once per contest, IARU 1/1/3/5 with HQ text exchanges + zones+HQ mults,
-  OK/OM DX 2/3/5 + counties+countries, EUHFC 1 + years per band, WAE 1 +
-  call-area mults weighted ×4/×3/×2 (QTCs deferred — a documented
-  underestimate), CVA 2/3/4 + PY states+countries, YO DX 8/1/2/4 +
-  counties+countries. SARTG carries points only — its multiplier wording is
-  genuinely ambiguous and an ambiguity is not encoded. The engine scorer
-  (`logfl_contest_score`) walks the contest chronologically: dupes
-  (call+band+mode) score 0 and bring nothing, validity applies (CQ WW's
-  0-point own country still brings its multipliers), mult sources are
-  namespaced (a YO county "CT" never collides with Portugal's prefix —
-  caught against a real log). UI: live "pts × mult = total" in the contest
-  subtitle, Pts/Mult table columns (computed, not editable, shown only
-  while a rule runs — Mult shows what the QSO brought first), CLAIMED-SCORE
-  prefilled in the Cabrillo dialog. The startup backfill gives contests
-  created before scoring the preset rule their ADIF id implies — never
-  overriding a def that names points/mult itself. Gate: `/contest/score/*`.
+  exch_def (unknown terms fail the parse loudly), so a contest keeps the
+  rule it was operated under. Every preset rule was verified 2026-08-28
+  against the sponsor's official rules, from an OK seat. SARTG carries
+  points only — its multiplier wording is genuinely ambiguous and an
+  ambiguity is not encoded; WAE without QTCs is a documented underestimate
+  (#12). Dupes (call+band+mode) score 0 and bring nothing, CQ WW's 0-point
+  own country still brings its multipliers, mult sources are namespaced (a
+  YO county "CT" never collides with Portugal's prefix — caught against a
+  real log). The startup backfill gives contests created before scoring
+  the preset rule their ADIF id implies — never overriding a def that names
+  points/mult itself. Gate: `/contest/score/*`.
 - **About dialog — the family contract (2026-08-04).** Every app opens the
   same kind of About from its primary menu (last item, per the GNOME HIG),
   and its strings agree with the `.desktop` entry and the AppStream
@@ -396,22 +284,11 @@ importing someone's log and exporting it again must never silently drop data.
   instead. No acknowledgement section on purpose: nothing in this app is
   vendored. `sdr-for-linux`'s About (`src/gui.c`) is the family reference
   for the full field set.
-- **Later** — DXCC/awards tracking (worked/confirmed matrices per band/mode
-  on top of the cty resolver), WAE QTC traffic (next bullet), linking
-  imported CONTEST_ID QSOs to contests, and — only if ever revisited — the
-  skimmer cluster client.
-- **WAE QTC traffic. DEFERRED (Richard's call, 2026-08-04).** A QTC is the
-  report of a prior contest QSO back to a European station (DARC WAE rules
-  §7): DX stations transmit numbered series ("QTC 3/7") of time/call/serial
-  triples, one point per correctly copied QTC for both sides, up to 10 per
-  station pair — roughly doubling a serious score. Richard has never taken
-  QTCs and rides WAE CW without them; a log with no QTC lines is valid. If
-  ever built: a receive window shaped for CW copy speed (series header plus
-  time/call/serial rows), storage carrying the QTC transmission's own time
-  and band (the rules require logging those), the 10-per-station quota, and
-  Cabrillo `QTC:` lines (QRG, MODE, DATE, TIME, CALL-RX, QTC-GRP, CALL-TX,
-  TIME-QSO, CALL-QSO, NR-QSO). Build and practice it calmly before a WAE
-  SSB/RTTY edition, never mid-contest.
+- **Later** — DXCC/awards tracking (#10), linking imported CONTEST_ID QSOs
+  to contests (#11), FT8/FT4 contests through WSJT-X (#13, deferred) and
+  WAE QTC traffic (#12, **DEFERRED — Richard's call, 2026-08-04**: he has
+  never taken QTCs and rides WAE CW without them; a log with no QTC lines
+  is valid).
 
 ## Safety / etiquette
 
