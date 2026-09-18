@@ -342,9 +342,11 @@ logfl_store_open (const char *path, GError **error)
                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)
         != SQLITE_OK)
     {
-      g_set_error (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_OPEN,
-                   "cannot open %s: %s",
-                   path, db ? sqlite3_errmsg (db) : "out of memory");
+      /* The reason only, not the path: the PRAGMA and migration exits below
+       * never name the file either, so a caller that wants the path shown
+       * has to print it itself — naming it here too showed it twice. */
+      g_set_error_literal (error, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_OPEN,
+                           db ? sqlite3_errmsg (db) : "out of memory");
       sqlite3_close (db);
       return NULL;
     }

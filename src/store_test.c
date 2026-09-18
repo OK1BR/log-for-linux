@@ -7,6 +7,7 @@
 #include "log_store.h"
 
 #include <glib/gstdio.h>
+#include <string.h>
 
 static LogflQso *
 mk_qso (const char *call, const char *band, const char *mode, gint64 ts)
@@ -74,6 +75,8 @@ test_open_bad_path (void)
   LogflStore *s = logfl_store_open ("/nonexistent-dir/log.db", &err);
   g_assert_null (s);
   g_assert_error (err, LOGFL_STORE_ERROR, LOGFL_STORE_ERROR_OPEN);
+  /* The reason alone — the caller prints the path, once. */
+  g_assert_null (strstr (err->message, "/nonexistent-dir"));
   g_clear_error (&err);
 }
 

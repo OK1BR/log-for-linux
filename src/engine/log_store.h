@@ -62,7 +62,8 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC (LogflQso, logfl_qso_free)
 
 /* Opens (creating and/or migrating as needed) the store at path, which may be
  * ":memory:" for tests. NULL + error on failure — including a file whose
- * schema is newer than this app (never write into those). */
+ * schema is newer than this app (never write into those). The error message
+ * never names the path; the caller has it. */
 LogflStore *logfl_store_open  (const char *path, GError **error);
 void        logfl_store_close (LogflStore *s);
 
