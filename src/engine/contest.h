@@ -54,11 +54,15 @@ typedef struct {
  *   ALL     — every QSO is valid.
  *   EU_DX   — only QSOs crossing the EU boundary (WAE: a European station
  *             works non-Europeans only, and vice versa).
- *   EU_ONLY — only QSOs with European stations (EUHFC). */
+ *   EU_ONLY — only QSOs with European stations (EUHFC).
+ *   ENTITIES — only QSOs with stations of the listed DXCC entities (SAC:
+ *             the Scandinavian ones). Judged on their side alone, like
+ *             EU_ONLY — the seat inside the list is not modeled. */
 typedef enum {
   LOGFL_COUNTS_ALL = 0,
   LOGFL_COUNTS_EU_DX,
   LOGFL_COUNTS_EU_ONLY,
+  LOGFL_COUNTS_ENTITIES,
 } LogflExchCounts;
 
 /* --- scoring rules (LOG-3, 2026-08-28) -----------------------------------
@@ -100,17 +104,26 @@ typedef enum {
                                         (EUHFC years, YO counties) */
   LOGFL_MULT_EXCH_TEXT     = 1 << 5, /* … non-numeric only (IARU HQ) */
   LOGFL_MULT_PREFIX        = 1 << 6, /* WPX prefix of the call */
+  LOGFL_MULT_CALL_AREAS    = 1 << 7, /* prefix number 0-9 within each listed
+                                        entity, the entity itself elsewhere
+                                        (SAC rules §8.2) */
 } LogflMultSource;
 
 typedef struct {
   gboolean tx_serial;          /* sent exchange includes an auto serial */
   GPtrArray *fields;           /* received exchange, LogflExchField* */
   LogflExchCounts counts;      /* which QSOs are valid at all */
+  char **counts_entities;      /* ENTITIES: cty primary prefixes, NULL-
+                                  terminated; NULL under any other rule */
+  char *counts_name;           /* ENTITIES: what the list is called, for the
+                                  operator ("Scandinavian"); may be NULL */
   gboolean zero_own_country;   /* valid but 0 points (CQ WW own country) */
   GArray *points;              /* LogflPtsTerm, ordered; NULL = no rule */
   guint mult;                  /* LogflMultSource mask; 0 = no rule */
   char *mult_exch_from;        /* EXCH counts only from this DXCC prefix
                                   (CVA: PY states; NULL = from anyone) */
+  char **mult_area_entities;   /* CALL_AREAS: the entities split by prefix
+                                  number, NULL-terminated */
   gboolean mult_per_contest;   /* mults once per contest (WPX prefixes),
                                   not once per band */
   GHashTable *mult_weight;     /* band ("80m") → weight int; NULL = ×1
@@ -121,13 +134,15 @@ typedef struct {
  *   [exchange]
  *   tx_serial=true
  *   fields=nr;
- *   counts=eu-dx           # all|eu-dx|eu-only, missing = all
+ *   counts=eu-dx           # all|eu-dx|eu-only|entities:LA,SM,…; missing = all
+ *   counts_name=Scandinavian   # entities: only — names the list in the UI
  *   zero_own_country=false
  *   points=country:YO=8;own-country=1;same-cont=2;other-cont=4;
  *                          # ordered, first match wins; N/L = low-band
  *                          # (160/80/40) override, e.g. other-cont=3/6
  *   mult=exch:YO+country   # country|country-areas|cqzone|zone|exch[:PFX]|
- *                          # exch-text|prefix, joined with +
+ *                          # exch-text|prefix|call-areas:LA,SM,…, joined
+ *                          # with +
  *   mult_scope=contest     # band (default) | contest
  *   mult_weight=80m:4;40m:3;20m:2;15m:2;10m:2   # WAE band bonus
  *   [field:nr]

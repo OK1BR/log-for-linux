@@ -34,7 +34,10 @@ logfl_exch_def_free (LogflExchDef *def)
         g_free (g_array_index (def->points, LogflPtsTerm, i).arg);
       g_array_unref (def->points);
     }
+  g_strfreev (def->counts_entities);
+  g_free (def->counts_name);
   g_free (def->mult_exch_from);
+  g_strfreev (def->mult_area_entities);
   g_clear_pointer (&def->mult_weight, g_hash_table_unref);
   g_free (def);
 }
@@ -76,6 +79,32 @@ type_from_string (const char *s, LogflExchFieldType *out)
         return TRUE;
       }
   return FALSE;
+}
+
+/* "JW,JX,LA" → upper-cased NULL-terminated list of cty primary prefixes;
+ * NULL when it names no entity — an empty list must fail the parse, not
+ * quietly rule out (or split) nothing. */
+static char **
+entity_list_parse (const char *value)
+{
+  GPtrArray *a = g_ptr_array_new ();
+  char **toks = g_strsplit (value, ",", -1);
+  for (char **t = toks; *t; t++)
+    {
+      char *up = g_strstrip (g_ascii_strup (*t, -1));
+      if (*up)
+        g_ptr_array_add (a, up);
+      else
+        g_free (up);
+    }
+  g_strfreev (toks);
+  if (a->len == 0)
+    {
+      g_ptr_array_free (a, TRUE);
+      return NULL;
+    }
+  g_ptr_array_add (a, NULL);
+  return (char **) g_ptr_array_free (a, FALSE);
 }
 
 /* points= term list: "name[:ARG]=N[/L];…", ordered, first match wins. */
@@ -138,7 +167,7 @@ pts_parse (LogflExchDef *def, const char *value, GError **error)
 }
 
 /* mult= source list: "country|country-areas|cqzone|zone|exch[:PFX]|
- * exch-text|prefix", joined with '+'. */
+ * exch-text|prefix|call-areas:LIST", joined with '+'. */
 static gboolean
 mult_parse (LogflExchDef *def, const char *value, GError **error)
 {
@@ -166,6 +195,14 @@ mult_parse (LogflExchDef *def, const char *value, GError **error)
         }
       else if (g_str_equal (*t, "prefix"))
         def->mult |= LOGFL_MULT_PREFIX;
+      else if (g_str_has_prefix (*t, "call-areas:"))
+        {
+          g_strfreev (def->mult_area_entities);
+          def->mult_area_entities = entity_list_parse (*t + 11);
+          if (!def->mult_area_entities)
+            goto bad;
+          def->mult |= LOGFL_MULT_CALL_AREAS;
+        }
       else
         {
         bad:
@@ -221,6 +258,9 @@ logfl_exch_def_parse (const char *text, GError **error)
         def->counts = LOGFL_COUNTS_EU_DX;
       else if (g_str_equal (counts, "eu-only"))
         def->counts = LOGFL_COUNTS_EU_ONLY;
+      else if (g_str_has_prefix (counts, "entities:")
+               && (def->counts_entities = entity_list_parse (counts + 9)))
+        def->counts = LOGFL_COUNTS_ENTITIES;
       else if (!g_str_equal (counts, "all") && *counts)
         {
           /* A rule this build does not know must not silently degrade to
@@ -233,6 +273,10 @@ logfl_exch_def_parse (const char *text, GError **error)
         }
       g_free (counts);
     }
+  def->counts_name = g_key_file_get_string (kf, "exchange", "counts_name",
+                                            NULL);
+  if (def->counts_name && !*g_strstrip (def->counts_name))
+    g_clear_pointer (&def->counts_name, g_free);
 
   char *pts = g_key_file_get_string (kf, "exchange", "points", NULL);
   if (pts)
@@ -358,10 +402,21 @@ logfl_exch_def_serialize (const LogflExchDef *def)
 {
   g_autoptr (GKeyFile) kf = g_key_file_new ();
   g_key_file_set_boolean (kf, "exchange", "tx_serial", def->tx_serial);
-  g_key_file_set_string (kf, "exchange", "counts",
-                         def->counts == LOGFL_COUNTS_EU_DX   ? "eu-dx"
-                         : def->counts == LOGFL_COUNTS_EU_ONLY ? "eu-only"
-                                                               : "all");
+  if (def->counts == LOGFL_COUNTS_ENTITIES)
+    {
+      char *list = g_strjoinv (",", def->counts_entities);
+      char *rule = g_strconcat ("entities:", list, NULL);
+      g_key_file_set_value (kf, "exchange", "counts", rule);
+      g_free (rule);
+      g_free (list);
+    }
+  else
+    g_key_file_set_string (kf, "exchange", "counts",
+                           def->counts == LOGFL_COUNTS_EU_DX   ? "eu-dx"
+                           : def->counts == LOGFL_COUNTS_EU_ONLY ? "eu-only"
+                                                                 : "all");
+  if (def->counts_name)
+    g_key_file_set_string (kf, "exchange", "counts_name", def->counts_name);
   g_key_file_set_boolean (kf, "exchange", "zero_own_country",
                           def->zero_own_country);
 
@@ -397,6 +452,7 @@ logfl_exch_def_serialize (const LogflExchDef *def)
         { LOGFL_MULT_CQZONE, "cqzone" }, { LOGFL_MULT_ZONE, "zone" },
         { LOGFL_MULT_EXCH, "exch" }, { LOGFL_MULT_EXCH_TEXT, "exch-text" },
         { LOGFL_MULT_PREFIX, "prefix" },
+        { LOGFL_MULT_CALL_AREAS, "call-areas" },
       };
       for (gsize i = 0; i < G_N_ELEMENTS (srcs); i++)
         {
@@ -407,6 +463,12 @@ logfl_exch_def_serialize (const LogflExchDef *def)
           g_string_append (s, srcs[i].name);
           if (srcs[i].bit == LOGFL_MULT_EXCH && def->mult_exch_from)
             g_string_append_printf (s, ":%s", def->mult_exch_from);
+          if (srcs[i].bit == LOGFL_MULT_CALL_AREAS)
+            {
+              char *list = g_strjoinv (",", def->mult_area_entities);
+              g_string_append_printf (s, ":%s", list);
+              g_free (list);
+            }
         }
       g_key_file_set_value (kf, "exchange", "mult", s->str);
       g_string_free (s, TRUE);
@@ -544,6 +606,29 @@ logfl_exch_serial_format (guint serial)
   return g_strdup_printf ("%03u", serial);
 }
 
+/* The DXCC entity behind a cty answer. cty.dat carries the WAE-only
+ * entities ('*') next to the DXCC ones; a contest that lists DXCC entities
+ * means Bear Island when it says Svalbard (SAC rules §2: "Svalbard & Bear
+ * Island : JW"). Only that fold is here — the other WAE-only entities join
+ * when a preset needs them, each with its source. */
+static const char *
+dxcc_prefix (const LogflCtyInfo *info)
+{
+  if (info->waedc_only && g_str_equal (info->prefix, "JW/b"))
+    return "JW";
+  return info->prefix;
+}
+
+static gboolean
+entity_listed (char **list, const LogflCtyInfo *info)
+{
+  const char *pfx = dxcc_prefix (info);
+  for (char **e = list; e && *e; e++)
+    if (g_ascii_strcasecmp (*e, pfx) == 0)
+      return TRUE;
+  return FALSE;
+}
+
 LogflQsoValidity
 logfl_contest_qso_validity (const LogflExchDef *def,
                             const LogflCtyInfo *mine,
@@ -566,6 +651,10 @@ logfl_contest_qso_validity (const LogflExchDef *def,
       break;
     case LOGFL_COUNTS_EU_ONLY:
       if (!g_str_equal (theirs->continent, "EU"))
+        return LOGFL_QSO_NOT_VALID;
+      break;
+    case LOGFL_COUNTS_ENTITIES:
+      if (!entity_listed (def->counts_entities, theirs))
         return LOGFL_QSO_NOT_VALID;
       break;
     case LOGFL_COUNTS_ALL:
@@ -719,6 +808,36 @@ mult_country_area (const LogflCtyInfo *theirs, const char *call)
   return g_strdup_printf ("%s%c", theirs->prefix, d);
 }
 
+/* SAC rules §8.2 prefix number: "SI3, SK3, SL3, SM3, 7S3, and 8S3 all
+ * count for the same (1) multiplier" — the first digit behind the prefix,
+ * so the leading digit of 7S/8S/5P/5Q is stepped over; "two or more prefix
+ * numbers counts for the area indicated by the first number (e.g., OZ150A
+ * counts for OZ1)"; "stations without a prefix number count for the 0th
+ * area (e.g., LA/G3XYZ counts for LA0)" — a portable call is judged by its
+ * designator, never by the home call. A bare digit designator (SM3ABC/5)
+ * is not covered by the rules; it takes the digit, as the WPX prefix does
+ * — our reading. */
+static char
+prefix_number (const char *call)
+{
+  char *main_tok = NULL, *desig = NULL;
+  call_split (call, &main_tok, &desig);
+  const char *tok = desig ? desig : main_tok;
+  char d = '0';
+  if (tok && strlen (tok) == 1 && g_ascii_isdigit (*tok))
+    d = *tok;
+  else if (tok)
+    for (const char *c = tok + 1; *c; c++)
+      if (g_ascii_isdigit (*c))
+        {
+          d = *c;
+          break;
+        }
+  g_free (main_tok);
+  g_free (desig);
+  return d;
+}
+
 /* WPX low bands (§V.B: 7, 3.5 and 1.8 MHz score double). */
 static gboolean
 band_is_low (const char *band)
@@ -830,6 +949,26 @@ mult_eval (const LogflExchDef *def, const LogflQso *q,
       char *key = mult_country_area (theirs, q->call);
       mult_take (def, q->band, "c", key, seen, label, mults);
       g_free (key);
+    }
+  if ((def->mult & LOGFL_MULT_CALL_AREAS) && theirs_ok)
+    {
+      const char *ent = dxcc_prefix (theirs);
+      if (entity_listed (def->mult_area_entities, theirs))
+        {
+          /* The entity namespaces the key: Finland's area 0 (OH/G3XYZ) and
+           * Aland (OH0) both read "OH0" and are two multipliers. */
+          char *tag = g_strdup_printf ("a:%s", ent);
+          gsize stem = strlen (ent);
+          while (stem > 0 && g_ascii_isdigit (ent[stem - 1]))
+            stem--;
+          char *key = g_strdup_printf ("%.*s%c", (int) stem, ent,
+                                       prefix_number (q->call));
+          mult_take (def, q->band, tag, key, seen, label, mults);
+          g_free (key);
+          g_free (tag);
+        }
+      else
+        mult_take (def, q->band, "c", ent, seen, label, mults);
     }
   if (def->mult & (LOGFL_MULT_CQZONE | LOGFL_MULT_ZONE))
     {
@@ -980,6 +1119,12 @@ logfl_contest_score (const LogflExchDef *def, LogflCty *cty,
 #define PTS_SARTG  "own-country=5;same-cont=10;other-cont=15;"
 #define PTS_YODX   "country:YO=8;own-country=1;same-cont=2;other-cont=4;"
 #define MULT_YODX  "exch:YO+country"
+/* SAC rules §2, as cty primary prefixes: Svalbard (Bear Island folds into
+ * it), Jan Mayen, Norway, Finland, Aland, Market Reef, Greenland, Faroe,
+ * Denmark, Sweden, Iceland. */
+#define ENT_SAC    "JW,JX,LA,OH,OH0,OJ0,OX,OY,OZ,SM,TF"
+#define PTS_SAC    "default=1;"
+#define MULT_SAC   "call-areas:" ENT_SAC
 
 guint
 logfl_contest_backfill_validity (LogflStore *s, GError **error)
@@ -992,16 +1137,21 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
     const char *mult;
     const char *scope;
     const char *weight;
+    const char *counts_name;     /* rides with an entities: counts rule */
   } rules[] = {
-    { "DARC-WAEDC", "eu-dx",   FALSE, PTS_WAE,   MULT_WAE,   NULL, WEIGHT_WAE },
-    { "EU-HF",      "eu-only", FALSE, PTS_EUHFC, MULT_EUHFC, NULL, NULL },
-    { "CQ-WW",      NULL,      TRUE,  PTS_CQWW,  MULT_CQWW,  NULL, NULL },
-    { "CQ-WPX",     NULL,      FALSE, PTS_WPX,   MULT_WPX,   "contest", NULL },
-    { "IARU-HF",    NULL,      FALSE, PTS_IARU,  MULT_IARU,  NULL, NULL },
-    { "OK-OM-DX",   NULL,      FALSE, PTS_OKOM,  MULT_OKOM,  NULL, NULL },
-    { "CVA-DX",     NULL,      FALSE, PTS_CVA,   MULT_CVA,   NULL, NULL },
-    { "SARTG-RTTY", NULL,      FALSE, PTS_SARTG, NULL,       NULL, NULL },
-    { "YOHFDX",     NULL,      FALSE, PTS_YODX,  MULT_YODX,  NULL, NULL },
+    { "DARC-WAEDC", "eu-dx",   FALSE, PTS_WAE,   MULT_WAE,   NULL, WEIGHT_WAE,
+      NULL },
+    { "EU-HF",      "eu-only", FALSE, PTS_EUHFC, MULT_EUHFC, NULL, NULL, NULL },
+    { "CQ-WW",      NULL,      TRUE,  PTS_CQWW,  MULT_CQWW,  NULL, NULL, NULL },
+    { "CQ-WPX",     NULL,      FALSE, PTS_WPX,   MULT_WPX,   "contest", NULL,
+      NULL },
+    { "IARU-HF",    NULL,      FALSE, PTS_IARU,  MULT_IARU,  NULL, NULL, NULL },
+    { "OK-OM-DX",   NULL,      FALSE, PTS_OKOM,  MULT_OKOM,  NULL, NULL, NULL },
+    { "CVA-DX",     NULL,      FALSE, PTS_CVA,   MULT_CVA,   NULL, NULL, NULL },
+    { "SARTG-RTTY", NULL,      FALSE, PTS_SARTG, NULL,       NULL, NULL, NULL },
+    { "YOHFDX",     NULL,      FALSE, PTS_YODX,  MULT_YODX,  NULL, NULL, NULL },
+    { "SAC-", "entities:" ENT_SAC, FALSE, PTS_SAC, MULT_SAC, NULL, NULL,
+      "Scandinavian" },
   };
 
   GPtrArray *list = logfl_store_contest_list (s, error);
@@ -1047,6 +1197,9 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
           if (rules[r].counts)
             g_key_file_set_string (kf, "exchange", "counts",
                                    rules[r].counts);
+          if (rules[r].counts_name)
+            g_key_file_set_string (kf, "exchange", "counts_name",
+                                   rules[r].counts_name);
           if (rules[r].zero_own)
             g_key_file_set_boolean (kf, "exchange", "zero_own_country",
                                     TRUE);
@@ -1214,6 +1367,29 @@ static const LogflContestPreset presets[] = {
     "[exchange]\ntx_serial=true\nfields=exch;\n"
     "points=" PTS_YODX "\nmult=" MULT_YODX "\n"
     "[field:exch]\nlabel=Nr/County\ntype=auto\nrequired=true\n",
+    NULL },
+  /* SAC (sactest.net "Scandinavian Activity Contest 2026 rules", read
+   * 2026-09-18, non-Scandinavian European seat): RS(T) + serial from 001
+   * both ways (§6). §7.2 "EUROPEAN stations receive one (1) point for every
+   * complete Scandinavian QSO" — nobody else scores, hence counts=entities
+   * with the §2 list; Greenland is on it although it lies in North
+   * America. Mults §8.2: each prefix number 0-9 in each Scandinavian DXCC
+   * entity, per band; score §9 = points × mults. §6 "the same station may
+   * be worked once on each band" is the app's dup rule for a one-mode
+   * entry. Not modeled, as they never apply to an OK entry: the
+   * Scandinavian side (2/3 points, DXCC mults) and the non-European ladder
+   * (3 points on 80/40). The 2026 special rule (no entries from Russia and
+   * Belarus) changes nothing here — neither is Scandinavian. The ADIF id is
+   * per part; the October SSB part edits the suffix to SAC-SSB. Cabrillo
+   * CONTEST equals the ADIF id (sponsor's template, sactest.net
+   * rules/cabrillo-3-0); the template's trailing transmitter id is "not
+   * used in single-op" per the WWROF QSO spec it refers to, so the writer
+   * leaves it out. */
+  { "SAC", "SAC-CW",
+    "[exchange]\ntx_serial=true\nfields=nr;\n"
+    "counts=entities:" ENT_SAC "\ncounts_name=Scandinavian\n"
+    "points=" PTS_SAC "\nmult=" MULT_SAC "\n"
+    "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
     NULL },
   { "Custom", NULL,
     "[exchange]\ntx_serial=false\nfields=exch;\n"

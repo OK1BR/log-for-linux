@@ -887,9 +887,19 @@ update_wb4 (LogflWindow *self)
                               dd_selected (self->mode_dd, modes), &wb, NULL))
     return;
 
-  /* Rule verdict first — an unworkable station outranks worked-before. */
+  /* Rule verdict first — an unworkable station outranks worked-before. An
+   * entity-list rule names its list ("not Scandinavian") — EU/non-EU would
+   * tell the operator nothing about why a DL does not count. */
+  gboolean by_list = validity == LOGFL_QSO_NOT_VALID
+                     && self->exch_def->counts == LOGFL_COUNTS_ENTITIES;
   char *prefix =
-      validity == LOGFL_QSO_NOT_VALID
+      by_list && self->exch_def->counts_name
+          ? g_strdup_printf ("No contest QSO — not %s (%s) · ",
+                             self->exch_def->counts_name, theirs.country)
+      : by_list
+          ? g_strdup_printf ("No contest QSO — %s is not on the contest's "
+                             "list · ", theirs.country)
+      : validity == LOGFL_QSO_NOT_VALID
           ? g_strdup_printf ("No contest QSO — %s station (%s) · ",
                              g_str_equal (theirs.continent, "EU")
                                  ? "EU" : "non-EU",

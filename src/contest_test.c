@@ -242,6 +242,36 @@ test_qso_validity (void)
                    LOGFL_QSO_VALID);
   logfl_exch_def_free (cqww);
 
+  /* SAC: only the Scandinavian entities of rules §2 count — Greenland is
+   * one of them although it lies in NA, and Bear Island (a WAE-only entity
+   * in cty.dat) is part of Svalbard. */
+  LogflExchDef *sac =
+      logfl_exch_def_parse (preset_named ("SAC")->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (sac->counts, ==, LOGFL_COUNTS_ENTITIES);
+  g_assert_cmpuint (g_strv_length (sac->counts_entities), ==, 11);
+  g_assert_cmpstr (sac->counts_name, ==, "Scandinavian");
+  LogflCtyInfo ox = cty_of ("Greenland", "OX", "NA");
+  LogflCtyInfo aland = cty_of ("Aland Islands", "OH0", "EU");
+  LogflCtyInfo bear = cty_of ("Bear Island", "JW/b", "EU");
+  bear.waedc_only = TRUE;
+  LogflCtyInfo dl = cty_of ("Fed. Rep. of Germany", "DL", "EU");
+  g_assert_cmpint (logfl_contest_qso_validity (sac, &ok, &oh), ==,
+                   LOGFL_QSO_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (sac, &ok, &ox), ==,
+                   LOGFL_QSO_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (sac, &ok, &aland), ==,
+                   LOGFL_QSO_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (sac, &ok, &bear), ==,
+                   LOGFL_QSO_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (sac, &ok, &dl), ==,
+                   LOGFL_QSO_NOT_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (sac, &ok, &k), ==,
+                   LOGFL_QSO_NOT_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (sac, &ok, NULL), ==,
+                   LOGFL_QSO_VALID);
+  logfl_exch_def_free (sac);
+
   /* Presets without a rule accept anything. */
   LogflExchDef *wpx =
       logfl_exch_def_parse (preset_named ("CQ WPX")->exch_def, &err);
@@ -290,10 +320,17 @@ test_backfill_validity (void)
   cust->exch_def = g_strdup (OLD_DEF);
   g_assert_true (logfl_store_contest_add (s, cust, &err));
 
-  /* All three preset-mapped contests get repaired: WAE and EUHFC gain
+  /* Both parts of SAC share the rule — matched on the "SAC-" prefix. */
+  LogflContest *sac = logfl_contest_new ();
+  sac->name = g_strdup ("SAC SSB 2026");
+  sac->adif_id = g_strdup ("SAC-SSB");
+  sac->exch_def = g_strdup (OLD_DEF);
+  g_assert_true (logfl_store_contest_add (s, sac, &err));
+
+  /* All four preset-mapped contests get repaired: WAE, EUHFC and SAC gain
    * validity + scoring, the counts=all one keeps its validity edit but
    * still gains the scoring keys (independent knobs, LOG-3). */
-  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 3);
+  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 4);
   g_assert_no_error (err);
 
   LogflContest *back = logfl_store_contest_get (s, wae->id, &err);
@@ -322,6 +359,16 @@ test_backfill_validity (void)
   logfl_exch_def_free (def);
   logfl_contest_free (back);
 
+  back = logfl_store_contest_get (s, sac->id, &err);
+  def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ENTITIES);
+  g_assert_cmpuint (g_strv_length (def->counts_entities), ==, 11);
+  g_assert_cmpstr (def->counts_name, ==, "Scandinavian");
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_CALL_AREAS);
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
   /* Second run: nothing left to do. */
   g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 0);
   g_assert_no_error (err);
@@ -330,6 +377,7 @@ test_backfill_validity (void)
   logfl_contest_free (euhfc);
   logfl_contest_free (own);
   logfl_contest_free (cust);
+  logfl_contest_free (sac);
   logfl_store_close (s);
 }
 
@@ -959,6 +1007,32 @@ test_score_roundtrip (void)
   g_free (text);
   logfl_exch_def_free (back);
   logfl_exch_def_free (def);
+
+  /* The entity lists survive too — a serialize that fell back to
+   * counts=all would turn "Scandinavians only" into "everyone counts". */
+  def = logfl_exch_def_parse (
+      "[exchange]\ntx_serial=true\nfields=nr;\n"
+      "counts=entities: la, sm ,oh0\ncounts_name=Scandinavian\n"
+      "points=default=1;\nmult=call-areas:LA,SM,OH0\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\n", &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ENTITIES);
+  g_assert_cmpuint (g_strv_length (def->counts_entities), ==, 3);
+  g_assert_cmpstr (def->counts_entities[1], ==, "SM");
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_CALL_AREAS);
+  text = logfl_exch_def_serialize (def);
+  back = logfl_exch_def_parse (text, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (back->counts, ==, LOGFL_COUNTS_ENTITIES);
+  g_assert_cmpuint (g_strv_length (back->counts_entities), ==, 3);
+  g_assert_cmpstr (back->counts_entities[2], ==, "OH0");
+  g_assert_cmpstr (back->counts_name, ==, "Scandinavian");
+  g_assert_cmpuint (back->mult, ==, LOGFL_MULT_CALL_AREAS);
+  g_assert_cmpuint (g_strv_length (back->mult_area_entities), ==, 3);
+  g_assert_cmpstr (back->mult_area_entities[0], ==, "LA");
+  g_free (text);
+  logfl_exch_def_free (back);
+  logfl_exch_def_free (def);
 }
 
 static void
@@ -972,6 +1046,11 @@ test_score_errors (void)
     "[exchange]\nfields=nr;\nmult=nonsense\n",
     "[exchange]\nfields=nr;\nmult=exch\nmult_scope=weekly\n",
     "[exchange]\nfields=nr;\nmult=exch\nmult_weight=80m:x;\n",
+    /* An entity list that names nobody is a typo, not a rule. */
+    "[exchange]\nfields=nr;\ncounts=entities:\n",
+    "[exchange]\nfields=nr;\ncounts=entities: , ,\n",
+    "[exchange]\nfields=nr;\nmult=call-areas\n",
+    "[exchange]\nfields=nr;\nmult=call-areas:\n",
   };
   for (gsize i = 0; i < G_N_ELEMENTS (bad); i++)
     {
@@ -1156,6 +1235,69 @@ test_score_euhfc (void)
   logfl_exch_def_free (def);
 }
 
+/* SAC from an OK seat, scored with the preset itself: 1 point per
+ * Scandinavian QSO, mults = prefix numbers per entity and band (§8.2). */
+static void
+test_score_sac (void)
+{
+  GError *err = NULL;
+  const LogflContestPreset *p = preset_named ("SAC");
+  g_assert_cmpstr (p->adif_id, ==, "SAC-CW");
+  LogflExchDef *def = logfl_exch_def_parse (p->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_true (def->tx_serial);
+  g_assert_cmpint (((LogflExchField *) def->fields->pdata[0])->type, ==,
+                   LOGFL_EXCH_SERIAL);
+
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "SM3ABC", "20m", "CW", NULL);    /* 1 pt, SM3         */
+  add_sqso (qsos, 2, "SK3W", "20m", "CW", NULL);      /* 1 pt, SM3 known   */
+  add_sqso (qsos, 3, "7S3A", "20m", "CW", NULL);      /* 1 pt, SM3 known   */
+  add_sqso (qsos, 4, "LA/G3XYZ", "20m", "CW", NULL);  /* no number: LA0    */
+  add_sqso (qsos, 5, "OZ150A", "20m", "CW", NULL);    /* first number: OZ1 */
+  add_sqso (qsos, 6, "DL1AB", "20m", "CW", NULL);     /* not Scandinavian  */
+  add_sqso (qsos, 7, "SM3ABC", "20m", "CW", NULL);    /* dupe              */
+  add_sqso (qsos, 8, "SM3ABC", "40m", "CW", NULL);    /* SM3 new on 40 m   */
+  add_sqso (qsos, 9, "OH0X", "20m", "CW", NULL);      /* Aland: OH0        */
+  add_sqso (qsos, 10, "OH/DL1AB", "20m", "CW", NULL); /* Finland area 0 —
+                                                         reads OH0 as well,
+                                                         a mult of its own */
+  add_sqso (qsos, 11, "OX3XR", "20m", "CW", NULL);    /* Greenland (NA)    */
+  add_sqso (qsos, 12, "5P5X", "20m", "CW", NULL);     /* 5P is the prefix,
+                                                         the number is 5   */
+  add_sqso (qsos, 13, "SM3ABC/5", "20m", "CW", NULL); /* digit designator  */
+  LogflContestTotals tot;
+  GHashTable *scores =
+    logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+  g_assert_nonnull (scores);
+  g_assert_cmpint (tot.points, ==, 11);
+  g_assert_cmpint (tot.mults, ==, 9);
+  g_assert_cmpint (tot.total, ==, 99);
+
+  g_assert_cmpstr (score_of (scores, 1)->mult, ==, "SM3");
+  g_assert_cmpint (score_of (scores, 2)->points, ==, 1);
+  g_assert_null (score_of (scores, 2)->mult);
+  g_assert_null (score_of (scores, 3)->mult);
+  g_assert_cmpstr (score_of (scores, 4)->mult, ==, "LA0");
+  g_assert_cmpstr (score_of (scores, 5)->mult, ==, "OZ1");
+  g_assert_cmpint (score_of (scores, 6)->points, ==, 0);
+  g_assert_null (score_of (scores, 6)->mult);
+  g_assert_cmpint (score_of (scores, 7)->points, ==, 0);
+  g_assert_cmpstr (score_of (scores, 8)->mult, ==, "SM3");
+  g_assert_cmpstr (score_of (scores, 9)->mult, ==, "OH0");
+  g_assert_cmpstr (score_of (scores, 10)->mult, ==, "OH0");
+  g_assert_cmpstr (score_of (scores, 11)->mult, ==, "OX3");
+  g_assert_cmpstr (score_of (scores, 12)->mult, ==, "OZ5");
+  g_assert_cmpstr (score_of (scores, 13)->mult, ==, "SM5");
+
+  g_hash_table_unref (scores);
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (def);
+}
+
 static void
 test_score_wae (void)
 {
@@ -1286,6 +1428,7 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/score/wpx", test_score_wpx);
   g_test_add_func ("/contest/score/euhfc", test_score_euhfc);
   g_test_add_func ("/contest/score/wae", test_score_wae);
+  g_test_add_func ("/contest/score/sac", test_score_sac);
   g_test_add_func ("/contest/score/iaru", test_score_iaru);
   g_test_add_func ("/contest/score/unavailable", test_score_unavailable);
   return g_test_run ();
