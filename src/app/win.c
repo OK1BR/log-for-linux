@@ -847,6 +847,25 @@ validity_for_call (LogflWindow *self, const char *call,
                                      *theirs_ok ? theirs : NULL);
 }
 
+/* Why the active contest's rule rules `theirs` out — the bare reason, one
+ * wording for the worked-before line and the confirm dialog so the two
+ * never drift. An entity-list rule names its list ("not Scandinavian") —
+ * EU/non-EU would tell the operator nothing about why a DL does not count.
+ * Call only on a NOT_VALID verdict: that one implies a resolved `theirs`. */
+static char *
+not_valid_reason (LogflWindow *self, const LogflCtyInfo *theirs)
+{
+  if (self->exch_def->counts != LOGFL_COUNTS_ENTITIES)
+    return g_strdup_printf ("%s station (%s)",
+                            g_str_equal (theirs->continent, "EU") ? "EU"
+                                                                  : "non-EU",
+                            theirs->country);
+  if (self->exch_def->counts_name)
+    return g_strdup_printf ("not %s (%s)", self->exch_def->counts_name,
+                            theirs->country);
+  return g_strdup_printf ("%s is not on the contest's list", theirs->country);
+}
+
 static void
 update_wb4 (LogflWindow *self)
 {
@@ -887,26 +906,18 @@ update_wb4 (LogflWindow *self)
                               dd_selected (self->mode_dd, modes), &wb, NULL))
     return;
 
-  /* Rule verdict first — an unworkable station outranks worked-before. An
-   * entity-list rule names its list ("not Scandinavian") — EU/non-EU would
-   * tell the operator nothing about why a DL does not count. */
-  gboolean by_list = validity == LOGFL_QSO_NOT_VALID
-                     && self->exch_def->counts == LOGFL_COUNTS_ENTITIES;
-  char *prefix =
-      by_list && self->exch_def->counts_name
-          ? g_strdup_printf ("No contest QSO — not %s (%s) · ",
-                             self->exch_def->counts_name, theirs.country)
-      : by_list
-          ? g_strdup_printf ("No contest QSO — %s is not on the contest's "
-                             "list · ", theirs.country)
-      : validity == LOGFL_QSO_NOT_VALID
-          ? g_strdup_printf ("No contest QSO — %s station (%s) · ",
-                             g_str_equal (theirs.continent, "EU")
-                                 ? "EU" : "non-EU",
-                             theirs.country)
-      : validity == LOGFL_QSO_ZERO_POINTS
-          ? g_strdup_printf ("0 pts — own country (%s) · ", theirs.country)
-          : g_strdup ("");
+  /* Rule verdict first — an unworkable station outranks worked-before. */
+  char *prefix;
+  if (validity == LOGFL_QSO_NOT_VALID)
+    {
+      char *why = not_valid_reason (self, &theirs);
+      prefix = g_strdup_printf ("No contest QSO — %s · ", why);
+      g_free (why);
+    }
+  else if (validity == LOGFL_QSO_ZERO_POINTS)
+    prefix = g_strdup_printf ("0 pts — own country (%s) · ", theirs.country);
+  else
+    prefix = g_strdup ("");
 
   char *txt;
   if (wb.n_total == 0)
@@ -1181,8 +1192,10 @@ do_add_pending (LogflWindow *self)
   logfl_qso_free (q);
 }
 
+/* Answer to either log confirm — duplicate or no contest QSO. */
 static void
-on_dup_response (GObject *source, GAsyncResult *res, gpointer user_data)
+on_log_confirm_response (GObject *source, GAsyncResult *res,
+                         gpointer user_data)
 {
   LogflWindow *self = user_data;
   const char *resp =
@@ -1230,15 +1243,39 @@ log_qso (LogflWindow *self)
   else
     logfl_store_dup_check (self->store, q->call, q->band, q->mode, q->ts,
                            DUP_WINDOW_S, &dup, NULL);
+  /* The red worked-before line alone does not stop a reflexive Enter — a
+   * QSO the contest's rule rules out asks before it lands in the contest
+   * log. Only NOT_VALID asks: a 0-point QSO still counts (and may be a
+   * mult). No contest → always VALID, so plain logging never asks. */
+  LogflCtyInfo theirs;
+  gboolean theirs_ok = FALSE;
+  gboolean not_valid = validity_for_call (self, q->call, &theirs,
+                                          &theirs_ok) == LOGFL_QSO_NOT_VALID;
   self->pending = q;
-  if (!dup)
+  if (!dup && !not_valid)
     {
       do_add_pending (self);
       return;
     }
 
-  AdwDialog *dlg = adw_alert_dialog_new ("Duplicate?", NULL);
-  if (self->contest)
+  /* One dialog, never two in a row; the rule verdict outranks the dup, as
+   * on the worked-before line. */
+  AdwDialog *dlg = adw_alert_dialog_new (not_valid ? "No contest QSO?"
+                                                   : "Duplicate?", NULL);
+  if (not_valid)
+    {
+      char *why = not_valid_reason (self, &theirs);
+      if (dup)
+        adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
+            "%s does not count in %s — %s. It is also a duplicate on %s/%s.",
+            q->call, self->contest->name, why, q->band, q->mode);
+      else
+        adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
+            "%s does not count in %s — %s.",
+            q->call, self->contest->name, why);
+      g_free (why);
+    }
+  else if (self->contest)
     adw_alert_dialog_format_body (ADW_ALERT_DIALOG (dlg),
         "%s was already worked in %s on %s/%s.",
         q->call, self->contest->name, q->band, q->mode);
@@ -1251,11 +1288,11 @@ log_qso (LogflWindow *self)
                                   NULL);
   adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg), "log",
                                             ADW_RESPONSE_SUGGESTED);
-  /* Prefer Cancel on Enter so an accidental duplicate is not logged. */
+  /* Prefer Cancel on Enter so a second reflexive Enter does not log it. */
   adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "cancel");
   adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dlg), "cancel");
   adw_alert_dialog_choose (ADW_ALERT_DIALOG (dlg), GTK_WIDGET (self), NULL,
-                           on_dup_response, self);
+                           on_log_confirm_response, self);
 }
 
 /* --- macros v2 (editable banks, Run/S&P, ESM) --------------------------- */
@@ -1626,7 +1663,8 @@ esm_enter (LogflWindow *self)
       log_qso (self);
       self->esm_force_log = FALSE;
       /* Phase advances in do_add_pending on success; if still pending
-       * (dup dialog), leave LOG so a cancelled dup can retry. */
+       * (confirm dialog — dup or no contest QSO), leave LOG so a cancelled
+       * confirm can retry. */
       refresh_esm_hint (self);
       break;
     case LOGFL_ESM_ACT_NONE:
