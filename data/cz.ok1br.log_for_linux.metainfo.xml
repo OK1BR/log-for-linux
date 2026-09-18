@@ -35,6 +35,25 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.1" date="2026-09-18">
+      <description>
+        <p>
+          Live claimed-score estimate for the active contest: points ×
+          multipliers in the contest subtitle, Pts/Mult columns showing what
+          each QSO brought, and CLAIMED-SCORE prefilled in the Cabrillo
+          dialog. Contest presets for YO DX HF and SAC. Cabrillo
+          CATEGORY-MODE and CATEGORY-BAND are prefilled from the logged
+          QSOs instead of the previous contest's choice. A QSO the contest's
+          rule rules out asks before it is logged. Exchange and Sent fields
+          are upper-cased as you type, a spot click no longer replaces the
+          call under a row you have started typing into, table columns
+          follow the font (the UTC column could lose its time), and every
+          icon the app uses is compiled into the binary. The .deb and .rpm
+          packages now carry cty.dat — without it country resolution and
+          contest validity were off on Debian, Ubuntu and Fedora installs.
+        </p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-08-17">
       <description>
         <p>

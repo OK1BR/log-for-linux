@@ -8,13 +8,15 @@ skimmer), sharing their technology and architecture: a headless, GLib-only
 engine under a GTK4/libadwaita front-end, plain C11, meson, SQLite. Successor
 of the retired Rust prototype (BRlog).
 
-> **Status: 0.3.0 — a usable daily logbook.** Everything below is implemented,
+> **Status: 0.3.1 — a usable daily logbook.** Everything below is implemented,
 > covered by offline test gates, and was run in anger through full
-> **EUHF Challenge 2026**, **WAE DX Contest CW 2026** and **SARTG WW RTTY
-> 2026** deployments — and **YO DX HF 2026** on `main` after the release —
-> live entry, macros, serials, dup checking, per-contest QSO validity and the
-> Cabrillo submissions all came from this app. The RTTY keying, new in 0.3.0,
-> had its first on-air pass in SARTG.
+> **EUHF Challenge 2026**, **WAE DX Contest CW 2026**, **SARTG WW RTTY 2026**
+> and **YO DX HF 2026** deployments — live entry, macros, serials, dup
+> checking, per-contest QSO validity and the Cabrillo submissions all came
+> from this app. The RTTY keying, new in 0.3.0, had its first on-air pass in
+> SARTG. The live score, new in 0.3.1, was checked against the YO DX HF log
+> after the contest — its first run during a contest is still ahead, and so
+> is the SAC preset's.
 
 ![Log for Linux — EUHFC 2026, CW on 20 m: entry row pre-filled from the radio over TCI, macro strip, live log](docs/img/main-window.png)
 
@@ -52,8 +54,7 @@ entry row always pre-filled with the live VFO — nearly free.
 - **Contests as first-class log sections**: create/switch/delete from the
   header, each contest copies its exchange template at creation. Presets for
   CQ WW, CQ WPX, IARU HF, OK/OM DX, EUHFC, WAE DX, CVA DX, SARTG WW RTTY,
-  YO DX and SAC (the last two on `main`, after 0.3.0), plus a custom
-  template editor
+  YO DX and SAC, plus a custom template editor
   (serial / number / text / auto fields mapped onto ADIF). The main-log view
   stays clean — contest QSOs live in their section, while worked-B4 and
   statistics stay global
@@ -62,10 +63,10 @@ entry row always pre-filled with the live VFO — nearly free.
 - **Cabrillo v3 export** of the active contest: category dialog with
   spec-value dropdowns (persisted), exact-QRG kHz, correct mode letters,
   chronological order — ready for robot submission
-- **Live claimed-score estimate** *(on `main`, after 0.3.0)*: points ×
-  multipliers in the contest subtitle, Pts/Mult columns showing what each QSO
-  brought, CLAIMED-SCORE prefilled in the Cabrillo dialog — an estimate from
-  your own seat; the sponsor's rescoring is the authority
+- **Live claimed-score estimate**: points × multipliers in the contest
+  subtitle, Pts/Mult columns showing what each QSO brought, CLAIMED-SCORE
+  prefilled in the Cabrillo dialog — an estimate from your own seat; the
+  sponsor's rescoring is the authority
 - **CW and RTTY contest messaging** via the radio's keyer (TCI): F1–F8 macro
   strip with separate **Run and S&P banks**, right-click or Preferences
   editing, tokens `{MYCALL}` `{CALL}` `{RST}` `{NR}` `{EXCH}`; optional
