@@ -31,12 +31,27 @@ description: |
   for skimmer-for-linux. SQLite store, one file.
 
 contents:
+  # Every file meson installs, one entry each — a `type: tree` entry would make
+  # the rpm own shared directories (icons/hicolor/...) as well. The list fell
+  # behind once: the 0.2.0 and 0.3.0 packages went out without cty.dat, so
+  # country resolution and contest validity were silently off. build.yml now
+  # fails when a staged file is missing here.
   - src: build-pkg/staging/usr/bin/log-for-linux
     dst: /usr/bin/log-for-linux
   - src: build-pkg/staging/usr/share/applications/cz.ok1br.log_for_linux.desktop
     dst: /usr/share/applications/cz.ok1br.log_for_linux.desktop
   - src: build-pkg/staging/usr/share/icons/hicolor/scalable/apps/cz.ok1br.log_for_linux.svg
     dst: /usr/share/icons/hicolor/scalable/apps/cz.ok1br.log_for_linux.svg
+  - src: build-pkg/staging/usr/share/icons/hicolor/symbolic/apps/cz.ok1br.log_for_linux-symbolic.svg
+    dst: /usr/share/icons/hicolor/symbolic/apps/cz.ok1br.log_for_linux-symbolic.svg
+  - src: build-pkg/staging/usr/share/log-for-linux/cty.dat
+    dst: /usr/share/log-for-linux/cty.dat
+  - src: build-pkg/staging/usr/share/log-for-linux/cty.dat.LICENSE
+    dst: /usr/share/log-for-linux/cty.dat.LICENSE
+  - src: build-pkg/staging/usr/share/log-for-linux/icons/LICENSE
+    dst: /usr/share/log-for-linux/icons/LICENSE
+  - src: build-pkg/staging/usr/share/log-for-linux/icons/COPYING.LGPL-3
+    dst: /usr/share/log-for-linux/icons/COPYING.LGPL-3
   - src: build-pkg/staging/usr/share/metainfo/cz.ok1br.log_for_linux.metainfo.xml
     dst: /usr/share/metainfo/cz.ok1br.log_for_linux.metainfo.xml
 

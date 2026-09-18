@@ -28,6 +28,12 @@ install_data('cz.ok1br.log_for_linux.metainfo.xml',
 install_data('cty.dat', 'cty.dat.LICENSE',
   install_dir : get_option('datadir') / 'log-for-linux')
 
+# The Adwaita glyphs compiled into the binary (icons/, LGPL v3 option) travel
+# with their licence the same way: a binary package has no source tree to
+# point at.
+install_data('icons/LICENSE', 'icons/COPYING.LGPL-3',
+  install_dir : get_option('datadir') / 'log-for-linux' / 'icons')
+
 # Refresh the icon cache and desktop database at install time so the app and
 # its icon show up without requiring a re-login. Automatically skipped when
 # DESTDIR is set (distro packaging), leaving those steps to the packager.

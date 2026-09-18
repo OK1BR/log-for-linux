@@ -121,6 +121,13 @@ jobs:
           /tmp/nfpm package -f packaging/nfpm.yaml -p deb -t dist/
           /tmp/nfpm package -f packaging/nfpm.yaml -p rpm -t dist/
           ls -la dist/
+      - name: Packages carry everything meson installs
+        run: |
+          # nfpm.yaml lists the payload by hand and fell behind once: 0.2.0 and
+          # 0.3.0 went out without cty.dat. A staged file that is missing from
+          # the .deb (the .rpm is built from the same list) fails here.
+          diff <(cd build-pkg/staging && find usr -type f | sort) \
+               <(dpkg-deb --fsys-tarfile dist/*.deb | tar -t | grep -v '/$' | sed 's|^\./||' | sort)
       - name: Install-test the .deb (ubuntu:24.04)
         run: |
           docker run --rm -v "$PWD/dist:/dist:ro" ubuntu:24.04 bash -ec '
@@ -129,6 +136,7 @@ jobs:
             apt-get install -yq /dist/*.deb
             if ldd /usr/bin/log-for-linux | grep "not found"; then exit 1; fi
             test -f /usr/share/applications/cz.ok1br.log_for_linux.desktop
+            test -f /usr/share/log-for-linux/cty.dat
             echo "deb install OK"'
       - name: Install-test the .rpm (fedora:40)
         run: |
@@ -136,6 +144,7 @@ jobs:
             dnf install -y -q /dist/*.rpm
             if ldd /usr/bin/log-for-linux | grep "not found"; then exit 1; fi
             test -f /usr/share/applications/cz.ok1br.log_for_linux.desktop
+            test -f /usr/share/log-for-linux/cty.dat
             echo "rpm install OK"'
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
