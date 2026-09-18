@@ -29,4 +29,11 @@
     <file alias="media-playlist-consecutive-symbolic.svg">icons/media-playlist-consecutive-symbolic.svg</file>
     <file alias="network-transmit-receive-symbolic.svg">icons/network-transmit-receive-symbolic.svg</file>
   </gresource>
+  <!-- The app's own icon, shown by the About dialog. meson installs it into
+       hicolor, but a build run uninstalled or with a redirected
+       XDG_DATA_HOME — every isolated test profile — cannot see that copy
+       and About showed image-missing. Our own artwork, same file. -->
+  <gresource prefix="/cz/ok1br/log_for_linux/icons/scalable/apps">
+    <file>cz.ok1br.log_for_linux.svg</file>
+  </gresource>
 </gresources>
