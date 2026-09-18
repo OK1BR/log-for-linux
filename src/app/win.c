@@ -113,6 +113,17 @@ struct _LogflWindow {
   LogflContestTotals score;    /* cached by rescore() for the subtitle */
   gboolean score_valid;        /* score holds a real estimate */
   GtkColumnViewColumn *col_name, *col_comment; /* hidden while in contest */
+  /* Table columns sized from a sample string in the table's real font
+   * (fit_table_columns) — a width guessed in pixels cut the UTC time off. */
+  struct
+  {
+    GtkColumnViewColumn *col;
+    const char *sample;        /* widest text the column should show */
+    int min_px;                /* never narrower than this */
+  } colw[12];
+  guint n_colw;
+  int colw_ref_px;             /* font fingerprint of the last fit */
+  guint colw_idle;             /* pending fit — coalesces css-changed bursts */
   guint next_serial;           /* next sent serial (0 = no serial contest) */
   gint64 pending_contest_delete; /* contest id in the open delete confirm */
 };
@@ -4934,11 +4945,62 @@ col_unbind (GtkSignalListItemFactory *factory, GObject *object,
   g_object_set_data (G_OBJECT (box), "logfl-row", NULL);
 }
 
-/* fixed_w > 0: preferred column width (px). expand: share leftover space.
- * Returns the column (borrowed — the view owns it). */
+/* Horizontal room a cell needs around its text: the 10 px padding on both
+ * sides from ensure_table_css plus a little slack against rounding. */
+#define LOGFL_CELL_PAD_PX 24
+
+static int
+text_px (GtkWidget *w, const char *s)
+{
+  PangoLayout *l = gtk_widget_create_pango_layout (w, s);
+  int px = 0;
+  pango_layout_get_pixel_size (l, &px, NULL);
+  g_object_unref (l);
+  return px;
+}
+
+/* Size the sampled columns for the font the table really uses. A width
+ * guessed in pixels at build time truncates as soon as the font is wider
+ * than the guess — the UTC column lost the time of the QSO that way. Runs
+ * again only when the font changed (ten digits are the fingerprint), so a
+ * width the operator dragged stays put until then. */
+static gboolean
+fit_table_columns (gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  self->colw_idle = 0;
+  if (!self->table_view)
+    return G_SOURCE_REMOVE;
+  int ref = text_px (self->table_view, "0000000000");
+  if (ref == self->colw_ref_px)
+    return G_SOURCE_REMOVE;
+  self->colw_ref_px = ref;
+  for (guint i = 0; i < self->n_colw; i++)
+    {
+      int px = text_px (self->table_view, self->colw[i].sample)
+               + LOGFL_CELL_PAD_PX;
+      gtk_column_view_column_set_fixed_width (
+          self->colw[i].col, MAX (px, self->colw[i].min_px));
+    }
+  g_debug ("table: columns fitted, 10 digits = %d px", ref);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+queue_fit_table_columns (LogflWindow *self)
+{
+  if (self->n_colw > 0 && self->colw_idle == 0)
+    self->colw_idle = g_idle_add (fit_table_columns, self);
+}
+
+/* fixed_w > 0: preferred column width (px). sample: the widest text the
+ * column should show — when given, fixed_w is only the floor and the real
+ * width follows the font (fit_table_columns). expand: share leftover
+ * space. Returns the column (borrowed — the view owns it). */
 static GtkColumnViewColumn *
 add_column (GtkColumnView *view, const char *title, int col,
-            int fixed_w, gboolean expand, LogflWindow *self)
+            int fixed_w, const char *sample, gboolean expand,
+            LogflWindow *self)
 {
   GtkListItemFactory *factory = gtk_signal_list_item_factory_new ();
   g_object_set_data (G_OBJECT (factory), "col", GINT_TO_POINTER (col));
@@ -4951,6 +5013,13 @@ add_column (GtkColumnView *view, const char *title, int col,
     gtk_column_view_column_set_fixed_width (c, fixed_w);
   gtk_column_view_column_set_expand (c, expand);
   gtk_column_view_append_column (view, c);
+  if (sample && self->n_colw < G_N_ELEMENTS (self->colw))
+    {
+      self->colw[self->n_colw].col = c;
+      self->colw[self->n_colw].sample = sample;
+      self->colw[self->n_colw].min_px = fixed_w;
+      self->n_colw++;
+    }
   g_object_unref (c);
   return c;
 }
@@ -5070,6 +5139,8 @@ logfl_window_dispose (GObject *obj)
   g_clear_handle_id (&self->clock_id, g_source_remove);
   g_clear_handle_id (&self->search_id, g_source_remove);
   g_clear_handle_id (&self->tci_retry_id, g_source_remove);
+  g_clear_handle_id (&self->colw_idle, g_source_remove);
+  self->n_colw = 0;
   /* Sentinel for in-flight TCI idles / connect jobs: null the status label
    * first so they drop work instead of touching a half-torn window. */
   self->tci_label = NULL;
@@ -5123,10 +5194,20 @@ logfl_window_dispose (GObject *obj)
   G_OBJECT_CLASS (logfl_window_parent_class)->dispose (obj);
 }
 
+/* A theme or font change restyles the window — refit the table columns
+ * (fit_table_columns itself is a no-op while the font stays the same). */
+static void
+logfl_window_css_changed (GtkWidget *widget, GtkCssStyleChange *change)
+{
+  GTK_WIDGET_CLASS (logfl_window_parent_class)->css_changed (widget, change);
+  queue_fit_table_columns (LOGFL_WINDOW (widget));
+}
+
 static void
 logfl_window_class_init (LogflWindowClass *klass)
 {
   G_OBJECT_CLASS (klass)->dispose = logfl_window_dispose;
+  GTK_WIDGET_CLASS (klass)->css_changed = logfl_window_css_changed;
 }
 
 static const GActionEntry win_actions[] = {
@@ -5221,31 +5302,43 @@ build_qso_table (LogflWindow *self)
       "Click a cell to edit. Right-click a row to delete.");
   /* Preferred widths keep short fields readable; Name/Comment expand.
    * Column order mirrors the entry row (Band/Mode/MHz first), with UTC
-   * leading as the timeline. */
-  add_column (GTK_COLUMN_VIEW (view), "UTC", COL_UTC, 128, FALSE, self);
-  add_column (GTK_COLUMN_VIEW (view), "Band", COL_BAND, 64, FALSE, self);
-  add_column (GTK_COLUMN_VIEW (view), "Mode", COL_MODE, 88, FALSE, self);
-  add_column (GTK_COLUMN_VIEW (view), "MHz", COL_FREQ, 108, FALSE, self);
-  add_column (GTK_COLUMN_VIEW (view), "Call", COL_CALL, 100, FALSE, self);
-  add_column (GTK_COLUMN_VIEW (view), "RST s", COL_RST_S, 64, FALSE, self);
-  add_column (GTK_COLUMN_VIEW (view), "RST r", COL_RST_R, 64, FALSE, self);
+   * leading as the timeline. The pixel value is the floor; the sample is
+   * what must fit in whatever font the desktop runs (fit_table_columns). */
+  add_column (GTK_COLUMN_VIEW (view), "UTC", COL_UTC, 128,
+              "00.00.0000 00:00", FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "Band", COL_BAND, 64, "1.25cm", FALSE,
+              self);
+  add_column (GTK_COLUMN_VIEW (view), "Mode", COL_MODE, 88, "MFSK/FT4",
+              FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "MHz", COL_FREQ, 108, "1296.100000",
+              FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "Call", COL_CALL, 100, "SV9/OK1WWW/P",
+              FALSE, self);
+  add_column (GTK_COLUMN_VIEW (view), "RST s", COL_RST_S, 64, "5999", FALSE,
+              self);
+  add_column (GTK_COLUMN_VIEW (view), "RST r", COL_RST_R, 64, "5999", FALSE,
+              self);
   /* Contest columns — shown only while switched into a contest. */
   self->col_stx = add_column (GTK_COLUMN_VIEW (view), "Sent", COL_STX,
-                              72, FALSE, self);
+                              72, "0000 AB", FALSE, self);
   self->col_exch = add_column (GTK_COLUMN_VIEW (view), "Rcvd", COL_EXCH,
-                               96, FALSE, self);
+                               96, "0000 ABCD", FALSE, self);
   self->col_pts = add_column (GTK_COLUMN_VIEW (view), "Pts", COL_PTS,
-                              56, FALSE, self);
+                              56, "00", FALSE, self);
   self->col_mult = add_column (GTK_COLUMN_VIEW (view), "Mult", COL_MULT,
-                               72, FALSE, self);
+                               72, "WW 00", FALSE, self);
   gtk_column_view_column_set_visible (self->col_stx, FALSE);
   gtk_column_view_column_set_visible (self->col_exch, FALSE);
   gtk_column_view_column_set_visible (self->col_pts, FALSE);
   gtk_column_view_column_set_visible (self->col_mult, FALSE);
   self->col_name = add_column (GTK_COLUMN_VIEW (view), "Name", COL_NAME,
-                               120, TRUE, self);
+                               120, NULL, TRUE, self);
   self->col_comment = add_column (GTK_COLUMN_VIEW (view), "Comment",
-                                  COL_COMMENT, 160, TRUE, self);
+                                  COL_COMMENT, 160, NULL, TRUE, self);
+  /* First fit once the view has its real style; every later font change
+   * comes in through the window's css_changed. */
+  g_signal_connect_swapped (view, "realize",
+                            G_CALLBACK (queue_fit_table_columns), self);
 
   GtkGesture *rb = GTK_GESTURE (gtk_gesture_click_new ());
   gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (rb), GDK_BUTTON_SECONDARY);
