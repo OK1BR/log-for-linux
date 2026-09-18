@@ -1,4 +1,4 @@
-/* macros.h — contest-style F-key messaging (M5, docs/SCOPE.md).
+/* macros.h — contest-style F-key messaging (M5).
  *
  * Pure GLib: token expansion, Run/S&P banks, ESM (Enter sends message).
  * No GTK; headless gate is log-macro-test. UI owns persistence and TX.

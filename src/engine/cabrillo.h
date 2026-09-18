@@ -1,4 +1,4 @@
-/* cabrillo.h — Cabrillo v3 contest log export (docs/SCOPE.md, contests).
+/* cabrillo.h — Cabrillo v3 contest log export.
  *
  * Emits the WWROF Cabrillo 3.0 shape (verified against wwrof.org and the
  * EUHFC sample template, 2026-07-28): a tag header, chronological

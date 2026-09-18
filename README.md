@@ -14,10 +14,19 @@ of the retired Rust prototype (BRlog).
 > 2026** deployments — and **YO DX HF 2026** on `main` after the release —
 > live entry, macros, serials, dup checking, per-contest QSO validity and the
 > Cabrillo submissions all came from this app. The RTTY keying, new in 0.3.0,
-> had its first on-air pass in SARTG. The decisions behind the design:
-> [`docs/SCOPE.md`](docs/SCOPE.md).
+> had its first on-air pass in SARTG.
 
 ![Log for Linux — EUHFC 2026, CW on 20 m: entry row pre-filled from the radio over TCI, macro strip, live log](docs/img/main-window.png)
+
+## Why another logbook
+
+The Linux logbook landscape is either aging (CQRLOG — Lazarus/Pascal on a
+MySQL/MariaDB daemon), non-native to this desktop (KLog — Qt), specialised
+(TLF — ncurses contest logger) or web-based (Wavelog/Cloudlog). There is no
+modern native GTK4/libadwaita logbook. And none of them can talk to the rest of
+*this* family: `sdr-for-linux` exposes a proven TCI server (frequency/mode
+state, spot rendering, click-to-tune), which makes radio-aware logging — the
+entry row always pre-filled with the live VFO — nearly free.
 
 ## Features
 
@@ -138,11 +147,37 @@ The store file is the canonical log; back it up like one. ADIF export always
 covers everything by default, so a periodic `.adi` export doubles as a
 portable backup.
 
+## Design
+
+- **SQLite is the store, ADIF the interchange format.** A logbook is a
+  database workload — worked-B4 lookups, dedup on import, per-band/mode
+  statistics — and FT8-era logs run to tens of thousands of QSOs. A flat ADIF
+  file would mean parsing the whole log at startup and rewriting it on every
+  QSO; SQLite is one C library, one file, no daemon, and WAL mode survives
+  crashes.
+- **ADIF round-trips losslessly.** Fields the app does not model are kept per
+  QSO and written back verbatim: importing someone's log and exporting it
+  again must never silently drop data.
+- **A headless, GLib-only engine under the GTK front-end.** Everything in
+  `src/engine/` builds and runs without GTK, so every part ships with an
+  offline test gate; live checks only where a counterpart app or service is
+  genuinely required.
+- **Contests live in the one log.** A contest is a section of the same
+  database, not a file of its own — worked-B4 and statistics see every QSO,
+  and switching contests is a filter.
+- **The claimed score is an estimate** from your own seat — the sponsor's
+  rescoring is the authority. Every contest preset is verified against the
+  sponsor's official rules before it is added.
+- **No cluster/telnet spot window**, deliberately — the skimmer already
+  renders spots on the panadapter, and one click there pre-fills the log.
+
+The reasons behind the smaller decisions sit in the code comments, next to
+what they govern.
+
 ## Roadmap
 
 The plan lives in
-[GitHub Issues](https://github.com/OK1BR/log-for-linux/issues); the decisions
-behind the design are in [`docs/SCOPE.md`](docs/SCOPE.md).
+[GitHub Issues](https://github.com/OK1BR/log-for-linux/issues).
 
 - **M7 — callbook lookup**
   ([#8](https://github.com/OK1BR/log-for-linux/issues/8)): QRZ.com / HamQTH
@@ -159,10 +194,6 @@ behind the design are in [`docs/SCOPE.md`](docs/SCOPE.md).
 - Parked on purpose: WAE QTC traffic
   ([#12](https://github.com/OK1BR/log-for-linux/issues/12)), FT8/FT4 contests
   through WSJT-X ([#13](https://github.com/OK1BR/log-for-linux/issues/13))
-
-A cluster/telnet spot window is deliberately **out of scope** — the skimmer
-already renders spots on the panadapter, and one click there pre-fills the
-log.
 
 ## License
 

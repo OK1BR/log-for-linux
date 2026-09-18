@@ -10,9 +10,12 @@ Native ham radio logbook for Linux (OK1BR). Third app of the family with
 - Build: `meson setup builddir && meson compile -C builddir`.
 - On Arch always build from source; install goes to `~/.local`, not `/usr`.
 
-Scope/design: `docs/SCOPE.md` — read it first. It is the only design doc:
-what the app is and why (decisions, architecture, milestones, the RTTY
-keying decisions). How things were built is the git history, not a doc.
+There is no design doc. The general ideas (why the app exists, the founding
+design decisions) are in `README.md`; the plan is GitHub Issues; **the reason
+for a decision is a comment next to the code it governs** — a comment never
+points at a document. How things were built is the git history. `docs/SCOPE.md`
+left the tree on 2026-09-18; its last version is at commit 2ad9864, the last
+one with the full milestone walk-through at 372d390.
 
 Work queue: **GitHub Issues** (`gh issue list`) since 2026-09-18 — bugs,
 ideas, debt, and anything still waiting for a live check. Nothing of that
@@ -26,9 +29,8 @@ kind goes into `docs/`.
   verify live — otherwise it says `Refs #N` and the issue is closed by hand
   once the check passed.
 - Notes from live operation (contest days) are taken with no code touched,
-  then triaged into issues. A feature too big for an issue body gets a
-  `docs/<NAME>-SCOPE.md` zadání, which is folded into SCOPE.md and removed
-  once implemented.
+  then triaged into issues. A feature too big for one issue body is split into
+  several issues (a checklist in the parent), not written up as a doc.
 - The pre-move backlog (LOG-1…LOG-5), the YO DX HF contest notes, the M3
   checklist and the RTTY zadání left the tree on 2026-09-18; their last
   versions are at commit 2a08503.

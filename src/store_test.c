@@ -1,6 +1,6 @@
 /* store_test.c — M1 gate (log-store-test): schema migration from an empty
  * and a v1 file, CRUD round-trip, normalization, dup/worked-B4 edge cases,
- * list filters and a 50k-QSO volume pass. Headless (docs/SCOPE.md).
+ * list filters and a 50k-QSO volume pass. Headless.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */

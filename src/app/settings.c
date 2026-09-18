@@ -106,7 +106,7 @@ logfl_settings_init_defaults (LogflSettings *s)
   s->station_grid = g_strdup ("");
   s->station_cqz = 15;
   s->station_ituz = 28;
-  s->esm_enabled = FALSE;
+  s->esm_enabled = FALSE;      /* off: daily logging keeps Enter = log */
   s->cw_cut_numbers = FALSE;
   g_free (s->cw_cut_map);
   s->cw_cut_map = g_strdup ("0=T 1=A 9=N");

@@ -1158,7 +1158,7 @@ static const LogflContestPreset presets[] = {
      * EU seat's mults to non-EU; for the RTTY leg (no continental limit,
      * §12) the operator edits counts= and the mult rule then counts every
      * side's entities, which is what §12 asks. QTC points are NOT counted
-     * (QTC traffic is a deferred SCOPE item) — the claimed score is a
+     * (QTC traffic is deferred — issue #12) — the claimed score is a
      * documented underestimate until then. */
     "[exchange]\ntx_serial=true\nfields=nr;\ncounts=eu-dx\n"
     "points=" PTS_WAE "\nmult=" MULT_WAE "\nmult_weight=" WEIGHT_WAE "\n"

@@ -1,4 +1,4 @@
-/* win.h — the main logbook window (M3, docs/SCOPE.md).
+/* win.h — the main logbook window (M3).
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */

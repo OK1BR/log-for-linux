@@ -1,8 +1,7 @@
 /* contest_test.c — contest gate (log-contest-test): exchange-definition
  * parse/serialize round trip, presets, exchange routing onto a QSO, the
  * v1 → v2 store migration, contest CRUD, serial/dup/scoping queries,
- * delete semantics and the contest fields' ADIF round trip. Headless
- * (docs/SCOPE.md).
+ * delete semantics and the contest fields' ADIF round trip. Headless.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */

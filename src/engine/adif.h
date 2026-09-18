@@ -5,7 +5,7 @@
  * suffix on tags, garbage between fields, a final record without <EOR> and a
  * 4-digit TIME_ON all parse. Fields the store does not model are preserved
  * verbatim in LogflQso.extras and written back on export — import → export
- * never drops data (docs/SCOPE.md).
+ * never drops data.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */

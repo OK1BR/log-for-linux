@@ -1,7 +1,7 @@
 /* cabrillo_test.c — Cabrillo gate (log-cabrillo-test): header tags, QSO
  * line shape (kHz / generic band freq / VHF designator, mode mapping,
  * RST defaults, serial + text exchanges), chronological order and the
- * required-field errors. Headless (docs/SCOPE.md).
+ * required-field errors. Headless.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */

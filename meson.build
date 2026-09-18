@@ -27,7 +27,7 @@ lws_dep    = dependency('libwebsockets')       # M4: TCI client transport
 engine_inc = include_directories('src/engine')
 
 # --- Engine (headless, GLib-only) -------------------------------------------
-# Grows milestone by milestone (docs/SCOPE.md). M0: identity + sqlite selfcheck.
+# Grew milestone by milestone; the M-tags below say which one brought the file.
 engine_sources = [
   'src/engine/engine.c',       # M0: identity, sqlite selfcheck
   'src/engine/log_store.c',    # M1: canonical QSO store (schema, CRUD, queries)

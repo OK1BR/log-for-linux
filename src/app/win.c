@@ -231,7 +231,7 @@ entry_text (GtkWidget *e)
 
 /* A hand-typed callsign shows in capitals AS it is typed, whatever Caps
  * Lock happens to be doing — the operator never looks at the keyboard
- * mid-QSO (SCOPE 2026-08-14). The store already normalizes on log and the
+ * mid-QSO (Richard, 2026-08-14). The store already normalizes on log and the
  * spot prefill arrives upper; this closes the one lower-case path, the one
  * the operator sees. Replacing the emission (insert upcased, stop original)
  * keeps the cursor and selection exactly where typing put them. */
@@ -597,7 +597,7 @@ on_row_edited_drop_spot (LogflWindow *self)
 /* Operator clicked a skimmer spot on the radio's panadapter: put the call in
  * the entry row so the QSO can start with one keystroke. Frequency/band/mode
  * need no help here — the radio QSYed itself and its vfo broadcast follows.
- * Silent by design: SCOPE.md keeps cluster/spot windows out of the logbook,
+ * Silent by design: cluster/spot windows are deliberately not in this app,
  * this is only a prefill. */
 static gboolean
 tci_apply_spot (gpointer user_data)
@@ -2192,6 +2192,9 @@ on_wsjtx_logged (LogflQso *q, const LogflWsjtxQsoLogged *raw, gpointer user_data
       logfl_qso_free (q);
       return;
     }
+  /* An auto-logged QSO always lands in the main log (contest_ref stays 0),
+   * whatever contest is active — FT8/FT4 contest support is issue #13. */
+
   /* Prefer station call from prefs when the packet left it empty. */
   if ((!q->station_callsign || !q->station_callsign[0]) &&
       self->settings.station_callsign && self->settings.station_callsign[0])
@@ -2346,7 +2349,9 @@ on_dup_query (const char *call, gint64 freq_hz, const char *mode,
 
 /* A QSO with this call was just logged / deleted / edited — push the fresh
  * verdict to recent dup-service peers so the skimmer recolors its live
- * spot at once (its own re-announce would take up to 3 minutes). */
+ * spot at once (its own re-announce would take up to 3 minutes). The
+ * logbook never writes TCI `spot:` itself — the label color is the
+ * skimmer's to own, two writers would race. */
 static void
 dup_notify (LogflWindow *self, const char *call, const char *band,
             const char *mode)

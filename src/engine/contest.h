@@ -1,4 +1,4 @@
-/* contest.h — contest exchange templates (docs/SCOPE.md, contest milestone).
+/* contest.h — contest exchange templates (M9).
  *
  * A contest's template (LogflExchDef) lists the fields the operator copies
  * from the other station and how each value maps onto ADIF: serials go to

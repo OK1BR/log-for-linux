@@ -232,7 +232,9 @@ rec_field (RecBuild *r, const AdifTag *tag)
     set_str (&q->srx_string, v);
   else
     /* Unmodeled field — preserve verbatim (normalized to our own shape,
-     * uppercase name and byte length, which is what export writes). */
+     * uppercase name and byte length, which is what export writes).
+     * CONTEST_ID rides here too, on purpose: an import never creates or
+     * links a contest (attaching such QSOs afterwards is issue #11). */
     g_string_append_printf (r->extras, "<%s:%zu>%s",
                             tag->name, strlen (v), v);
 }

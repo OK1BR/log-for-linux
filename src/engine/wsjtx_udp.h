@@ -1,4 +1,4 @@
-/* wsjtx_udp.h — WSJT-X / JTDX UDP protocol (M6, docs/SCOPE.md).
+/* wsjtx_udp.h — WSJT-X / JTDX UDP protocol (M6).
  *
  * Binary QDataStream (big-endian, schema 2/3). utf8 fields are QByteArray
  * (quint32 length + bytes; 0xffffffff = null), not UTF-16 QString — see

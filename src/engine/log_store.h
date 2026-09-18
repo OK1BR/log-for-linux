@@ -1,4 +1,4 @@
-/* log_store.h — the canonical QSO store (M1, docs/SCOPE.md).
+/* log_store.h — the canonical QSO store (M1).
  *
  * SQLite-backed: one file under ~/.local/share/log-for-linux/, WAL mode,
  * schema versioned via PRAGMA user_version. First-class columns carry the
@@ -131,7 +131,9 @@ gboolean logfl_store_stats (LogflStore *s, LogflStoreStats *out,
  * A contest is a named log section with its own exchange template
  * (serialized LogflExchDef, see contest.h) and the operator's static sent
  * exchange. QSOs point at it via contest_ref; the QSOs stay part of the
- * canonical log (ADIF export and whole-log worked-B4 still see them). */
+ * canonical log (ADIF export and whole-log worked-B4 still see them).
+ * One DB on purpose (2026-07-27): a file per contest, N1MM style, would
+ * fragment worked-B4 and the canonical store. */
 typedef struct {
   gint64 id;                   /* 0 = not stored yet */
   char  *name;                 /* e.g. "CQ WW CW 2026" */

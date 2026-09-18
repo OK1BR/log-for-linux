@@ -2,7 +2,7 @@
  *
  * The engine is GLib-only (no GTK): everything under src/engine/ must build
  * and run headless so the gates (log-*-test) can exercise it under meson test.
- * M0 ships this identity module; the log store lands in M1 (docs/SCOPE.md).
+ * This is the M0 identity module.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */

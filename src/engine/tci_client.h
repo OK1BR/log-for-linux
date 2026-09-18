@@ -67,7 +67,9 @@ void     logfl_tci_client_stop  (LogflTciClient *c);
 gboolean logfl_tci_client_is_ready (LogflTciClient *c);
 void     logfl_tci_client_get_state (LogflTciClient *c, LogflTciState *out);
 
-/* Explicit user QSY only — never called from automatic state updates. */
+/* Explicit user QSY only — never called from automatic state updates.
+ * No UI calls it today: table-driven QSY was tried and dropped
+ * (2026-07-21) — a click on a table cell is reserved for inline edit. */
 void logfl_tci_client_tune (LogflTciClient *c, double freq_hz);
 
 /* CW keyer via TCI (sdr-for-linux cw_macros / cw_macros_stop). Text must not
