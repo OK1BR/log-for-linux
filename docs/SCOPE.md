@@ -199,8 +199,8 @@ importing someone's log and exporting it again must never silently drop data.
      the line and clears for the next, Esc stops the keyer and closes, the
      Stop button just stops.
   7. **SSB "wav" / DVK — OUT OF SCOPE**: text keying via TCI only.
-- **RTTY keying. CODE DONE 2026-08-15 (engine gate green); the live pass at
-  the radio is #4.** The same F-key macros key a complete RTTY exchange
+- **RTTY keying. DONE 2026-08-15; in live contest use since SARTG WW RTTY
+  2026-08-15/16.** The same F-key macros key a complete RTTY exchange
   through sdr-for-linux's TCI family extension `rtty_macros:0,<text>;` /
   `rtty_macros_stop;` (needs sdr-for-linux ≥ f38aafd; an older radio side
   ignores the unknown command and keys nothing — the family upgrades
@@ -363,7 +363,8 @@ importing someone's log and exporting it again must never silently drop data.
   station (Finland)" (error) / "0 pts — own country" (warning), and a fresh
   call shows "New call from Czech Republic". Worked-B4 answers within the
   active contest only.
-- **Contest score. DONE 2026-08-28; live check of the UI is #2.** The
+- **Contest score. DONE 2026-08-28; the UI seen live over the real log
+  2026-09-18.** The
   claimed score is an ESTIMATE from the operator's own seat — the sponsor's
   robot rescoring is the authority; that framing bounds the whole feature.
   Machine-readable `points=` / `mult=` rules live in the contest's own
