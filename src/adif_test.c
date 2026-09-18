@@ -1,6 +1,7 @@
 /* adif_test.c — M2 gate (log-adif-test): parse basics, a real-world quirks
  * corpus, unknown-field preservation, band-from-freq, bad-record and dup
- * accounting, deterministic export format and a byte-stable round trip.
+ * accounting, input that is not ADIF at all, deterministic export format and
+ * a byte-stable round trip.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */
@@ -198,6 +199,45 @@ test_bad_records (void)
   logfl_store_close (s);
 }
 
+/* A file that is not ADIF at all is not an error: the import succeeds with
+ * nothing imported and the store untouched — the app then reports the zero
+ * counts instead of failing. */
+static void
+test_not_adif (void)
+{
+  GError *err = NULL;
+  LogflStore *s = mem_store ();
+  LogflAdifReport rep;
+
+  const char *text = "this is not an ADIF file\njust two lines of text\n";
+  g_assert_true (logfl_adif_import_data (s, text, -1, 0, &rep, &err));
+  g_assert_no_error (err);
+  g_assert_cmpuint (rep.n_imported, ==, 0);
+  g_assert_cmpuint (rep.n_dup_skipped, ==, 0);
+  g_assert_cmpuint (rep.n_bad, ==, 0);
+
+  g_assert_true (logfl_adif_import_data (s, "", 0, 0, &rep, &err));
+  g_assert_no_error (err);
+  g_assert_cmpuint (rep.n_imported, ==, 0);
+  g_assert_cmpuint (rep.n_bad, ==, 0);
+
+  /* Binary junk: NULs, high bytes, stray and unterminated angle brackets,
+   * a length that is not a number, one that runs past the end. */
+  const char junk[] =
+    "<\x00\xff\xfe><<>>\x89PNG\r\n\x1a\n<:>< :9><CALL:x>OK1AA<\x01:3:\x02>"
+    "\x00\x00<EOR\x00><CALL:99999>OK";
+  g_assert_true (logfl_adif_import_data (s, junk, (gssize) sizeof junk - 1,
+                                         0, &rep, &err));
+  g_assert_no_error (err);
+  g_assert_cmpuint (rep.n_imported, ==, 0);
+
+  GPtrArray *l = logfl_store_list (s, NULL, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (l->len, ==, 0);
+  g_ptr_array_unref (l);
+  logfl_store_close (s);
+}
+
 static void
 test_dup_skip (void)
 {
@@ -349,6 +389,7 @@ main (int argc, char **argv)
                    test_unknown_fields_preserved);
   g_test_add_func ("/adif/band-from-freq", test_band_from_freq);
   g_test_add_func ("/adif/bad-records", test_bad_records);
+  g_test_add_func ("/adif/not-adif", test_not_adif);
   g_test_add_func ("/adif/dup-skip", test_dup_skip);
   g_test_add_func ("/adif/export-format", test_export_format);
   g_test_add_func ("/adif/roundtrip-stable", test_roundtrip_stable);
