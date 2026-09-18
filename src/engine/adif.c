@@ -234,7 +234,10 @@ rec_field (RecBuild *r, const AdifTag *tag)
     /* Unmodeled field — preserve verbatim (normalized to our own shape,
      * uppercase name and byte length, which is what export writes).
      * CONTEST_ID rides here too, on purpose: an import never creates or
-     * links a contest (attaching such QSOs afterwards is issue #11). */
+     * links a contest, and nothing attaches such QSOs afterwards either.
+     * A contest run in another logger was scored and submitted from
+     * there; here its QSOs are plain log entries — worked-B4 over the
+     * whole log sees them and export hands the tag back unchanged. */
     g_string_append_printf (r->extras, "<%s:%zu>%s",
                             tag->name, strlen (v), v);
 }

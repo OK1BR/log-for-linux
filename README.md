@@ -189,9 +189,7 @@ The plan lives in
   via `tqsl`, confirmation pull), eQSL, Club Log; per-QSO sent/confirmed state
   per service
 - Later: DXCC/awards tracking
-  ([#10](https://github.com/OK1BR/log-for-linux/issues/10)), linking imported
-  `CONTEST_ID` QSOs to contests
-  ([#11](https://github.com/OK1BR/log-for-linux/issues/11))
+  ([#10](https://github.com/OK1BR/log-for-linux/issues/10))
 - Parked on purpose: WAE QTC traffic
   ([#12](https://github.com/OK1BR/log-for-linux/issues/12)), FT8/FT4 contests
   through WSJT-X ([#13](https://github.com/OK1BR/log-for-linux/issues/13))
