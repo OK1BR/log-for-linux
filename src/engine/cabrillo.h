@@ -28,6 +28,8 @@ typedef struct {
   const char *cat_mode;        /* MIXED / CW / SSB / RTTY / DIGI / FM */
   const char *cat_transmitter; /* ONE / TWO / LIMITED / UNLIMITED / SWL */
   const char *cat_assisted;    /* ASSISTED / NON-ASSISTED */
+  const char *cat_station;     /* FIXED / PORTABLE / EXPEDITION / … */
+  const char *cat_overlay;     /* CLASSIC / ROOKIE / TB-WIRES / … */
   const char *claimed_score;   /* integer text, no separators */
   const char *club;
   const char *operators;
@@ -65,6 +67,13 @@ gboolean logfl_cabrillo_export_file (LogflStore *s, gint64 contest_id,
 gboolean logfl_cabrillo_categories_from_log (LogflStore *s, gint64 contest_id,
                                              char **cat_mode, char **cat_band,
                                              GError **error);
+
+/* Which entry of a category dropdown to preselect: want when the contest
+ * allows it, else the first one — the lists put their default first. This
+ * is what keeps a 20 m log out of CATEGORY-BAND: 20M where the rules have
+ * no such category (2026-09-20, SAC from outside Scandinavia): the value
+ * derived from the log is a wish, the contest's list decides. */
+guint logfl_cabrillo_pick (const char *const *values, const char *want);
 
 G_END_DECLS
 

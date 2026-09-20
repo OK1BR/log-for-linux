@@ -3930,13 +3930,15 @@ typedef struct {
   LogflWindow *win;
   gint64 contest_id;
   char *contest, *callsign;
-  char *op, *band, *mode, *power, *tx, *assisted;
+  char *op, *band, *mode, *power, *tx, *assisted, *station, *overlay;
   char *name, *email, *location, *club, *grid;
   char *claimed;               /* CLAIMED-SCORE text; empty = omit */
 } CabExport;
 
 /* The CATEGORY-* tags take only the values the Cabrillo v3 spec lists
- * (wwrof.org) — offered as dropdowns, never free text. "—" = omit. */
+ * (wwrof.org) — offered as dropdowns, never free text. "—" = omit. These
+ * are the lists of a contest that names none of its own; a preset's
+ * [cabrillo] lists (contest.h) come first. */
 static const char *const CAB_OPERATOR_VALUES[] =
   { "SINGLE-OP", "MULTI-OP", "CHECKLOG", NULL };
 static const char *const CAB_BAND_VALUES[] =
@@ -3964,6 +3966,8 @@ cab_export_free (CabExport *ce)
   g_free (ce->power);
   g_free (ce->tx);
   g_free (ce->assisted);
+  g_free (ce->station);
+  g_free (ce->overlay);
   g_free (ce->name);
   g_free (ce->email);
   g_free (ce->location);
@@ -4005,6 +4009,8 @@ on_cabrillo_file_ready (GObject *source, GAsyncResult *res,
     .cat_mode = ce->mode,
     .cat_transmitter = ce->tx,
     .cat_assisted = ce->assisted,
+    .cat_station = ce->station,
+    .cat_overlay = ce->overlay,
     .claimed_score = ce->claimed,
     .name = ce->name,
     .email = ce->email,
@@ -4045,8 +4051,9 @@ typedef struct {
   LogflWindow *win;
   AdwDialog *dlg;
   GtkWidget *contest_row, *call_row;
+  /* A category row the contest has no use for stays NULL. */
   GtkWidget *op_row, *band_row, *mode_row, *power_row, *tx_row,
-            *assisted_row;
+            *assisted_row, *station_row, *overlay_row;
   GtkWidget *name_row, *email_row, *loc_row, *club_row;
   GtkWidget *score_row;        /* CLAIMED-SCORE, prefilled estimate */
 } CabDialog;
@@ -4061,22 +4068,48 @@ cab_combo (AdwPreferencesGroup *grp, const char *title,
   GtkWidget *r = g_object_new (ADW_TYPE_COMBO_ROW, "title", title, NULL);
   adw_combo_row_set_model (ADW_COMBO_ROW (r), G_LIST_MODEL (sl));
   g_object_unref (sl);
-  guint sel = 0;
-  const char *want = current && *current ? current : "—";
-  for (guint i = 0; values[i]; i++)
-    if (g_strcmp0 (values[i], want) == 0)
-      {
-        sel = i;
-        break;
-      }
-  adw_combo_row_set_selected (ADW_COMBO_ROW (r), sel);
+  adw_combo_row_set_selected (
+      ADW_COMBO_ROW (r),
+      logfl_cabrillo_pick (values, current && *current ? current : "—"));
   adw_preferences_group_add (grp, r);
+  return r;
+}
+
+/* One category row of the active contest. Its own list wins over the
+ * Cabrillo v3 one (fallback; NULL for the tags only a contest brings). An
+ * empty list — the sponsor's header has no such tag — makes no row at all,
+ * and the tag stays out of the file. optional: the entrant may leave the
+ * tag out, so "—" leads the contest's list. */
+static GtkWidget *
+cab_tag_row (LogflWindow *self, AdwPreferencesGroup *grp, const char *title,
+             LogflCabTag tag, const LogflCtyInfo *mine,
+             const char *const *fallback, gboolean optional,
+             const char *current)
+{
+  const char *const *rule =
+      logfl_exch_def_cab_values (self->exch_def, tag, mine);
+  const char *const *values = rule ? rule : fallback;
+  if (!values || !values[0])
+    return NULL;
+  if (!rule || !optional)
+    return cab_combo (grp, title, values, current);
+
+  GPtrArray *a = g_ptr_array_new ();
+  g_ptr_array_add (a, (gpointer) "—");
+  for (guint i = 0; values[i]; i++)
+    g_ptr_array_add (a, (gpointer) values[i]);
+  g_ptr_array_add (a, NULL);
+  GtkWidget *r = cab_combo (grp, title, (const char *const *) a->pdata,
+                            current);
+  g_ptr_array_free (a, TRUE);
   return r;
 }
 
 static char *
 cab_combo_value (GtkWidget *row)
 {
+  if (!row)
+    return g_strdup ("");      /* no row: the tag stays out */
   GObject *item = adw_combo_row_get_selected_item (ADW_COMBO_ROW (row));
   const char *s = item
       ? gtk_string_object_get_string (GTK_STRING_OBJECT (item)) : "";
@@ -4088,6 +4121,20 @@ on_cab_dialog_closed (AdwDialog *dlg, gpointer user_data)
 {
   (void) dlg;
   g_free (user_data);
+}
+
+/* The row's choice for the header; remembered in the settings slot only
+ * when the contest had the row at all. */
+static char *
+cab_category_take (char **slot, GtkWidget *row)
+{
+  char *v = cab_combo_value (row);
+  if (row)
+    {
+      g_free (*slot);
+      *slot = g_strdup (v);
+    }
+  return v;
 }
 
 /* Replace one settings string with the row's stripped text. */
@@ -4118,37 +4165,31 @@ on_cab_dialog_export (GtkButton *btn, gpointer user_data)
       return;
     }
 
-  /* Category and operator info persist for the next contest. */
+  CabExport *ce = g_new0 (CabExport, 1);
+
+  /* Category and operator info persist for the next contest — a category
+   * only where this contest had a row for it: SAC's missing assisted tag
+   * must not wipe the choice CQ WW needs. Station and overlay belong to
+   * one contest and are asked every time. */
   LogflSettings *st = &self->settings;
-  g_free (st->cab_operator);
-  st->cab_operator = cab_combo_value (cd->op_row);
-  g_free (st->cab_band);
-  st->cab_band = cab_combo_value (cd->band_row);
-  g_free (st->cab_mode);
-  st->cab_mode = cab_combo_value (cd->mode_row);
-  g_free (st->cab_power);
-  st->cab_power = cab_combo_value (cd->power_row);
-  g_free (st->cab_transmitter);
-  st->cab_transmitter = cab_combo_value (cd->tx_row);
-  g_free (st->cab_assisted);
-  st->cab_assisted = cab_combo_value (cd->assisted_row);
+  ce->op = cab_category_take (&st->cab_operator, cd->op_row);
+  ce->band = cab_category_take (&st->cab_band, cd->band_row);
+  ce->mode = cab_category_take (&st->cab_mode, cd->mode_row);
+  ce->power = cab_category_take (&st->cab_power, cd->power_row);
+  ce->tx = cab_category_take (&st->cab_transmitter, cd->tx_row);
+  ce->assisted = cab_category_take (&st->cab_assisted, cd->assisted_row);
+  ce->station = cab_combo_value (cd->station_row);
+  ce->overlay = cab_combo_value (cd->overlay_row);
   cab_setting_take (&st->cab_name, cd->name_row);
   cab_setting_take (&st->cab_email, cd->email_row);
   cab_setting_take (&st->cab_location, cd->loc_row);
   cab_setting_take (&st->cab_club, cd->club_row);
   logfl_settings_save (st);
 
-  CabExport *ce = g_new0 (CabExport, 1);
   ce->win = self;
   ce->contest_id = self->contest->id;
   ce->contest = contest;
   ce->callsign = callsign;
-  ce->op = g_strdup (st->cab_operator);
-  ce->band = g_strdup (st->cab_band);
-  ce->mode = g_strdup (st->cab_mode);
-  ce->power = g_strdup (st->cab_power);
-  ce->tx = g_strdup (st->cab_transmitter);
-  ce->assisted = g_strdup (st->cab_assisted);
   ce->name = g_strdup (st->cab_name);
   ce->email = g_strdup (st->cab_email);
   ce->location = g_strdup (st->cab_location);
@@ -4232,10 +4273,25 @@ act_cabrillo (GSimpleAction *action, GVariant *param, gpointer user_data)
                           self->settings.station_callsign);
   adw_preferences_page_add (page, lg);
 
+  /* The seat decides where the rules split by it (SAC: inside or outside
+   * Scandinavia) — my own call through cty, as the validity check does. */
+  LogflCtyInfo mine;
+  gboolean mine_ok = self->cty && self->settings.station_callsign &&
+                     logfl_cty_lookup (self->cty,
+                                       self->settings.station_callsign, &mine);
+  const LogflCtyInfo *seat = mine_ok ? &mine : NULL;
+  gboolean own_lists = FALSE;
+  for (int t = 0; t < LOGFL_CAB_N_TAGS; t++)
+    if (logfl_exch_def_cab_values (self->exch_def, (LogflCabTag) t, seat))
+      own_lists = TRUE;
+
   AdwPreferencesGroup *cg = ADW_PREFERENCES_GROUP (g_object_new (
       ADW_TYPE_PREFERENCES_GROUP,
       "title", "Category",
-      "description", "Cabrillo v3 values as announced by the contest.",
+      "description",
+      own_lists ? "What this contest's rules allow — the sponsor's current "
+                  "rules decide."
+                : "Cabrillo v3 values as announced by the contest.",
       NULL));
   /* Band and Mode come from the log itself, not from what the last export
    * happened to use: a remembered category outlives the contest it was
@@ -4252,26 +4308,48 @@ act_cabrillo (GSimpleAction *action, GVariant *param, gpointer user_data)
         g_clear_error (&cat_err);   /* prefill only — fall back, never fail */
     }
 
-  cd->op_row = cab_combo (cg, "Operator", CAB_OPERATOR_VALUES,
-                          self->settings.cab_operator);
-  cd->band_row = cab_combo (cg, "Band", CAB_BAND_VALUES,
-                            log_band ? log_band : self->settings.cab_band);
-  cd->power_row = cab_combo (cg, "Power", CAB_POWER_VALUES,
-                             self->settings.cab_power);
-  cd->mode_row = cab_combo (cg, "Mode", CAB_MODE_VALUES,
-                            log_mode ? log_mode : self->settings.cab_mode);
-  if (log_band)
-    adw_action_row_set_subtitle (ADW_ACTION_ROW (cd->band_row),
-                                 "From the logged QSOs");
-  if (log_mode)
-    adw_action_row_set_subtitle (ADW_ACTION_ROW (cd->mode_row),
-                                 "From the logged QSOs");
+  cd->op_row = cab_tag_row (self, cg, "Operator", LOGFL_CAB_OPERATOR, seat,
+                            CAB_OPERATOR_VALUES, FALSE,
+                            self->settings.cab_operator);
+  cd->band_row = cab_tag_row (self, cg, "Band", LOGFL_CAB_BAND, seat,
+                              CAB_BAND_VALUES, FALSE,
+                              log_band ? log_band : self->settings.cab_band);
+  cd->power_row = cab_tag_row (self, cg, "Power", LOGFL_CAB_POWER, seat,
+                               CAB_POWER_VALUES, FALSE,
+                               self->settings.cab_power);
+  cd->mode_row = cab_tag_row (self, cg, "Mode", LOGFL_CAB_MODE, seat,
+                              CAB_MODE_VALUES, FALSE,
+                              log_mode ? log_mode : self->settings.cab_mode);
+  /* The subtitle only where the log's answer really is the one shown — a
+   * 20 m log in a contest without single-band entries shows ALL. */
+  if (cd->band_row && log_band)
+    {
+      char *shown = cab_combo_value (cd->band_row);
+      if (g_strcmp0 (shown, log_band) == 0)
+        adw_action_row_set_subtitle (ADW_ACTION_ROW (cd->band_row),
+                                     "From the logged QSOs");
+      g_free (shown);
+    }
+  if (cd->mode_row && log_mode)
+    {
+      char *shown = cab_combo_value (cd->mode_row);
+      if (g_strcmp0 (shown, log_mode) == 0)
+        adw_action_row_set_subtitle (ADW_ACTION_ROW (cd->mode_row),
+                                     "From the logged QSOs");
+      g_free (shown);
+    }
   g_free (log_band);
   g_free (log_mode);
-  cd->tx_row = cab_combo (cg, "Transmitter", CAB_TX_VALUES,
-                          self->settings.cab_transmitter);
-  cd->assisted_row = cab_combo (cg, "Assisted", CAB_ASSISTED_VALUES,
-                                self->settings.cab_assisted);
+  cd->tx_row = cab_tag_row (self, cg, "Transmitter", LOGFL_CAB_TRANSMITTER,
+                            seat, CAB_TX_VALUES, FALSE,
+                            self->settings.cab_transmitter);
+  cd->assisted_row = cab_tag_row (self, cg, "Assisted", LOGFL_CAB_ASSISTED,
+                                  seat, CAB_ASSISTED_VALUES, FALSE,
+                                  self->settings.cab_assisted);
+  cd->station_row = cab_tag_row (self, cg, "Station", LOGFL_CAB_STATION, seat,
+                                 NULL, TRUE, NULL);
+  cd->overlay_row = cab_tag_row (self, cg, "Overlay", LOGFL_CAB_OVERLAY, seat,
+                                 NULL, TRUE, NULL);
   /* CLAIMED-SCORE prefilled from the live estimate when the active
    * contest carries a full points+mult rule; editable, empty = omit. */
   {
@@ -5531,8 +5609,8 @@ logfl_window_init (LogflWindow *self)
           g_clear_error (&bf_err);
         }
       else if (fixed > 0)
-        g_message ("validity/scoring rules added to %u stored contest(s)",
-                   fixed);
+        g_message ("validity/scoring/category rules added to %u stored "
+                   "contest(s)", fixed);
     }
 
   /* M9: restore the active contest; a stale id (deleted elsewhere) falls

@@ -381,6 +381,210 @@ test_backfill_validity (void)
   logfl_store_close (s);
 }
 
+/* The 2026-09-20 finding: the category lists belong to the contest, and in
+ * SAC to the seat. */
+static void
+test_cab_categories (void)
+{
+  GError *err = NULL;
+  LogflCtyInfo ok = cty_of ("Czech Republic", "OK", "EU");
+  LogflCtyInfo sm = cty_of ("Sweden", "SM", "EU");
+
+  LogflExchDef *sac =
+      logfl_exch_def_parse (preset_named ("SAC")->exch_def, &err);
+  g_assert_no_error (err);
+
+  /* Outside Scandinavia: all band or Low Band, nothing else; one TX. */
+  const char *const *v = logfl_exch_def_cab_values (sac, LOGFL_CAB_BAND, &ok);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 2);
+  g_assert_cmpstr (v[0], ==, "ALL");
+  g_assert_cmpstr (v[1], ==, "LOW-BAND");
+  v = logfl_exch_def_cab_values (sac, LOGFL_CAB_TRANSMITTER, &ok);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 1);
+  g_assert_cmpstr (v[0], ==, "ONE");
+
+  /* Inside: the single bands, no Low Band; MULTI-MULTI's UNLIMITED. */
+  v = logfl_exch_def_cab_values (sac, LOGFL_CAB_BAND, &sm);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 6);
+  g_assert_true (g_strv_contains (v, "20M"));
+  g_assert_false (g_strv_contains (v, "LOW-BAND"));
+  g_assert_false (g_strv_contains (v, "160M"));
+  v = logfl_exch_def_cab_values (sac, LOGFL_CAB_TRANSMITTER, &sm);
+  g_assert_true (g_strv_contains (v, "UNLIMITED"));
+
+  /* An unresolved seat reads as outside — the seat the preset is written
+   * from. A tag without an _inside list is the same for both seats. */
+  v = logfl_exch_def_cab_values (sac, LOGFL_CAB_BAND, NULL);
+  g_assert_cmpstr (v[1], ==, "LOW-BAND");
+  g_assert_true (logfl_exch_def_cab_values (sac, LOGFL_CAB_POWER, &sm) ==
+                 logfl_exch_def_cab_values (sac, LOGFL_CAB_POWER, &ok));
+
+  /* The sponsor's header has no assisted tag: an empty list, not "no
+   * rule". The overlay carries SAC's own WIRE-ONLY. */
+  v = logfl_exch_def_cab_values (sac, LOGFL_CAB_ASSISTED, &ok);
+  g_assert_nonnull (v);
+  g_assert_null (v[0]);
+  v = logfl_exch_def_cab_values (sac, LOGFL_CAB_OVERLAY, &ok);
+  g_assert_true (g_strv_contains (v, "WIRE-ONLY"));
+
+  /* Round trip: both seats' lists and the empty list survive. */
+  char *text = logfl_exch_def_serialize (sac);
+  LogflExchDef *back = logfl_exch_def_parse (text, &err);
+  g_assert_no_error (err);
+  for (int t = 0; t < LOGFL_CAB_N_TAGS; t++)
+    {
+      g_assert_true ((sac->cab[t] == NULL) == (back->cab[t] == NULL));
+      g_assert_true ((sac->cab_inside[t] == NULL) ==
+                     (back->cab_inside[t] == NULL));
+      if (sac->cab[t])
+        g_assert_true (g_strv_equal ((const char *const *) sac->cab[t],
+                                     (const char *const *) back->cab[t]));
+      if (sac->cab_inside[t])
+        g_assert_true (
+            g_strv_equal ((const char *const *) sac->cab_inside[t],
+                          (const char *const *) back->cab_inside[t]));
+    }
+  g_free (text);
+  logfl_exch_def_free (back);
+  logfl_exch_def_free (sac);
+
+  /* No single-band category exists in these three — the list is ALL and
+   * nothing else, whatever the log looks like. */
+  static const char *const all_band_only[] = { "IARU HF", "WAE DX", "EUHFC" };
+  for (gsize i = 0; i < G_N_ELEMENTS (all_band_only); i++)
+    {
+      LogflExchDef *d = logfl_exch_def_parse (
+          preset_named (all_band_only[i])->exch_def, &err);
+      g_assert_no_error (err);
+      v = logfl_exch_def_cab_values (d, LOGFL_CAB_BAND, &ok);
+      g_assert_cmpuint (g_strv_length ((char **) v), ==, 1);
+      g_assert_cmpstr (v[0], ==, "ALL");
+      logfl_exch_def_free (d);
+    }
+
+  /* Assisted is a category of its own in CQ WW: listed, so it cannot be
+   * left out. WAE has no QRP; CVA brings its own DUAL. */
+  LogflExchDef *d =
+      logfl_exch_def_parse (preset_named ("CQ WW")->exch_def, &err);
+  g_assert_no_error (err);
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_ASSISTED, &ok);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 2);
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_MODE, &ok);
+  g_assert_false (g_strv_contains (v, "MIXED"));
+  logfl_exch_def_free (d);
+  d = logfl_exch_def_parse (preset_named ("WAE DX")->exch_def, &err);
+  g_assert_no_error (err);
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_POWER, &ok);
+  g_assert_false (g_strv_contains (v, "QRP"));
+  /* DARC says nothing on transmitters: no rule, the v3 list stays. */
+  g_assert_null (logfl_exch_def_cab_values (d, LOGFL_CAB_TRANSMITTER, &ok));
+  logfl_exch_def_free (d);
+  d = logfl_exch_def_parse (preset_named ("CVA DX")->exch_def, &err);
+  g_assert_no_error (err);
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_BAND, &ok);
+  g_assert_true (g_strv_contains (v, "DUAL"));
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_STATION, &ok);
+  g_assert_true (g_strv_contains (v, "EXPEDITION"));
+  logfl_exch_def_free (d);
+
+  /* Custom carries no rule at all. */
+  d = logfl_exch_def_parse (preset_named ("Custom")->exch_def, &err);
+  g_assert_no_error (err);
+  for (int t = 0; t < LOGFL_CAB_N_TAGS; t++)
+    g_assert_null (logfl_exch_def_cab_values (d, (LogflCabTag) t, &ok));
+  logfl_exch_def_free (d);
+
+  /* Inside of what? An _inside list needs the entity list… */
+  g_assert_null (logfl_exch_def_parse (
+      "[exchange]\ntx_serial=true\nfields=nr;\n"
+      "[cabrillo]\nband=ALL;\nband_inside=ALL;20M;\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\n", &err));
+  g_assert_error (err, LOGFL_CONTEST_ERROR, LOGFL_CONTEST_ERROR_PARSE);
+  g_clear_error (&err);
+  /* …and a value lands on a header line: one token, nothing else. */
+  g_assert_null (logfl_exch_def_parse (
+      "[exchange]\ntx_serial=true\nfields=nr;\n"
+      "[cabrillo]\nband=ALL;LOW BAND;\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\n", &err));
+  g_assert_error (err, LOGFL_CONTEST_ERROR, LOGFL_CONTEST_ERROR_PARSE);
+  g_clear_error (&err);
+}
+
+/* Contests made before the lists existed get them by their whole ADIF id. */
+static void
+test_backfill_cab (void)
+{
+  GError *err = NULL;
+  LogflStore *s = mem_store ();
+  static const char *OLD_DEF =
+      "[exchange]\ntx_serial=true\nfields=nr;\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n";
+
+  LogflContest *sac = mk_contest (s, "SAC SSB 2026", "SAC-SSB", OLD_DEF);
+  /* CQ WW RTTY is a contest of its own: scoring by prefix as before, but
+   * never the CW/SSB category lists. */
+  LogflContest *rtty = mk_contest (s, "CQ WW RTTY", "CQ-WW-RTTY", OLD_DEF);
+  /* The operator switched the validity rule off: the lists still come,
+   * minus the _inside keys, which a def without the entity list cannot
+   * carry. */
+  LogflContest *own = mk_contest (s, "SAC for fun", "SAC-CW",
+      "[exchange]\ntx_serial=true\nfields=nr;\ncounts=all\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n");
+  /* An operator's own [cabrillo] group is left alone. */
+  LogflContest *edited = mk_contest (s, "EUHFC my way", "EU-HF",
+      "[exchange]\ntx_serial=false\nfields=year;\ncounts=eu-only\n"
+      "points=default=1;\nmult=exch\n"
+      "[cabrillo]\nband=ALL;20M;\n"
+      "[field:year]\nlabel=Year\ntype=text\n");
+
+  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 3);
+  g_assert_no_error (err);
+
+  LogflContest *back = logfl_store_contest_get (s, sac->id, &err);
+  LogflExchDef *def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_true (g_strv_contains (
+      (const char *const *) def->cab[LOGFL_CAB_BAND], "LOW-BAND"));
+  g_assert_nonnull (def->cab_inside[LOGFL_CAB_BAND]);
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
+  back = logfl_store_contest_get (s, rtty->id, &err);
+  def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_nonnull (def->points);
+  for (int t = 0; t < LOGFL_CAB_N_TAGS; t++)
+    g_assert_null (def->cab[t]);
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
+  back = logfl_store_contest_get (s, own->id, &err);
+  def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
+  g_assert_nonnull (def->cab[LOGFL_CAB_BAND]);
+  g_assert_null (def->cab_inside[LOGFL_CAB_BAND]);
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
+  back = logfl_store_contest_get (s, edited->id, &err);
+  def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (g_strv_length (def->cab[LOGFL_CAB_BAND]), ==, 2);
+  g_assert_null (def->cab[LOGFL_CAB_POWER]);
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
+  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 0);
+  g_assert_no_error (err);
+
+  logfl_contest_free (sac);
+  logfl_contest_free (rtty);
+  logfl_contest_free (own);
+  logfl_contest_free (edited);
+  logfl_store_close (s);
+}
+
 static void
 test_presets (void)
 {
@@ -1411,6 +1615,8 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/exch-def-errors", test_exch_def_errors);
   g_test_add_func ("/contest/qso-validity", test_qso_validity);
   g_test_add_func ("/contest/backfill-validity", test_backfill_validity);
+  g_test_add_func ("/contest/cab-categories", test_cab_categories);
+  g_test_add_func ("/contest/backfill-cab", test_backfill_cab);
   g_test_add_func ("/contest/presets", test_presets);
   g_test_add_func ("/contest/exch-apply", test_exch_apply);
   g_test_add_func ("/contest/store-crud", test_contest_crud);

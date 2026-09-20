@@ -122,6 +122,8 @@ logfl_cabrillo_export (LogflStore *s, gint64 contest_id,
   put_tag (out, "CATEGORY-MODE", o->cat_mode);
   put_tag (out, "CATEGORY-TRANSMITTER", o->cat_transmitter);
   put_tag (out, "CATEGORY-ASSISTED", o->cat_assisted);
+  put_tag (out, "CATEGORY-STATION", o->cat_station);
+  put_tag (out, "CATEGORY-OVERLAY", o->cat_overlay);
   put_tag (out, "CLAIMED-SCORE", o->claimed_score);
   put_tag (out, "CLUB", o->club);
   put_tag (out, "OPERATORS", o->operators);
@@ -291,4 +293,14 @@ logfl_cabrillo_categories_from_log (LogflStore *s, gint64 contest_id,
 
   g_ptr_array_unref (list);
   return TRUE;
+}
+
+guint
+logfl_cabrillo_pick (const char *const *values, const char *want)
+{
+  if (want && *want)
+    for (guint i = 0; values && values[i]; i++)
+      if (g_strcmp0 (values[i], want) == 0)
+        return i;
+  return 0;
 }

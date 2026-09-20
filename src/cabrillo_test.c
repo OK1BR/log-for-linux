@@ -256,6 +256,74 @@ test_categories_from_log (void)
   logfl_store_close (s);
 }
 
+/* The 2026-09-20 regression: a 20 m log from outside Scandinavia went out
+ * as CATEGORY-BAND: 20M. The log's band is a wish; SAC's list decides. */
+static void
+test_pick_and_new_tags (void)
+{
+  GError *err = NULL;
+  LogflStore *s = mem_store ();
+  gint64 c = mk_contest (s);
+  const gint64 T = 1758326400;         /* 2026-09-20 00:00:00 UTC */
+  add_qso (s, c, "SM5AAA", "20m", 14.021, "CW", T, "599", "599",
+           1, NULL, 12, NULL);
+  add_qso (s, c, "OH2BBB", "20m", 14.033, "CW", T + 60, "599", "599",
+           2, NULL, 45, NULL);
+
+  char *mode = NULL, *band = NULL;
+  g_assert_true (logfl_cabrillo_categories_from_log (s, c, &mode, &band,
+                                                     &err));
+  g_assert_cmpstr (band, ==, "20M");
+
+  guint n = 0;
+  const LogflContestPreset *p = logfl_contest_presets (&n);
+  const LogflContestPreset *sac_p = NULL;
+  for (guint i = 0; i < n; i++)
+    if (g_str_equal (p[i].name, "SAC"))
+      sac_p = &p[i];
+  g_assert_nonnull (sac_p);
+  LogflExchDef *sac = logfl_exch_def_parse (sac_p->exch_def, &err);
+  g_assert_no_error (err);
+
+  /* From OK: 20M is not on the list -> the default, ALL. */
+  const char *const *outside =
+      logfl_exch_def_cab_values (sac, LOGFL_CAB_BAND, NULL);
+  g_assert_cmpstr (outside[logfl_cabrillo_pick (outside, band)], ==, "ALL");
+  /* From Sweden the same log is a legal single-band entry. */
+  LogflCtyInfo sm = { .country = "Sweden", .prefix = "SM",
+                      .continent = "EU" };
+  const char *const *inside =
+      logfl_exch_def_cab_values (sac, LOGFL_CAB_BAND, &sm);
+  g_assert_cmpstr (inside[logfl_cabrillo_pick (inside, band)], ==, "20M");
+  /* Nothing wanted, or no list at all: the first entry. */
+  g_assert_cmpuint (logfl_cabrillo_pick (outside, NULL), ==, 0);
+  g_assert_cmpuint (logfl_cabrillo_pick (outside, ""), ==, 0);
+  g_assert_cmpuint (logfl_cabrillo_pick (NULL, "20M"), ==, 0);
+  g_free (mode);
+  g_free (band);
+  logfl_exch_def_free (sac);
+
+  /* Station and overlay reach the header; left empty they stay out. */
+  LogflCabrilloOpts o = OPTS;
+  o.cat_band = "LOW-BAND";
+  o.cat_station = "FIXED";
+  o.cat_overlay = "WIRE-ONLY";
+  char *out = logfl_cabrillo_export (s, c, &o, NULL, &err);
+  g_assert_no_error (err);
+  g_assert_nonnull (strstr (out, "CATEGORY-BAND: LOW-BAND\n"));
+  g_assert_nonnull (strstr (out, "CATEGORY-STATION: FIXED\n"));
+  g_assert_nonnull (strstr (out, "CATEGORY-OVERLAY: WIRE-ONLY\n"));
+  g_free (out);
+  out = logfl_cabrillo_export (s, c, &OPTS, NULL, &err);
+  g_assert_no_error (err);
+  g_assert_null (strstr (out, "CATEGORY-STATION"));
+  g_assert_null (strstr (out, "CATEGORY-OVERLAY"));
+  g_assert_null (strstr (out, "CATEGORY-ASSISTED"));
+  g_free (out);
+
+  logfl_store_close (s);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -266,5 +334,6 @@ main (int argc, char **argv)
   g_test_add_func ("/cabrillo/required-fields", test_required_fields);
   g_test_add_func ("/cabrillo/categories-from-log",
                    test_categories_from_log);
+  g_test_add_func ("/cabrillo/pick-and-new-tags", test_pick_and_new_tags);
   return g_test_run ();
 }

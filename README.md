@@ -61,7 +61,9 @@ entry row always pre-filled with the live VFO — nearly free.
 - Per-contest **sent serials**, whole-contest dup rule (call+band+mode),
   received-exchange fields in the entry row, exchange column in the table
 - **Cabrillo v3 export** of the active contest: category dialog with
-  spec-value dropdowns (persisted), exact-QRG kHz, correct mode letters,
+  dropdowns (persisted) that offer what the contest's own rules allow — a
+  preset carries its sponsor's category values, SAC's even by seat (inside
+  or outside Scandinavia) — exact-QRG kHz, correct mode letters,
   chronological order — ready for robot submission
 - **Live claimed-score estimate**: points × multipliers in the contest
   subtitle, Pts/Mult columns showing what each QSO brought, CLAIMED-SCORE

@@ -39,7 +39,56 @@ logfl_exch_def_free (LogflExchDef *def)
   g_free (def->mult_exch_from);
   g_strfreev (def->mult_area_entities);
   g_clear_pointer (&def->mult_weight, g_hash_table_unref);
+  for (int t = 0; t < LOGFL_CAB_N_TAGS; t++)
+    {
+      g_strfreev (def->cab[t]);
+      g_strfreev (def->cab_inside[t]);
+    }
   g_free (def);
+}
+
+/* [cabrillo] key per tag, in LogflCabTag order. */
+static const char *const cab_keys[LOGFL_CAB_N_TAGS] = {
+  [LOGFL_CAB_OPERATOR] = "operator",       [LOGFL_CAB_BAND] = "band",
+  [LOGFL_CAB_POWER] = "power",             [LOGFL_CAB_MODE] = "mode",
+  [LOGFL_CAB_TRANSMITTER] = "transmitter", [LOGFL_CAB_ASSISTED] = "assisted",
+  [LOGFL_CAB_OVERLAY] = "overlay",         [LOGFL_CAB_STATION] = "station",
+};
+
+/* One [cabrillo] list. Values stay verbatim — sponsors add their own
+ * (SAC's LOW-BAND, CVA's DUAL) — but each ends up on a header line, so it
+ * must be one printable token. A missing key leaves *out NULL (no rule);
+ * an empty value yields the empty list. */
+static gboolean
+cab_list_parse (GKeyFile *kf, const char *key, char ***out, GError **error)
+{
+  *out = NULL;
+  if (!g_key_file_has_key (kf, "cabrillo", key, NULL))
+    return TRUE;
+
+  char **raw = g_key_file_get_string_list (kf, "cabrillo", key, NULL, NULL);
+  GPtrArray *a = g_ptr_array_new_with_free_func (g_free);
+  for (char **v = raw; v && *v; v++)
+    {
+      g_strstrip (*v);
+      if (!**v)
+        continue;
+      for (const char *c = *v; *c; c++)
+        if (!g_ascii_isgraph (*c))
+          {
+            g_set_error (error, LOGFL_CONTEST_ERROR,
+                         LOGFL_CONTEST_ERROR_PARSE,
+                         "cabrillo %s value \"%s\" is not one token", key, *v);
+            g_ptr_array_unref (a);
+            g_strfreev (raw);
+            return FALSE;
+          }
+      g_ptr_array_add (a, g_strdup (*v));
+    }
+  g_strfreev (raw);
+  g_ptr_array_add (a, NULL);
+  *out = (char **) g_ptr_array_free (a, FALSE);
+  return TRUE;
 }
 
 /* ADIF field names: A-Z 0-9 _ after uppercasing, non-empty. */
@@ -347,6 +396,29 @@ logfl_exch_def_parse (const char *text, GError **error)
       g_free (weight);
     }
 
+  for (int t = 0; t < LOGFL_CAB_N_TAGS; t++)
+    {
+      char *inside_key = g_strconcat (cab_keys[t], "_inside", NULL);
+      gboolean ok = cab_list_parse (kf, cab_keys[t], &def->cab[t], error) &&
+                    cab_list_parse (kf, inside_key, &def->cab_inside[t],
+                                    error);
+      /* Inside of what? Without the entity list the key cannot apply, and
+       * a rule that silently never applies is a wrong header waiting. */
+      if (ok && def->cab_inside[t] && def->counts != LOGFL_COUNTS_ENTITIES)
+        {
+          g_set_error (error, LOGFL_CONTEST_ERROR, LOGFL_CONTEST_ERROR_PARSE,
+                       "cabrillo %s needs a counts=entities: rule",
+                       inside_key);
+          ok = FALSE;
+        }
+      g_free (inside_key);
+      if (!ok)
+        {
+          logfl_exch_def_free (def);
+          return NULL;
+        }
+    }
+
   gsize n_keys = 0;
   char **keys =
     g_key_file_get_string_list (kf, "exchange", "fields", &n_keys, NULL);
@@ -497,6 +569,22 @@ logfl_exch_def_serialize (const LogflExchDef *def)
     }
   g_key_file_set_value (kf, "exchange", "fields", list->str);
   g_string_free (list, TRUE);
+
+  for (int t = 0; t < LOGFL_CAB_N_TAGS; t++)
+    {
+      if (def->cab[t])
+        g_key_file_set_string_list (kf, "cabrillo", cab_keys[t],
+                                    (const char *const *) def->cab[t],
+                                    g_strv_length (def->cab[t]));
+      if (def->cab_inside[t])
+        {
+          char *inside_key = g_strconcat (cab_keys[t], "_inside", NULL);
+          g_key_file_set_string_list (kf, "cabrillo", inside_key,
+                                      (const char *const *) def->cab_inside[t],
+                                      g_strv_length (def->cab_inside[t]));
+          g_free (inside_key);
+        }
+    }
 
   for (guint i = 0; i < def->fields->len; i++)
     {
@@ -666,6 +754,18 @@ logfl_contest_qso_validity (const LogflExchDef *def,
       g_str_equal (mine->prefix, theirs->prefix))
     return LOGFL_QSO_ZERO_POINTS;
   return LOGFL_QSO_VALID;
+}
+
+const char *const *
+logfl_exch_def_cab_values (const LogflExchDef *def, LogflCabTag tag,
+                           const LogflCtyInfo *mine)
+{
+  if (!def || tag < 0 || tag >= LOGFL_CAB_N_TAGS)
+    return NULL;
+  if (def->cab_inside[tag] && mine && mine->country &&
+      entity_listed (def->counts_entities, mine))
+    return (const char *const *) def->cab_inside[tag];
+  return (const char *const *) def->cab[tag];
 }
 
 /* --- scoring (LOG-3) ---------------------------------------------------- */
@@ -1126,6 +1226,160 @@ logfl_contest_score (const LogflExchDef *def, LogflCty *cty,
 #define PTS_SAC    "default=1;"
 #define MULT_SAC   "call-areas:" ENT_SAC
 
+/* Entry categories per preset ([cabrillo]) — shared with the backfill like
+ * the scoring text above. Read 2026-09-20 from the sponsors' rules and
+ * their own Cabrillo pages, from an OK single-op seat; the default comes
+ * first. Where a sponsor lists no values, the list is what its categories
+ * need from the Cabrillo v3 vocabulary (wwrof.org). An empty assisted= or
+ * transmitter= means the sponsor's header has no such tag — assistance is
+ * open to every category there. */
+
+/* cqww.com/cabrillo.htm value lists; rules V (2026 PDF of 2026-09-05):
+ * assisted is a category of its own, so the tag cannot stay out. Overlays
+ * V.B; CATEGORY-STATION: DISTRIBUTED is what V.C.4 asks of a
+ * Multi-Distributed entry. */
+#define CAB_CQWW \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;MULTI-OP;CHECKLOG;\n" \
+  "band=ALL;160M;80M;40M;20M;15M;10M;\n" \
+  "power=HIGH;LOW;QRP;\n" \
+  "mode=CW;SSB;\n" \
+  "transmitter=ONE;TWO;UNLIMITED;\n" \
+  "assisted=ASSISTED;NON-ASSISTED;\n" \
+  "overlay=CLASSIC;ROOKIE;YOUTH;\n" \
+  "station=DISTRIBUTED;\n"
+/* cqwpx.com/cabrillo.htm value lists; rules VI (2026 PDF). Assistance is
+ * open to all but the CLASSIC overlay, yet the sponsor's page still lists
+ * CATEGORY-ASSISTED and its sample header carries it. */
+#define CAB_WPX \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;MULTI-OP;CHECKLOG;\n" \
+  "band=ALL;160M;80M;40M;20M;15M;10M;\n" \
+  "power=HIGH;LOW;QRP;\n" \
+  "mode=CW;SSB;\n" \
+  "transmitter=ONE;TWO;UNLIMITED;\n" \
+  "assisted=ASSISTED;NON-ASSISTED;\n" \
+  "overlay=CLASSIC;ROOKIE;TB-WIRES;YOUTH;\n" \
+  "station=DISTRIBUTED;\n"
+/* IARU-HF-Rules.pdf v1.21 (contests.arrl.org): SO / SO Unlimited x
+ * QRP/LP/HP x Mixed/CW/Phone, MS and M2, a Youth overlay — and no
+ * single-band category at all. ARRL lists no values; ELOG.1 names the
+ * Cabrillo format of wwrof.org, whose words these are (Phone-Only = SSB,
+ * Unlimited = ASSISTED). HQ and council stations are not modeled. */
+#define CAB_IARU \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;MULTI-OP;CHECKLOG;\n" \
+  "band=ALL;\n" \
+  "power=HIGH;LOW;QRP;\n" \
+  "mode=MIXED;CW;SSB;\n" \
+  "transmitter=ONE;TWO;\n" \
+  "assisted=ASSISTED;NON-ASSISTED;\n" \
+  "overlay=YOUTH;\n"
+/* okomdx.crk.cz rules 2026 §3 (EN + CZ): SOAB and SOSB 160-10 m in
+ * HP/LP/QRP, MOST, MO2T; §4.2 allows the cluster everywhere, so no
+ * assisted tag. The sponsor's tips-hints page documents only the one-line
+ * Cabrillo 2.0 "CATEGORY: SINGLE-OP ALL HIGH" and says CATEGORY-OVERLAY is
+ * ignored; whether its robot reads the v3 tags written here could not be
+ * verified. Not modeled: several categories from one log, and SWL (those
+ * logs go by e-mail, §11.3). */
+#define CAB_OKOM \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;MULTI-OP;CHECKLOG;\n" \
+  "band=ALL;160M;80M;40M;20M;15M;10M;\n" \
+  "power=HIGH;LOW;QRP;\n" \
+  "mode=CW;SSB;\n" \
+  "transmitter=ONE;TWO;\n" \
+  "assisted=\n" \
+  "overlay=\n"
+/* euhfc_rules_latest.pdf (2026-06-30) §4 and the sponsor's template
+ * (log.s5cc.eu/_files/euhfc_cabrillo.txt): single operator, all band
+ * only, HIGH/LOW x MIXED/CW/SSB, and QRP; §4g opens assistance to all, and
+ * the template has neither a transmitter nor an assisted tag. Not modeled:
+ * category 7 (SINGLE-OP-UNLIMITED) — the template names no v3 tags for
+ * it. */
+#define CAB_EUHFC \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;CHECKLOG;\n" \
+  "band=ALL;\n" \
+  "power=HIGH;LOW;QRP;\n" \
+  "mode=MIXED;CW;SSB;\n" \
+  "transmitter=\n" \
+  "assisted=\n"
+/* darc.de WAE rules §3 (2026 dates): SINGLE-OP LOW, SINGLE-OP HIGH and
+ * MULTI-OP — all band only, no QRP, spotting nets open to all; CHECKLOG
+ * is in DARC's General Rules §2. DARC lists no Cabrillo values (its FAQ
+ * points at wwrof.org) and says nothing on transmitters, so that tag keeps
+ * the Cabrillo v3 list. Mode follows the part. */
+#define CAB_WAE \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;MULTI-OP;CHECKLOG;\n" \
+  "band=ALL;\n" \
+  "power=HIGH;LOW;\n" \
+  "mode=CW;SSB;RTTY;\n" \
+  "assisted=\n"
+/* cvadx.org/regulamento (67th edition, 2026-08-03) §4-§6 and the value
+ * lists of the sponsor's validator (cvadx.org/logs/logs.php): DUAL is
+ * CVA's own band value for SODB (10 + 80 m); the upload form asks for
+ * station and assisted once more. The file itself has to carry EMAIL and
+ * LOCATION: EU. */
+#define CAB_CVA \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;MULTI-OP;CHECKLOG;\n" \
+  "band=ALL;DUAL;160M;80M;40M;20M;15M;10M;\n" \
+  "power=HIGH;LOW;QRP;\n" \
+  "mode=CW;SSB;\n" \
+  "transmitter=ONE;TWO;\n" \
+  "assisted=ASSISTED;NON-ASSISTED;\n" \
+  "overlay=ROOKIE;YOUTH;YL;\n" \
+  "station=FIXED;EXPEDITION;\n"
+/* sartg.com/contest/wwrules.htm (2026) classes A-E and wwcabril.htm: all
+ * band or one of 80-10 m, HIGH or LOW, RTTY, a single transmitter
+ * throughout; NOTE 2 opens assistance to all classes and the overlay is
+ * "not used". The sponsor's page describes the one-line Cabrillo 2.0
+ * CATEGORY ("Version 3.0 is also accepted"). The SWL class is not
+ * modeled. */
+#define CAB_SARTG \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;MULTI-OP;CHECKLOG;\n" \
+  "band=ALL;80M;40M;20M;15M;10M;\n" \
+  "power=HIGH;LOW;\n" \
+  "mode=RTTY;\n" \
+  "transmitter=ONE;\n" \
+  "assisted=\n" \
+  "overlay=\n"
+/* yodx.ro rules PDF (2026) §4: SOAB-MIX-HP/-LP, SOAB-CW, SOAB-SSB, SOSB
+ * 80-10 m, MOST — no 160 m, no QRP class, the cluster open to all (§10.3).
+ * The sponsor publishes no Cabrillo values at all (its upload form has the
+ * entrant confirm the category), so these are the Cabrillo v3 words for
+ * what §4 allows; the rules never mention a checklog, hence no operator
+ * list. YN and SWL are not modeled. */
+#define CAB_YODX \
+  "[cabrillo]\n" \
+  "band=ALL;80M;40M;20M;15M;10M;\n" \
+  "power=HIGH;LOW;\n" \
+  "mode=MIXED;CW;SSB;\n" \
+  "transmitter=ONE;\n" \
+  "assisted=\n"
+/* sactest.net 2026 rules §4 and the sponsor's template (sactest.net/blog/
+ * rules/cabrillo-3-0, "Possible (Non-)Scandinavian entries"): single band
+ * and MULTI-MULTI are for Scandinavians only, Low Band (80 + 40 m) for
+ * everybody else — LOW-BAND and WIRE-ONLY are SAC's own values. No 160 m,
+ * and no assisted tag: §4.7 opens assistance to all but the CLASSIC
+ * overlay. EXPLORER, still in the template, left the rules in 2026. NB
+ * sactest.net/blog/rules/ kept serving the 2023 text. */
+#define CAB_SAC \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;MULTI-OP;CHECKLOG;\n" \
+  "band=ALL;LOW-BAND;\n" \
+  "band_inside=ALL;80M;40M;20M;15M;10M;\n" \
+  "power=HIGH;LOW;QRP;\n" \
+  "mode=CW;SSB;\n" \
+  "transmitter=ONE;\n" \
+  "transmitter_inside=ONE;UNLIMITED;\n" \
+  "assisted=\n" \
+  "overlay=CLASSIC;ROOKIE;TB-WIRES;WIRE-ONLY;\n" \
+  "station=FIXED;MOBILE;PORTABLE;EXPEDITION;\n"
+
 guint
 logfl_contest_backfill_validity (LogflStore *s, GError **error)
 {
@@ -1153,6 +1407,23 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
     { "SAC-", "entities:" ENT_SAC, FALSE, PTS_SAC, MULT_SAC, NULL, NULL,
       "Scandinavian" },
   };
+  /* Category lists go by the whole ADIF id, not a prefix: CQ-WW-RTTY is a
+   * contest of its own and must not be handed the CW/SSB lists. The bare
+   * CQ-WW / CQ-WPX are what the presets prefill. */
+  static const struct {
+    const char *adif_id;
+    const char *cab;
+  } cab_rules[] = {
+    { "CQ-WW", CAB_CQWW },     { "CQ-WW-CW", CAB_CQWW },
+    { "CQ-WW-SSB", CAB_CQWW }, { "CQ-WPX", CAB_WPX },
+    { "CQ-WPX-CW", CAB_WPX },  { "CQ-WPX-SSB", CAB_WPX },
+    { "IARU-HF", CAB_IARU },   { "OK-OM-DX", CAB_OKOM },
+    { "EU-HF", CAB_EUHFC },    { "DARC-WAEDC-CW", CAB_WAE },
+    { "DARC-WAEDC-SSB", CAB_WAE }, { "DARC-WAEDC-RTTY", CAB_WAE },
+    { "CVA-DX-CW", CAB_CVA },  { "CVA-DX-SSB", CAB_CVA },
+    { "SARTG-RTTY", CAB_SARTG }, { "YOHFDX", CAB_YODX },
+    { "SAC-CW", CAB_SAC },     { "SAC-SSB", CAB_SAC },
+  };
 
   GPtrArray *list = logfl_store_contest_list (s, error);
   if (!list)
@@ -1168,8 +1439,13 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
       while (r < G_N_ELEMENTS (rules) &&
              !g_str_has_prefix (c->adif_id, rules[r].adif_prefix))
         r++;
-      if (r == G_N_ELEMENTS (rules))
+      const char *cab = NULL;
+      for (gsize k = 0; k < G_N_ELEMENTS (cab_rules) && !cab; k++)
+        if (g_str_equal (c->adif_id, cab_rules[k].adif_id))
+          cab = cab_rules[k].cab;
+      if (r == G_N_ELEMENTS (rules) && !cab)
         continue;
+      gboolean known = r < G_N_ELEMENTS (rules);
 
       /* Edit the keyfile in place — a parse/serialize round trip would
        * drop keys this build does not know. Each backfill applies only
@@ -1182,14 +1458,15 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
         continue;
 
       gboolean want_validity =
-        (rules[r].counts || rules[r].zero_own) &&
+        known && (rules[r].counts || rules[r].zero_own) &&
         !g_key_file_has_key (kf, "exchange", "counts", NULL) &&
         !g_key_file_has_key (kf, "exchange", "zero_own_country", NULL);
       gboolean want_scoring =
-        (rules[r].points || rules[r].mult) &&
+        known && (rules[r].points || rules[r].mult) &&
         !g_key_file_has_key (kf, "exchange", "points", NULL) &&
         !g_key_file_has_key (kf, "exchange", "mult", NULL);
-      if (!want_validity && !want_scoring)
+      gboolean want_cab = cab && !g_key_file_has_group (kf, "cabrillo");
+      if (!want_validity && !want_scoring && !want_cab)
         continue;
 
       if (want_validity)
@@ -1218,6 +1495,29 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
             g_key_file_set_value (kf, "exchange", "mult_weight",
                                   rules[r].weight);
         }
+      if (want_cab)
+        {
+          g_autoptr (GKeyFile) src = g_key_file_new ();
+          g_key_file_load_from_data (src, cab, (gsize) -1, G_KEY_FILE_NONE,
+                                     NULL);
+          /* An operator who set counts= to something else keeps it (see
+           * above) — and a def without the entity list cannot carry the
+           * _inside keys, the parser refuses them. */
+          char *counts = g_key_file_get_string (kf, "exchange", "counts",
+                                                NULL);
+          gboolean entities = counts && g_str_has_prefix (counts, "entities:");
+          g_free (counts);
+          char **cab_names = g_key_file_get_keys (src, "cabrillo", NULL, NULL);
+          for (char **k = cab_names; k && *k; k++)
+            {
+              if (!entities && g_str_has_suffix (*k, "_inside"))
+                continue;
+              char *v = g_key_file_get_value (src, "cabrillo", *k, NULL);
+              g_key_file_set_value (kf, "cabrillo", *k, v ? v : "");
+              g_free (v);
+            }
+          g_strfreev (cab_names);
+        }
       g_free (c->exch_def);
       c->exch_def = g_key_file_to_data (kf, NULL, NULL);
       if (!logfl_store_contest_update (s, c, error))
@@ -1245,6 +1545,7 @@ static const LogflContestPreset presets[] = {
   { "CQ WW", "CQ-WW",
     "[exchange]\ntx_serial=false\nfields=zone;\nzero_own_country=true\n"
     "points=" PTS_CQWW "\nmult=" MULT_CQWW "\n"
+    CAB_CQWW
     "[field:zone]\nlabel=Zone\ntype=number\nadif_num=CQZ\nrequired=true\n",
     "CQ zone (OK = 15)" },
   /* cqwpx.com/rules: everyone works everyone, every QSO >= 1 point.
@@ -1254,6 +1555,7 @@ static const LogflContestPreset presets[] = {
   { "CQ WPX", "CQ-WPX",
     "[exchange]\ntx_serial=true\nfields=nr;\n"
     "points=" PTS_WPX "\nmult=" MULT_WPX "\nmult_scope=contest\n"
+    CAB_WPX
     "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
     NULL },
   /* IARU-HF-Rules.pdf (contests.arrl.org): "Any station may be contacted
@@ -1266,6 +1568,7 @@ static const LogflContestPreset presets[] = {
   { "IARU HF", "IARU-HF",
     "[exchange]\ntx_serial=false\nfields=exch;\n"
     "points=" PTS_IARU "\nmult=" MULT_IARU "\n"
+    CAB_IARU
     "[field:exch]\nlabel=Zone/HQ\ntype=auto\nadif_num=ITUZ\nrequired=true\n",
     "ITU zone (OK = 28)" },
   /* okomdx.crk.cz CW rules (2026): everyone works everyone — the old
@@ -1280,6 +1583,7 @@ static const LogflContestPreset presets[] = {
   { "OK/OM DX", "OK-OM-DX",
     "[exchange]\ntx_serial=false\nfields=exch;\n"
     "points=" PTS_OKOM "\nmult=" MULT_OKOM "\n"
+    CAB_OKOM
     "[field:exch]\nlabel=Nr/District\ntype=auto\nrequired=true\n",
     "district (e.g. APA)" },
   /* Exchange is the two-digit year of the operator's FIRST licence
@@ -1294,6 +1598,7 @@ static const LogflContestPreset presets[] = {
      * app's dup rule); score = points × mults. */
     "[exchange]\ntx_serial=false\nfields=year;\ncounts=eu-only\n"
     "points=" PTS_EUHFC "\nmult=" MULT_EUHFC "\n"
+    CAB_EUHFC
     "[field:year]\nlabel=Year\ntype=text\nrequired=true\n",
     "two-digit year of first licence (e.g. 99)" },
   /* WAE (darc.de rules): RST + progressive serial, "000" when the other
@@ -1315,6 +1620,7 @@ static const LogflContestPreset presets[] = {
      * documented underestimate until then. */
     "[exchange]\ntx_serial=true\nfields=nr;\ncounts=eu-dx\n"
     "points=" PTS_WAE "\nmult=" MULT_WAE "\nmult_weight=" WEIGHT_WAE "\n"
+    CAB_WAE
     "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
     NULL },
   /* CVA (cvadx.org/regulamento): we send RS(T) + continent ("599 EU"); PY
@@ -1330,6 +1636,7 @@ static const LogflContestPreset presets[] = {
      * is not pinned to DXCC by the rules; cty.dat is our reading. */
     "[exchange]\ntx_serial=false\nfields=cont;\n"
     "points=" PTS_CVA "\nmult=" MULT_CVA "\n"
+    CAB_CVA
     "[field:cont]\nlabel=Cont/State\ntype=text\nrequired=true\n",
     "continent (OK = EU)" },
   /* SARTG WW RTTY (sartg.com/contest/wwrules.htm): everyone works
@@ -1343,6 +1650,7 @@ static const LogflContestPreset presets[] = {
   { "SARTG WW RTTY", "SARTG-RTTY",
     "[exchange]\ntx_serial=true\nfields=nr;\n"
     "points=" PTS_SARTG "\n"
+    CAB_SARTG
     "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
     NULL },
   /* yodx.ro official rules ("Rules for the YO DX HF english.pdf", §5/§6.1):
@@ -1366,6 +1674,7 @@ static const LogflContestPreset presets[] = {
      * /MM's flat 4 points are not modeled. */
     "[exchange]\ntx_serial=true\nfields=exch;\n"
     "points=" PTS_YODX "\nmult=" MULT_YODX "\n"
+    CAB_YODX
     "[field:exch]\nlabel=Nr/County\ntype=auto\nrequired=true\n",
     NULL },
   /* SAC (sactest.net "Scandinavian Activity Contest 2026 rules", read
@@ -1389,6 +1698,7 @@ static const LogflContestPreset presets[] = {
     "[exchange]\ntx_serial=true\nfields=nr;\n"
     "counts=entities:" ENT_SAC "\ncounts_name=Scandinavian\n"
     "points=" PTS_SAC "\nmult=" MULT_SAC "\n"
+    CAB_SAC
     "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
     NULL },
   { "Custom", NULL,

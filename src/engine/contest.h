@@ -109,6 +109,26 @@ typedef enum {
                                         (SAC rules §8.2) */
 } LogflMultSource;
 
+/* --- Cabrillo entry categories -------------------------------------------
+ * Which values a CATEGORY-* header tag may take in this contest, from the
+ * sponsor's rules and the sponsor's own Cabrillo page (sources and read
+ * dates at each preset). 2026-09-20: a SAC log from OK went out as
+ * CATEGORY-BAND: 20M — single band is for Scandinavians only there, and
+ * the export dialog offered every contest the same Cabrillo v3 lists.
+ * Per-tag lists only: what the rules say about combinations (QRP all-band
+ * only, …) is not modeled — the sponsor's robot is the authority. */
+typedef enum {
+  LOGFL_CAB_OPERATOR,
+  LOGFL_CAB_BAND,
+  LOGFL_CAB_POWER,
+  LOGFL_CAB_MODE,
+  LOGFL_CAB_TRANSMITTER,
+  LOGFL_CAB_ASSISTED,
+  LOGFL_CAB_OVERLAY,
+  LOGFL_CAB_STATION,
+  LOGFL_CAB_N_TAGS
+} LogflCabTag;
+
 typedef struct {
   gboolean tx_serial;          /* sent exchange includes an auto serial */
   GPtrArray *fields;           /* received exchange, LogflExchField* */
@@ -128,6 +148,13 @@ typedef struct {
                                   not once per band */
   GHashTable *mult_weight;     /* band ("80m") → weight int; NULL = ×1
                                   everywhere (WAE band bonus) */
+  char **cab[LOGFL_CAB_N_TAGS];        /* allowed header values per tag,
+                                  NULL-terminated, the default first; NULL =
+                                  no rule; an empty list = the sponsor's
+                                  header does not know the tag */
+  char **cab_inside[LOGFL_CAB_N_TAGS]; /* … for an entrant inside
+                                  counts_entities (SAC: Scandinavia); NULL =
+                                  the same as cab[] */
 } LogflExchDef;
 
 /* Serialized form is GKeyFile text:
@@ -145,6 +172,13 @@ typedef struct {
  *                          # with +
  *   mult_scope=contest     # band (default) | contest
  *   mult_weight=80m:4;40m:3;20m:2;15m:2;10m:2   # WAE band bonus
+ *   [cabrillo]             # optional; allowed CATEGORY-* values per tag:
+ *   band=ALL;LOW-BAND;     # operator|band|power|mode|transmitter|assisted|
+ *                          # overlay|station — the default first; an empty
+ *                          # value = the tag stays out of the header; a
+ *                          # missing key = no rule (the Cabrillo v3 list)
+ *   band_inside=ALL;80M;40M;   # KEY_inside: the list for an entrant inside
+ *                          # the counts=entities: list (needs that rule)
  *   [field:nr]
  *   label=Nr
  *   type=serial            # serial|number|text|auto
@@ -156,11 +190,22 @@ typedef struct {
  * round-trip asymmetry: this build carries points/mult through
  * parse→serialize, but an older build editing the contest drops them on
  * reserialize (same as counts= before it existed) — the failure mode is
- * the score display disappearing, never wrong data. */
+ * the score display disappearing, never wrong data. [cabrillo] rides the
+ * same way: dropped by an older build, the export dialog is back to the
+ * plain Cabrillo v3 lists. */
 LogflExchDef *logfl_exch_def_parse     (const char *text, GError **error);
 char         *logfl_exch_def_serialize (const LogflExchDef *def);
 void          logfl_exch_def_free      (LogflExchDef *def);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (LogflExchDef, logfl_exch_def_free)
+
+/* The values a CATEGORY-* tag may take for an entrant seated at mine (the
+ * cty answer for my own call). NULL = the def has no rule for the tag and
+ * the caller keeps its Cabrillo v3 list; an empty list = leave the tag out
+ * of the header. mine NULL or unresolved reads as outside the entity list
+ * — the presets are written from that seat. */
+const char *const *logfl_exch_def_cab_values (const LogflExchDef *def,
+                                              LogflCabTag tag,
+                                              const LogflCtyInfo *mine);
 
 /* Applies an operator-entered exchange onto a QSO about to be stored.
  * values runs parallel to def->fields (NULL/empty entries are skipped);
@@ -193,10 +238,13 @@ LogflQsoValidity logfl_contest_qso_validity (const LogflExchDef *def,
  * rule its ADIF id implies (DARC-WAEDC* → eu-dx, EU-HF → eu-only,
  * CQ-WW* → zero_own_country) written back to the store. Since LOG-3 the
  * same pass also backfills points=/mult= for contests whose ADIF id maps
- * to a preset scoring rule and whose def names neither key. Defs that
- * name a key — including an explicit counts=all — are left alone, so an
- * operator's own edit is never overridden. Returns how many contests were
- * updated; on a store error returns what was done and sets error. */
+ * to a preset scoring rule and whose def names neither key, and the
+ * [cabrillo] category lists for a def without that group — matched on the
+ * whole ADIF id there, as CQ-WW-RTTY must not inherit the CW/SSB lists.
+ * Defs that name a key — including an explicit counts=all — are left
+ * alone, so an operator's own edit is never overridden. Returns how many
+ * contests were updated; on a store error returns what was done and sets
+ * error. */
 guint logfl_contest_backfill_validity (LogflStore *s, GError **error);
 
 /* --- scoring ------------------------------------------------------------ */
