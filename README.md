@@ -104,8 +104,8 @@ prebuilt packages for every release, and Arch has an AUR package:
 
 - **AppImage** (any distro): download, `chmod +x Log_for_Linux-*.AppImage`,
   run. Everything bundled, nothing to install.
-- **Ubuntu 24.04+ / Debian 13+**: `sudo apt install ./log-for-linux_*.deb`
-- **Fedora 40+**: `sudo dnf install ./log-for-linux-*.rpm`
+- **Ubuntu 26.04+**: `sudo apt install ./log-for-linux_*.deb`
+- **Fedora 44+**: `sudo dnf install ./log-for-linux-*.rpm`
 - **Arch Linux (AUR)** — [`log-for-linux`](https://aur.archlinux.org/packages/log-for-linux):
   `paru -S log-for-linux` (or `yay -S log-for-linux`). Builds the tagged
   release from source through the [PKGBUILD](packaging/PKGBUILD); without a
