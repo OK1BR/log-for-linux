@@ -102,7 +102,7 @@ Pick whichever fits your distribution — the
 [Releases page](https://github.com/OK1BR/log-for-linux/releases) carries
 prebuilt packages for every release, and Arch has an AUR package:
 
-- **AppImage** (any distro): download, `chmod +x Log_for_Linux-*.AppImage`,
+- **AppImage** (any current distro, glibc 2.43+): download, `chmod +x Log_for_Linux-*.AppImage`,
   run. Everything bundled, nothing to install.
 - **Ubuntu 26.04+**: `sudo apt install ./log-for-linux_*.deb`
 - **Fedora 44+**: `sudo dnf install ./log-for-linux-*.rpm`
