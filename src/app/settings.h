@@ -36,6 +36,7 @@ typedef struct {
   char *cab_operator, *cab_band, *cab_mode, *cab_power, *cab_transmitter;
   char *cab_assisted;          /* "" = omit the tag */
   char *cab_name, *cab_email, *cab_location, *cab_club;
+  char *last_folder;           /* where the last import/export went; "" = none */
 } LogflSettings;
 
 /* Fill defaults (heap strings + macro banks). Safe on a zeroed struct. */

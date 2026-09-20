@@ -2089,6 +2089,41 @@ confirm_delete_context_qso (LogflWindow *self)
                            on_delete_response, self);
 }
 
+/* --- file dialogs: the start folder ------------------------------------- */
+
+/* The app names the start folder of every file dialog itself. Left unset,
+ * the file chooser portal starts in the last folder it remembers for the
+ * app id and never checks that the folder still exists — a removed one puts
+ * an error dialog on top of every import and export. */
+static void
+file_dialog_set_folder (LogflWindow *self, GtkFileDialog *dlg)
+{
+  const char *dir = self->settings.last_folder;
+  if (!dir || !g_file_test (dir, G_FILE_TEST_IS_DIR))
+    dir = g_get_user_special_dir (G_USER_DIRECTORY_DOCUMENTS);
+  if (!dir || !g_file_test (dir, G_FILE_TEST_IS_DIR))
+    dir = g_get_home_dir ();
+  GFile *folder = g_file_new_for_path (dir);
+  gtk_file_dialog_set_initial_folder (dlg, folder);
+  g_object_unref (folder);
+}
+
+/* The folder of a picked file is where the next dialog starts. */
+static void
+file_dialog_remember_folder (LogflWindow *self, GFile *file)
+{
+  GFile *parent = g_file_get_parent (file);
+  char *path = parent ? g_file_get_path (parent) : NULL;
+  if (path && g_strcmp0 (path, self->settings.last_folder) != 0)
+    {
+      g_free (self->settings.last_folder);
+      self->settings.last_folder = g_steal_pointer (&path);
+      logfl_settings_save (&self->settings);
+    }
+  g_free (path);
+  g_clear_object (&parent);
+}
+
 /* --- ADIF import / export ---------------------------------------------- */
 
 static void
@@ -2103,6 +2138,7 @@ on_import_ready (GObject *source, GAsyncResult *res, gpointer user_data)
       g_clear_error (&err);      /* dismissed */
       return;
     }
+  file_dialog_remember_folder (self, file);
   /* g_file_get_path is NULL for non-native URIs (portals, remote); read via
    * GFile so import still works when the dialog does not yield a local path. */
   char *data = NULL;
@@ -2141,6 +2177,7 @@ act_import (GSimpleAction *action, GVariant *param, gpointer user_data)
   LogflWindow *self = user_data;
   GtkFileDialog *dlg = gtk_file_dialog_new ();
   gtk_file_dialog_set_title (dlg, "Import ADIF");
+  file_dialog_set_folder (self, dlg);
   gtk_file_dialog_open (dlg, GTK_WINDOW (self), NULL, on_import_ready, self);
   g_object_unref (dlg);
 }
@@ -2157,6 +2194,7 @@ on_export_ready (GObject *source, GAsyncResult *res, gpointer user_data)
       g_clear_error (&err);
       return;
     }
+  file_dialog_remember_folder (self, file);
   if (!self->store)
     {
       toast (self, "Log store is not open");
@@ -2205,6 +2243,7 @@ act_export (GSimpleAction *action, GVariant *param, gpointer user_data)
   GtkFileDialog *dlg = gtk_file_dialog_new ();
   gtk_file_dialog_set_title (dlg, "Export ADIF");
   gtk_file_dialog_set_initial_name (dlg, "ok1br-log.adi");
+  file_dialog_set_folder (self, dlg);
   gtk_file_dialog_save (dlg, GTK_WINDOW (self), NULL, on_export_ready, self);
   g_object_unref (dlg);
 }
@@ -3948,6 +3987,7 @@ on_cabrillo_file_ready (GObject *source, GAsyncResult *res,
       cab_export_free (ce);
       return;
     }
+  file_dialog_remember_folder (ce->win, file);
   if (!ce->win->store)
     {
       toast (ce->win, "Log store is not open");
@@ -4127,6 +4167,7 @@ on_cab_dialog_export (GtkButton *btn, gpointer user_data)
   gtk_file_dialog_set_initial_name (fd, fname);
   g_free (fname);
   g_free (lower);
+  file_dialog_set_folder (self, fd);
   gtk_file_dialog_save (fd, GTK_WINDOW (self), NULL,
                         on_cabrillo_file_ready, ce);
   g_object_unref (fd);

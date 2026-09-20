@@ -121,6 +121,8 @@ logfl_settings_init_defaults (LogflSettings *s)
       g_free (*slot);
       *slot = g_strdup (cab_fields[i].def);
     }
+  g_free (s->last_folder);
+  s->last_folder = g_strdup ("");
 }
 
 void
@@ -223,6 +225,14 @@ logfl_settings_load (LogflSettings *s)
             }
         }
 
+      /* Not stripped: a path is taken as it was stored. */
+      char *folder = g_key_file_get_string (kf, "files", "last_folder", NULL);
+      if (folder)
+        {
+          g_free (s->last_folder);
+          s->last_folder = folder;
+        }
+
       if (g_key_file_has_key (kf, "wsjtx", "enabled", NULL))
         s->wsjtx_enabled =
             g_key_file_get_boolean (kf, "wsjtx", "enabled", NULL);
@@ -280,6 +290,9 @@ logfl_settings_save (const LogflSettings *s)
                              *slot ? *slot : "");
     }
 
+  g_key_file_set_string (kf, "files", "last_folder",
+                         s->last_folder ? s->last_folder : "");
+
   g_key_file_set_boolean (kf, "wsjtx", "enabled", s->wsjtx_enabled);
   g_key_file_set_integer (kf, "wsjtx", "port",
                           s->wsjtx_port ? s->wsjtx_port
@@ -317,4 +330,5 @@ logfl_settings_clear (LogflSettings *s)
   s->wsjtx_port = 0;
   for (gsize i = 0; i < G_N_ELEMENTS (cab_fields); i++)
     g_clear_pointer (cab_slot (s, i), g_free);
+  g_clear_pointer (&s->last_folder, g_free);
 }
