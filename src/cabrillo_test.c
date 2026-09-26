@@ -357,13 +357,21 @@ test_placeholders (void)
    * fill never starts and the gap stays visible as "-". */
   add_qso (s, id, "G3XYZ", "20m", 14.087, "RTTY", T + 120, "599", "599",
            0, "15", 0, NULL);
+  /* The state alone, the zone never sent (on air 2026-09-26): the line
+   * gets the zone the state names, two digits like the sponsor's. */
+  add_qso (s, id, "W1XYZ", "20m", 14.088, "RTTY", T + 180, "599", "599",
+           0, "15", 0, "MA");
+  /* QC names no single zone and this writer has no cty: the line keeps
+   * what was heard, wrong column and all, rather than a guess. */
+  add_qso (s, id, "VE2XYZ", "20m", 14.089, "RTTY", T + 240, "599", "599",
+           0, "15", 0, "QC");
 
   LogflCabrilloOpts o = OPTS;
   o.contest = "CQ-WW-RTTY";
   o.cat_mode = "RTTY";
   char *out = logfl_cabrillo_export (s, id, &o, &n, &err);
   g_assert_no_error (err);
-  g_assert_cmpuint (n, ==, 3);
+  g_assert_cmpuint (n, ==, 5);
   char *sent = g_strdup_printf ("%-13s 599 %-6s %-13s 599 05 MA\n",
                                 "OK1BR", "15 DX", "K1AB");
   g_assert_nonnull (strstr (out, sent));
@@ -371,6 +379,12 @@ test_placeholders (void)
   g_assert_nonnull (strstr (out, dl));
   char *g = g_strdup_printf ("%-13s 599 -\n", "G3XYZ");
   g_assert_nonnull (strstr (out, g));
+  char *w = g_strdup_printf ("%-13s 599 05 MA\n", "W1XYZ");
+  g_assert_nonnull (strstr (out, w));
+  char *qc = g_strdup_printf ("%-13s 599 QC DX\n", "VE2XYZ");
+  g_assert_nonnull (strstr (out, qc));
+  g_free (qc);
+  g_free (w);
   g_free (g);
   g_free (dl);
   g_free (sent);

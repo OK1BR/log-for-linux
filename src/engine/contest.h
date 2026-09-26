@@ -235,6 +235,18 @@ void logfl_exch_apply (const LogflExchDef *def,
 /* "1" → "001" — the on-air serial convention (grows past 999 naturally). */
 char *logfl_exch_serial_format (guint serial);
 
+/* CQ zone behind a W/VE QTH code ("MA" → 5, "BC" → 3); 0 when the code
+ * names no single zone (QC, NU) or is no W/VE QTH at all. */
+int logfl_waz_zone_of_qth (const char *qth);
+
+/* The CQ zone a received exchange came without — text in the zone slot
+ * of a def whose first field is the CQ zone (CQ WW RTTY: "MA" alone) —
+ * from the QTH, else from cty by prefix (cty may be NULL). 0 = nothing to
+ * fill: a zone was heard, or nothing at all was. Exporters put it ahead
+ * of the text; the stored exchange stays what was heard. */
+int logfl_exch_missing_cq_zone (const LogflExchDef *def, LogflCty *cty,
+                                const LogflQso *q);
+
 /* Does a QSO with them count under this contest's rule? mine/theirs come
  * from the cty resolver; pass NULL for either when unresolved — unknown
  * stations get the benefit of the doubt (VALID), never a false alarm. */

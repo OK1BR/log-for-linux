@@ -13,6 +13,7 @@
 #ifndef LOGFL_CABRILLO_H
 #define LOGFL_CABRILLO_H
 
+#include "cty.h"
 #include "log_store.h"
 
 G_BEGIN_DECLS
@@ -38,6 +39,10 @@ typedef struct {
   const char *location;        /* ARRL section or "DX" */
   const char *grid;            /* GRID-LOCATOR: */
   const char *soapbox;
+  LogflCty   *cty;             /* optional: the zone by prefix for a W/VE
+                                  exchange that came without one and whose
+                                  QTH names no single zone (QC, NU) — see
+                                  logfl_exch_missing_cq_zone */
 } LogflCabrilloOpts;
 
 /* Renders the contest's QSOs (oldest first, as the spec requires) into a

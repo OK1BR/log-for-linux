@@ -1015,10 +1015,54 @@ exch_tokens (const LogflQso *q)
   return (char **) g_ptr_array_free (a, FALSE);
 }
 
+/* CQ zone of a W/VE QTH as the CQ WW RTTY exchange carries it (rules
+ * IV.C.3: USPS state codes, DC and the sponsor's 14 Canadian call-area
+ * codes), from the WAZ zone definitions (cqww.com/cq_waz_list.htm) laid
+ * over the FCC call regions (fcc.gov, amateur call sign systems), both
+ * read 2026-09-26. Zone 3: W6, the W7 states AZ ID NV OR UT WA, VE7;
+ * zone 4: the W7 states MT WY, W0, W9, W8 but WV, W5, the W4 states AL KY
+ * TN, VE3-VE6; zone 5: W1, W2, W3 with DC, the rest of W4, WV, VE1, VE9,
+ * VY2, VO1; zone 1: VY1, VE8; zone 2: VO2. 0 for anything else: QC (zone
+ * 5 south of the 50th parallel, 2 north) and NU (1 west of 102° W, 2
+ * east) name no single zone, and the callers fall back to cty. */
+int
+logfl_waz_zone_of_qth (const char *qth)
+{
+  static const struct { const char *code; int zone; } waz[] = {
+    { "CA", 3 }, { "AZ", 3 }, { "ID", 3 }, { "NV", 3 }, { "OR", 3 },
+    { "UT", 3 }, { "WA", 3 }, { "BC", 3 },
+    { "MT", 4 }, { "WY", 4 },
+    { "CO", 4 }, { "IA", 4 }, { "KS", 4 }, { "MN", 4 }, { "MO", 4 },
+    { "NE", 4 }, { "ND", 4 }, { "SD", 4 },
+    { "IL", 4 }, { "IN", 4 }, { "WI", 4 },
+    { "MI", 4 }, { "OH", 4 },
+    { "AR", 4 }, { "LA", 4 }, { "MS", 4 }, { "NM", 4 }, { "OK", 4 },
+    { "TX", 4 },
+    { "AL", 4 }, { "KY", 4 }, { "TN", 4 },
+    { "ON", 4 }, { "MB", 4 }, { "SK", 4 }, { "AB", 4 },
+    { "CT", 5 }, { "ME", 5 }, { "MA", 5 }, { "NH", 5 }, { "RI", 5 },
+    { "VT", 5 }, { "NJ", 5 }, { "NY", 5 },
+    { "DE", 5 }, { "DC", 5 }, { "MD", 5 }, { "PA", 5 },
+    { "FL", 5 }, { "GA", 5 }, { "NC", 5 }, { "SC", 5 }, { "VA", 5 },
+    { "WV", 5 },
+    { "NS", 5 }, { "NB", 5 }, { "PEI", 5 }, { "NF", 5 },
+    { "YT", 1 }, { "NWT", 1 }, { "LB", 2 },
+  };
+  if (!qth || !*qth)
+    return 0;
+  for (gsize i = 0; i < G_N_ELEMENTS (waz); i++)
+    if (g_ascii_strcasecmp (waz[i].code, qth) == 0)
+      return waz[i].zone;
+  return 0;
+}
+
 /* Their zone: the received exchange when numeric — the station said it
- * itself — the cty default otherwise (0 = unknown). The zone is the
- * exchange's first token: alone in CQ WW ("15"), ahead of the W/VE QTH
- * in CQ WW RTTY ("05 MA"). */
+ * itself — else the W/VE QTH the exchange carries (a CQ WW RTTY station
+ * whose macro sends the state alone, "MA": the state names the zone,
+ * and cty cannot — it goes by prefix, zone 5 for every unlisted US call
+ * and for VE3 and VE7 alike), the cty default last (0 = unknown). The
+ * zone is the exchange's first token: alone in CQ WW ("15"), ahead of
+ * the W/VE QTH in CQ WW RTTY ("05 MA"). */
 static int
 their_zone (const LogflQso *q, gboolean theirs_ok,
             const LogflCtyInfo *theirs, gboolean cq)
@@ -1026,12 +1070,48 @@ their_zone (const LogflQso *q, gboolean theirs_ok,
   char **tok = exch_tokens (q);
   int z = tok[0] && all_digits (tok[0])
             ? (int) g_ascii_strtoll (tok[0], NULL, 10) : 0;
+  if (z <= 0 && cq)
+    for (char **t = tok; *t && z <= 0; t++)
+      z = logfl_waz_zone_of_qth (*t);
   g_strfreev (tok);
   if (z > 0)
     return z;
   if (theirs_ok)
     return cq ? theirs->cq_zone : theirs->itu_zone;
   return 0;
+}
+
+/* The zone a received exchange lacks: the def's first field is the CQ
+ * zone and the station sent text without it — a CQ WW RTTY W/VE station
+ * whose macro carries the state alone ("599 MA"; rules III ask for both,
+ * the state alone is what OK1BR heard on air 2026-09-26). The sponsor's
+ * QSO line needs the slot filled, and the QTH names the zone
+ * (logfl_waz_zone_of_qth); cty by prefix when it does not (QC, NU, or
+ * "DX" typed with no zone) and the caller has one. 0 when nothing is
+ * missing — a heard zone is never second-guessed — or nothing was
+ * received at all: that gap is the operator's to see. */
+int
+logfl_exch_missing_cq_zone (const LogflExchDef *def, LogflCty *cty,
+                            const LogflQso *q)
+{
+  if (!def || !q || def->fields->len == 0)
+    return 0;
+  const LogflExchField *f = def->fields->pdata[0];
+  if (f->type != LOGFL_EXCH_NUMBER || g_strcmp0 (f->adif_num, "CQZ") != 0)
+    return 0;
+  char **tok = exch_tokens (q);
+  int z = 0;
+  if (tok[0] && !all_digits (tok[0]))
+    {
+      for (char **t = tok; *t && z <= 0; t++)
+        z = logfl_waz_zone_of_qth (*t);
+      LogflCtyInfo info;
+      if (z <= 0 && cty && q->call
+          && logfl_cty_lookup (cty, q->call, &info))
+        z = info.cq_zone;
+    }
+  g_strfreev (tok);
+  return z;
 }
 
 static int

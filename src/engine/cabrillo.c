@@ -193,7 +193,16 @@ logfl_cabrillo_export (LogflStore *s, gint64 contest_id,
       const char *mycall = q->station_callsign && *q->station_callsign
                                ? q->station_callsign : o->callsign;
       char *sent = exch_str (q->stx, q->stx_string, TRUE, def);
-      char *rcvd = exch_str (q->srx, q->srx_string, FALSE, def);
+      /* A W/VE exchange that came without its zone ("MA"): the sponsor's
+       * line wants both slots, and the QTH names the zone — two digits
+       * like the sponsor's own "05". The log keeps what was heard. */
+      int zone = logfl_exch_missing_cq_zone (def, o->cty, q);
+      char *filled = zone > 0
+                       ? g_strdup_printf ("%02d %s", zone, q->srx_string)
+                       : NULL;
+      char *rcvd = exch_str (q->srx, filled ? filled : q->srx_string,
+                             FALSE, def);
+      g_free (filled);
 
       g_string_append_printf (out,
           "QSO: %5s %-2s %s %s %-13s %-3s %-6s %-13s %-3s %s\n",

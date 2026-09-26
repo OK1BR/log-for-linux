@@ -3,6 +3,7 @@
  * Part of log-for-linux. GPL-3.0-or-later.
  */
 #include "adif.h"
+#include "contest.h"
 #include "engine.h"
 
 #include <string.h>
@@ -450,6 +451,12 @@ logfl_adif_export_data (LogflStore *s, const LogflStoreQuery *query,
     }
   GHashTable *contest_adif =
     g_hash_table_new_full (g_int64_hash, g_int64_equal, g_free, g_free);
+  /* … and its exchange definition, for the CQZ a W/VE station left out
+   * of what it sent (logfl_exch_missing_cq_zone): the state names the
+   * zone. No cty here, so a QC or NU heard without a zone gets no CQZ. */
+  GHashTable *contest_def =
+    g_hash_table_new_full (g_int64_hash, g_int64_equal, g_free,
+                           (GDestroyNotify) logfl_exch_def_free);
   for (guint i = 0; i < contests->len; i++)
     {
       const LogflContest *c = contests->pdata[i];
@@ -457,6 +464,12 @@ logfl_adif_export_data (LogflStore *s, const LogflStoreQuery *query,
         g_hash_table_insert (contest_adif,
                              g_memdup2 (&c->id, sizeof c->id),
                              g_strdup (c->adif_id));
+      LogflExchDef *def = c->exch_def
+                            ? logfl_exch_def_parse (c->exch_def, NULL)
+                            : NULL;
+      if (def)
+        g_hash_table_insert (contest_def,
+                             g_memdup2 (&c->id, sizeof c->id), def);
     }
   g_ptr_array_unref (contests);
 
@@ -510,11 +523,20 @@ logfl_adif_export_data (LogflStore *s, const LogflStoreQuery *query,
       put_str (out, "SRX_STRING", q->srx_string);
       if (q->extras && *q->extras)
         g_string_append (out, q->extras);
+      if (q->contest_ref > 0
+          && !(q->extras && strstr (q->extras, "<CQZ:")))
+        {
+          const LogflExchDef *def =
+            g_hash_table_lookup (contest_def, &q->contest_ref);
+          if (def)
+            put_int (out, "CQZ", logfl_exch_missing_cq_zone (def, NULL, q));
+        }
       g_string_append (out, "<EOR>\n");
     }
 
   if (n_exported)
     *n_exported = list->len;
+  g_hash_table_unref (contest_def);
   g_hash_table_unref (contest_adif);
   g_ptr_array_unref (list);
   return g_string_free (out, FALSE);

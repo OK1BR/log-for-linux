@@ -1475,13 +1475,21 @@ test_score_cqwwrtty (void)
   add_sqso (qsos, 9, "K1AB", "20m", "RTTY", "05 MA");   /* dupe: 0      */
   add_sqso (qsos, 10, "K1AB", "40m", "RTTY", "05 MA");  /* 3: K 5 MA — per band */
   add_sqso (qsos, 11, "K6ZZ", "20m", "RTTY", "03");     /* 3: 3, no QTH copied */
+  /* The state alone, no zone sent (what came on air 2026-09-26): the
+   * state names the zone — cty would say 5 for VE7AB and W6ABC alike. */
+  add_sqso (qsos, 12, "VE7AB", "20m", "RTTY", "BC");    /* 3: BC (zone 3
+                                                           is K6ZZ's) */
+  add_sqso (qsos, 13, "W6ABC", "40m", "RTTY", "CA");    /* 3: 3 CA      */
+  /* QC spans zones 2 and 5: cty by prefix decides (VE2 → 5, taken on
+   * 40 m by K1AB already). */
+  add_sqso (qsos, 14, "VE2XYZ", "40m", "RTTY", "QC");   /* 3: VE QC     */
   LogflContestTotals tot;
   GHashTable *scores =
     logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
   g_assert_nonnull (scores);
-  g_assert_cmpint (tot.points, ==, 26);
-  g_assert_cmpint (tot.mults, ==, 17);
-  g_assert_cmpint (tot.total, ==, 442);
+  g_assert_cmpint (tot.points, ==, 35);
+  g_assert_cmpint (tot.mults, ==, 22);
+  g_assert_cmpint (tot.total, ==, 770);
   g_assert_cmpint (score_of (scores, 1)->points, ==, 1);
   g_assert_cmpstr (score_of (scores, 1)->mult, ==, "OK 15");
   g_assert_cmpint (score_of (scores, 2)->points, ==, 2);
@@ -1497,11 +1505,118 @@ test_score_cqwwrtty (void)
   g_assert_null (score_of (scores, 9)->mult);
   g_assert_cmpstr (score_of (scores, 10)->mult, ==, "K 5 MA");
   g_assert_cmpstr (score_of (scores, 11)->mult, ==, "3");
+  g_assert_cmpstr (score_of (scores, 12)->mult, ==, "BC");
+  g_assert_cmpstr (score_of (scores, 13)->mult, ==, "3 CA");
+  g_assert_cmpstr (score_of (scores, 14)->mult, ==, "VE QC");
 
   g_hash_table_unref (scores);
   g_ptr_array_unref (qsos);
   logfl_cty_free (cty);
   logfl_exch_def_free (def);
+}
+
+/* The W/VE QTH → CQ zone table against the WAZ definitions
+ * (cqww.com/cq_waz_list.htm): every code of the sponsor's list (rules
+ * IV.C.3) but the two split ones names a zone; nothing else does. */
+static void
+test_waz_zone (void)
+{
+  static const char *const us[] = {
+    "CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "DE", "DC", "MD", "PA",
+    "AL", "FL", "GA", "KY", "NC", "SC", "TN", "VA", "AR", "LA", "MS", "NM",
+    "OK", "TX", "CA", "AZ", "ID", "MT", "NV", "OR", "UT", "WA", "WY", "MI",
+    "OH", "WV", "IL", "IN", "WI", "CO", "IA", "KS", "MN", "MO", "NE", "ND",
+    "SD", NULL };
+  guint n = 0;
+  for (const char *const *s = us; *s; s++, n++)
+    g_assert_cmpint (logfl_waz_zone_of_qth (*s), >, 0);
+  g_assert_cmpuint (n, ==, 49);           /* 48 states + DC */
+  g_assert_cmpint (logfl_waz_zone_of_qth ("CA"), ==, 3);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("WA"), ==, 3);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("MT"), ==, 4);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("TX"), ==, 4);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("KY"), ==, 4);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("OH"), ==, 4);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("WV"), ==, 5);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("FL"), ==, 5);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("DC"), ==, 5);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("ma"), ==, 5);   /* any case */
+  /* Canada: 12 of the 14 areas name a zone, QC and NU are split. */
+  g_assert_cmpint (logfl_waz_zone_of_qth ("BC"), ==, 3);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("AB"), ==, 4);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("SK"), ==, 4);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("MB"), ==, 4);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("ON"), ==, 4);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("NB"), ==, 5);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("NS"), ==, 5);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("PEI"), ==, 5);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("NF"), ==, 5);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("LB"), ==, 2);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("YT"), ==, 1);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("NWT"), ==, 1);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("QC"), ==, 0);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("NU"), ==, 0);
+  /* Not a W/VE QTH: Alaska and Hawaii are countries (IV.C note), "DX" is
+   * the placeholder, a zone is no QTH. */
+  g_assert_cmpint (logfl_waz_zone_of_qth ("AK"), ==, 0);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("HI"), ==, 0);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("DX"), ==, 0);
+  g_assert_cmpint (logfl_waz_zone_of_qth ("05"), ==, 0);
+  g_assert_cmpint (logfl_waz_zone_of_qth (""), ==, 0);
+  g_assert_cmpint (logfl_waz_zone_of_qth (NULL), ==, 0);
+}
+
+/* The zone an exchange came without, for the exporters: only a def whose
+ * first field is the CQ zone, only when text sits where the zone should,
+ * from the QTH first and cty second; a heard zone or an empty exchange
+ * is never touched. */
+static void
+test_missing_cq_zone (void)
+{
+  GError *err = NULL;
+  LogflExchDef *rtty =
+      logfl_exch_def_parse (preset_named ("CQ WW RTTY")->exch_def, &err);
+  g_assert_no_error (err);
+  LogflExchDef *iaru =
+      logfl_exch_def_parse (preset_named ("IARU HF")->exch_def, &err);
+  g_assert_no_error (err);
+  LogflCty *cty = load_cty ();
+  LogflQso *q = mk_qso ("K1AB", "20m", "RTTY", 1000);
+
+  q->srx_string = g_strdup ("MA");
+  g_assert_cmpint (logfl_exch_missing_cq_zone (rtty, cty, q), ==, 5);
+  g_assert_cmpint (logfl_exch_missing_cq_zone (rtty, NULL, q), ==, 5);
+  g_free (q->srx_string);
+  q->srx_string = g_strdup ("05 MA");        /* heard: nothing to fill */
+  g_assert_cmpint (logfl_exch_missing_cq_zone (rtty, cty, q), ==, 0);
+  g_free (q->srx_string);
+  q->srx_string = g_strdup ("");             /* nothing heard: a gap */
+  g_assert_cmpint (logfl_exch_missing_cq_zone (rtty, cty, q), ==, 0);
+  g_free (q->srx_string);
+  q->srx_string = NULL;
+  g_assert_cmpint (logfl_exch_missing_cq_zone (rtty, cty, q), ==, 0);
+
+  /* QC names no single zone: cty by prefix, and nothing without it. */
+  g_free (q->call);
+  q->call = g_strdup ("VE2XYZ");
+  q->srx_string = g_strdup ("QC");
+  g_assert_cmpint (logfl_exch_missing_cq_zone (rtty, cty, q), ==, 5);
+  g_assert_cmpint (logfl_exch_missing_cq_zone (rtty, NULL, q), ==, 0);
+  /* The state beats cty: cty says 5 for VE7 and W6 alike. */
+  g_free (q->call);
+  q->call = g_strdup ("VE7AB");
+  g_free (q->srx_string);
+  q->srx_string = g_strdup ("BC");
+  g_assert_cmpint (logfl_exch_missing_cq_zone (rtty, cty, q), ==, 3);
+  /* IARU's first field is the ITU zone / HQ text, not a CQ zone. */
+  g_free (q->srx_string);
+  q->srx_string = g_strdup ("MA");
+  g_assert_cmpint (logfl_exch_missing_cq_zone (iaru, cty, q), ==, 0);
+
+  logfl_qso_free (q);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (iaru);
+  logfl_exch_def_free (rtty);
 }
 
 static void
@@ -1766,6 +1881,8 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/score/yodx", test_score_yodx);
   g_test_add_func ("/contest/score/cqww", test_score_cqww);
   g_test_add_func ("/contest/score/cqwwrtty", test_score_cqwwrtty);
+  g_test_add_func ("/contest/waz-zone", test_waz_zone);
+  g_test_add_func ("/contest/missing-cq-zone", test_missing_cq_zone);
   g_test_add_func ("/contest/score/wpx", test_score_wpx);
   g_test_add_func ("/contest/score/euhfc", test_score_euhfc);
   g_test_add_func ("/contest/score/wae", test_score_wae);

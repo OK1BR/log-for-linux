@@ -4017,6 +4017,7 @@ on_cabrillo_file_ready (GObject *source, GAsyncResult *res,
     .location = ce->location,
     .club = ce->club,
     .grid = ce->grid,
+    .cty = ce->win->cty,
   };
   guint n = 0;
   if (logfl_cabrillo_export_file (ce->win->store, ce->contest_id, path,

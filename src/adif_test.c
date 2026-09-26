@@ -6,6 +6,7 @@
  * Part of log-for-linux. GPL-3.0-or-later.
  */
 #include "adif.h"
+#include "contest.h"
 
 #include <glib/gstdio.h>
 #include <string.h>
@@ -269,6 +270,69 @@ test_dup_skip (void)
   logfl_store_close (s);
 }
 
+/* CQ WW RTTY, the state alone in the exchange: CQZ goes out from the
+ * state (logfl_exch_missing_cq_zone); a QSO that carries its CQZ already
+ * gets it once, a QSO outside any contest gets none. */
+static void
+test_cqz_from_state (void)
+{
+  GError *err = NULL;
+  LogflStore *s = mem_store ();
+  guint n = 0;
+  const LogflContestPreset *p = logfl_contest_presets (&n);
+  const LogflContestPreset *rtty = NULL;
+  for (guint i = 0; i < n; i++)
+    if (g_str_equal (p[i].name, "CQ WW RTTY"))
+      rtty = &p[i];
+  g_assert_nonnull (rtty);
+  LogflContest *c = logfl_contest_new ();
+  c->name = g_strdup ("CQ WW RTTY 2026");
+  c->adif_id = g_strdup (rtty->adif_id);
+  c->exch_def = g_strdup (rtty->exch_def);
+  g_assert_true (logfl_store_contest_add (s, c, &err));
+  gint64 id = c->id;
+  logfl_contest_free (c);
+
+  LogflQso *q = logfl_qso_new ();
+  q->call = g_strdup ("W1XYZ");
+  q->band = g_strdup ("20m");
+  q->mode = g_strdup ("RTTY");
+  q->ts = 1790380800;
+  q->contest_ref = id;
+  q->srx_string = g_strdup ("MA");
+  q->extras = g_strdup ("<STATE:2>MA");
+  g_assert_true (logfl_store_add (s, q, &err));
+  g_free (q->call);
+  q->call = g_strdup ("K1AB");
+  q->ts += 60;
+  g_free (q->srx_string);
+  q->srx_string = g_strdup ("05 MA");
+  g_free (q->extras);
+  q->extras = g_strdup ("<CQZ:2>05<STATE:2>MA");
+  g_assert_true (logfl_store_add (s, q, &err));
+  g_free (q->call);
+  q->call = g_strdup ("DL1AB");
+  q->ts += 60;
+  q->contest_ref = 0;
+  g_free (q->srx_string);
+  q->srx_string = g_strdup ("MA");
+  g_free (q->extras);
+  q->extras = NULL;
+  g_assert_true (logfl_store_add (s, q, &err));
+  logfl_qso_free (q);
+
+  char *out = logfl_adif_export_data (s, NULL, &n, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (n, ==, 3);
+  g_assert_nonnull (strstr (out, "<CALL:5>W1XYZ"));
+  g_assert_nonnull (strstr (out, "<SRX_STRING:2>MA<STATE:2>MA<CQZ:1>5<EOR>"));
+  g_assert_nonnull (strstr (out, "<SRX_STRING:5>05 MA<CQZ:2>05<STATE:2>MA<EOR>"));
+  g_assert_nonnull (strstr (out, "<CALL:5>DL1AB"));
+  g_assert_nonnull (strstr (out, "<SRX_STRING:2>MA<EOR>"));
+  g_free (out);
+  logfl_store_close (s);
+}
+
 static void
 test_export_format (void)
 {
@@ -392,6 +456,7 @@ main (int argc, char **argv)
   g_test_add_func ("/adif/not-adif", test_not_adif);
   g_test_add_func ("/adif/dup-skip", test_dup_skip);
   g_test_add_func ("/adif/export-format", test_export_format);
+  g_test_add_func ("/adif/cqz-from-state", test_cqz_from_state);
   g_test_add_func ("/adif/roundtrip-stable", test_roundtrip_stable);
   g_test_add_func ("/adif/file-io", test_file_io);
   return g_test_run ();
