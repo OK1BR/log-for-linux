@@ -521,8 +521,9 @@ test_backfill_cab (void)
       "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n";
 
   LogflContest *sac = mk_contest (s, "SAC SSB 2026", "SAC-SSB", OLD_DEF);
-  /* CQ WW RTTY is a contest of its own: scoring by prefix as before, but
-   * never the CW/SSB category lists. */
+  /* CQ WW RTTY is a contest of its own: its own scoring rule (a same-
+   * country QSO scores 1, never 0) and RTTY-only category lists, never
+   * the CW/SSB ones — the bare CQ-WW prefix must not swallow it. */
   LogflContest *rtty = mk_contest (s, "CQ WW RTTY", "CQ-WW-RTTY", OLD_DEF);
   /* The operator switched the validity rule off: the lists still come,
    * minus the _inside keys, which a def without the entity list cannot
@@ -553,8 +554,16 @@ test_backfill_cab (void)
   def = logfl_exch_def_parse (back->exch_def, &err);
   g_assert_no_error (err);
   g_assert_nonnull (def->points);
-  for (int t = 0; t < LOGFL_CAB_N_TAGS; t++)
-    g_assert_null (def->cab[t]);
+  g_assert_false (def->zero_own_country);
+  const LogflPtsTerm *own_pts = &g_array_index (def->points, LogflPtsTerm, 0);
+  g_assert_cmpint (own_pts->kind, ==, LOGFL_PTS_OWN_COUNTRY);
+  g_assert_cmpint (own_pts->points, ==, 1);
+  g_assert_true (def->mult & LOGFL_MULT_EXCH_TEXT);
+  g_assert_cmpstr (def->mult_exch_text_from[0], ==, "K");
+  g_assert_cmpstr (def->cab[LOGFL_CAB_MODE][0], ==, "RTTY");
+  g_assert_null (def->cab[LOGFL_CAB_MODE][1]);
+  g_assert_false (g_strv_contains (
+      (const char *const *) def->cab[LOGFL_CAB_BAND], "160M"));
   logfl_exch_def_free (def);
   logfl_contest_free (back);
 
@@ -683,6 +692,38 @@ test_presets (void)
   g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
   g_assert_false (def->zero_own_country);
   g_assert_true (((LogflExchField *) def->fields->pdata[0])->required);
+  logfl_exch_def_free (def);
+
+  /* CQ WW RTTY: the zone plus an optional W/VE QTH (TEXT, so "05 MA" and
+   * "ON" stay what they are), everyone works everyone and a same-country
+   * QSO scores 1 — never the CW/SSB zero — with the QTH slot's Cabrillo
+   * placeholder riding along in the definition. */
+  const LogflContestPreset *rtty = preset_named ("CQ WW RTTY");
+  g_assert_nonnull (rtty);
+  g_assert_cmpstr (rtty->adif_id, ==, "CQ-WW-RTTY");
+  def = logfl_exch_def_parse (rtty->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_false (def->tx_serial);
+  g_assert_cmpuint (def->fields->len, ==, 2);
+  f = def->fields->pdata[0];
+  g_assert_cmpint (f->type, ==, LOGFL_EXCH_NUMBER);
+  g_assert_cmpstr (f->adif_num, ==, "CQZ");
+  g_assert_true (f->required);
+  g_assert_null (f->cab_placeholder);
+  f = def->fields->pdata[1];
+  g_assert_cmpint (f->type, ==, LOGFL_EXCH_TEXT);
+  g_assert_cmpstr (f->adif_text, ==, "STATE");
+  g_assert_false (f->required);
+  g_assert_cmpstr (f->cab_placeholder, ==, "DX");
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
+  g_assert_false (def->zero_own_country);
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_CQZONE | LOGFL_MULT_COUNTRY
+                                   | LOGFL_MULT_EXCH_TEXT);
+  g_assert_cmpuint (g_strv_length (def->mult_exch_text_from), ==, 2);
+  g_assert_cmpstr (def->mult_exch_text_from[1], ==, "VE");
+  g_assert_cmpstr (def->cab[LOGFL_CAB_MODE][0], ==, "RTTY");
+  g_assert_false (g_strv_contains (
+      (const char *const *) def->cab[LOGFL_CAB_BAND], "160M"));
   logfl_exch_def_free (def);
 }
 
@@ -1237,6 +1278,38 @@ test_score_roundtrip (void)
   g_free (text);
   logfl_exch_def_free (back);
   logfl_exch_def_free (def);
+
+  /* exch-text's entity list and a field's Cabrillo placeholder (CQ WW
+   * RTTY) survive as well — dropped, the QTH of every DL would count and
+   * the exported lines would lose their "DX". */
+  def = logfl_exch_def_parse (
+      "[exchange]\nfields=zone;qth;\n"
+      "points=own-country=1;same-cont=2;other-cont=3;\n"
+      "mult=cqzone+country+exch-text: k ,ve\n"
+      "[field:zone]\ntype=number\nadif_num=CQZ\n"
+      "[field:qth]\ntype=text\nadif_text=STATE\ncab_placeholder= DX \n",
+      &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_CQZONE | LOGFL_MULT_COUNTRY
+                                   | LOGFL_MULT_EXCH_TEXT);
+  g_assert_cmpstr (def->mult_exch_text_from[0], ==, "K");
+  g_assert_cmpstr (def->mult_exch_text_from[1], ==, "VE");
+  g_assert_null (def->mult_exch_text_from[2]);
+  g_assert_null (((LogflExchField *) def->fields->pdata[0])->cab_placeholder);
+  g_assert_cmpstr (((LogflExchField *) def->fields->pdata[1])->cab_placeholder,
+                   ==, "DX");
+  text = logfl_exch_def_serialize (def);
+  back = logfl_exch_def_parse (text, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (back->mult, ==, def->mult);
+  g_assert_cmpuint (g_strv_length (back->mult_exch_text_from), ==, 2);
+  g_assert_cmpstr (back->mult_exch_text_from[1], ==, "VE");
+  g_assert_null (((LogflExchField *) back->fields->pdata[0])->cab_placeholder);
+  g_assert_cmpstr (((LogflExchField *) back->fields->pdata[1])->cab_placeholder,
+                   ==, "DX");
+  g_free (text);
+  logfl_exch_def_free (back);
+  logfl_exch_def_free (def);
 }
 
 static void
@@ -1255,6 +1328,10 @@ test_score_errors (void)
     "[exchange]\nfields=nr;\ncounts=entities: , ,\n",
     "[exchange]\nfields=nr;\nmult=call-areas\n",
     "[exchange]\nfields=nr;\nmult=call-areas:\n",
+    "[exchange]\nfields=nr;\nmult=exch-text:\n",
+    "[exchange]\nfields=nr;\nmult=exch-textual\n",
+    /* A placeholder lands on a QSO line: one token, nothing else. */
+    "[exchange]\nfields=q;\n[field:q]\ntype=text\ncab_placeholder=D X\n",
   };
   for (gsize i = 0; i < G_N_ELEMENTS (bad); i++)
     {
@@ -1363,6 +1440,63 @@ test_score_cqww (void)
    * trap the rules call out explicitly. */
   g_assert_cmpint (score_of (scores, 1)->points, ==, 0);
   g_assert_cmpstr (score_of (scores, 1)->mult, ==, "OK 15");
+
+  g_hash_table_unref (scores);
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (def);
+}
+
+/* CQ WW RTTY from OK1BR (cqwwrtty.com/rules.htm IV, read 2026-09-26):
+ * 1/2/3 points and nothing scores zero; zones + countries + the W/VE QTH,
+ * each per band, the QTH from K and VE only. The preset itself is under
+ * test, not a copy of its rule. */
+static void
+test_score_cqwwrtty (void)
+{
+  GError *err = NULL;
+  LogflExchDef *def =
+      logfl_exch_def_parse (preset_named ("CQ WW RTTY")->exch_def, &err);
+  g_assert_no_error (err);
+
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "OK2XYZ", "20m", "RTTY", "15");    /* 1: OK 15     */
+  add_sqso (qsos, 2, "DL1AB", "20m", "RTTY", "14");     /* 2: DL 14     */
+  add_sqso (qsos, 3, "K1AB", "20m", "RTTY", "05 MA");   /* 3: K 5 MA    */
+  add_sqso (qsos, 4, "K2XX", "20m", "RTTY", "05 NY");   /* 3: NY        */
+  add_sqso (qsos, 5, "W1YY", "20m", "RTTY", "05 MA");   /* 3: nothing   */
+  add_sqso (qsos, 6, "VE3XYZ", "20m", "RTTY", "04 ON"); /* 3: VE 4 ON   */
+  /* Alaska is a country, never a state (IV.C note): "AK" must not count. */
+  add_sqso (qsos, 7, "KL7AA", "20m", "RTTY", "01 AK");  /* 3: KL 1      */
+  /* "DX" typed behind a DL zone, the way other loggers show it: no QTH. */
+  add_sqso (qsos, 8, "DL2XX", "20m", "RTTY", "14 DX");  /* 2: nothing   */
+  add_sqso (qsos, 9, "K1AB", "20m", "RTTY", "05 MA");   /* dupe: 0      */
+  add_sqso (qsos, 10, "K1AB", "40m", "RTTY", "05 MA");  /* 3: K 5 MA — per band */
+  add_sqso (qsos, 11, "K6ZZ", "20m", "RTTY", "03");     /* 3: 3, no QTH copied */
+  LogflContestTotals tot;
+  GHashTable *scores =
+    logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+  g_assert_nonnull (scores);
+  g_assert_cmpint (tot.points, ==, 26);
+  g_assert_cmpint (tot.mults, ==, 17);
+  g_assert_cmpint (tot.total, ==, 442);
+  g_assert_cmpint (score_of (scores, 1)->points, ==, 1);
+  g_assert_cmpstr (score_of (scores, 1)->mult, ==, "OK 15");
+  g_assert_cmpint (score_of (scores, 2)->points, ==, 2);
+  g_assert_cmpint (score_of (scores, 3)->points, ==, 3);
+  g_assert_cmpstr (score_of (scores, 3)->mult, ==, "K 5 MA");
+  g_assert_cmpstr (score_of (scores, 4)->mult, ==, "NY");
+  g_assert_null (score_of (scores, 5)->mult);
+  g_assert_cmpstr (score_of (scores, 6)->mult, ==, "VE 4 ON");
+  g_assert_cmpstr (score_of (scores, 7)->mult, ==, "KL 1");
+  g_assert_cmpint (score_of (scores, 8)->points, ==, 2);
+  g_assert_null (score_of (scores, 8)->mult);
+  g_assert_cmpint (score_of (scores, 9)->points, ==, 0);
+  g_assert_null (score_of (scores, 9)->mult);
+  g_assert_cmpstr (score_of (scores, 10)->mult, ==, "K 5 MA");
+  g_assert_cmpstr (score_of (scores, 11)->mult, ==, "3");
 
   g_hash_table_unref (scores);
   g_ptr_array_unref (qsos);
@@ -1631,6 +1765,7 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/score/wpx-prefix", test_wpx_prefix);
   g_test_add_func ("/contest/score/yodx", test_score_yodx);
   g_test_add_func ("/contest/score/cqww", test_score_cqww);
+  g_test_add_func ("/contest/score/cqwwrtty", test_score_cqwwrtty);
   g_test_add_func ("/contest/score/wpx", test_score_wpx);
   g_test_add_func ("/contest/score/euhfc", test_score_euhfc);
   g_test_add_func ("/contest/score/wae", test_score_wae);

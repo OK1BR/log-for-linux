@@ -324,6 +324,60 @@ test_pick_and_new_tags (void)
   logfl_store_close (s);
 }
 
+/* CQ WW RTTY (cqwwrtty.com/cabrillo.htm): the QSO line carries zone + QTH
+ * on both sides, "DX" where a station outside W/VE sends none — from the
+ * contest's own definition (cab_placeholder), our sent side included. */
+static void
+test_placeholders (void)
+{
+  GError *err = NULL;
+  LogflStore *s = mem_store ();
+  guint n = 0;
+  const LogflContestPreset *p = logfl_contest_presets (&n);
+  const LogflContestPreset *rtty = NULL;
+  for (guint i = 0; i < n; i++)
+    if (g_str_equal (p[i].name, "CQ WW RTTY"))
+      rtty = &p[i];
+  g_assert_nonnull (rtty);
+  LogflContest *c = logfl_contest_new ();
+  c->name = g_strdup ("CQ WW RTTY 2026");
+  c->adif_id = g_strdup (rtty->adif_id);
+  c->exch_def = g_strdup (rtty->exch_def);
+  c->my_exch = g_strdup ("15");
+  g_assert_true (logfl_store_contest_add (s, c, &err));
+  gint64 id = c->id;
+  logfl_contest_free (c);
+
+  const gint64 T = 1790380800;         /* 2026-09-26 00:00:00 UTC */
+  add_qso (s, id, "K1AB", "20m", 14.085, "RTTY", T, "599", "599",
+           0, "15", 0, "05 MA");
+  add_qso (s, id, "DL1AB", "20m", 14.086, "RTTY", T + 60, "599", "599",
+           0, "15", 0, "14");
+  /* Nothing received at all: the zone slot has no placeholder, so the
+   * fill never starts and the gap stays visible as "-". */
+  add_qso (s, id, "G3XYZ", "20m", 14.087, "RTTY", T + 120, "599", "599",
+           0, "15", 0, NULL);
+
+  LogflCabrilloOpts o = OPTS;
+  o.contest = "CQ-WW-RTTY";
+  o.cat_mode = "RTTY";
+  char *out = logfl_cabrillo_export (s, id, &o, &n, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (n, ==, 3);
+  char *sent = g_strdup_printf ("%-13s 599 %-6s %-13s 599 05 MA\n",
+                                "OK1BR", "15 DX", "K1AB");
+  g_assert_nonnull (strstr (out, sent));
+  char *dl = g_strdup_printf ("%-13s 599 14 DX\n", "DL1AB");
+  g_assert_nonnull (strstr (out, dl));
+  char *g = g_strdup_printf ("%-13s 599 -\n", "G3XYZ");
+  g_assert_nonnull (strstr (out, g));
+  g_free (g);
+  g_free (dl);
+  g_free (sent);
+  g_free (out);
+  logfl_store_close (s);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -335,5 +389,6 @@ main (int argc, char **argv)
   g_test_add_func ("/cabrillo/categories-from-log",
                    test_categories_from_log);
   g_test_add_func ("/cabrillo/pick-and-new-tags", test_pick_and_new_tags);
+  g_test_add_func ("/cabrillo/placeholders", test_placeholders);
   return g_test_run ();
 }

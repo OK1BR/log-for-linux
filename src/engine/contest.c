@@ -19,6 +19,7 @@ exch_field_free (LogflExchField *f)
   g_free (f->label);
   g_free (f->adif_num);
   g_free (f->adif_text);
+  g_free (f->cab_placeholder);
   g_free (f);
 }
 
@@ -37,6 +38,7 @@ logfl_exch_def_free (LogflExchDef *def)
   g_strfreev (def->counts_entities);
   g_free (def->counts_name);
   g_free (def->mult_exch_from);
+  g_strfreev (def->mult_exch_text_from);
   g_strfreev (def->mult_area_entities);
   g_clear_pointer (&def->mult_weight, g_hash_table_unref);
   for (int t = 0; t < LOGFL_CAB_N_TAGS; t++)
@@ -216,7 +218,7 @@ pts_parse (LogflExchDef *def, const char *value, GError **error)
 }
 
 /* mult= source list: "country|country-areas|cqzone|zone|exch[:PFX]|
- * exch-text|prefix|call-areas:LIST", joined with '+'. */
+ * exch-text[:LIST]|prefix|call-areas:LIST", joined with '+'. */
 static gboolean
 mult_parse (LogflExchDef *def, const char *value, GError **error)
 {
@@ -232,8 +234,19 @@ mult_parse (LogflExchDef *def, const char *value, GError **error)
         def->mult |= LOGFL_MULT_CQZONE;
       else if (g_str_equal (*t, "zone"))
         def->mult |= LOGFL_MULT_ZONE;
-      else if (g_str_equal (*t, "exch-text"))
-        def->mult |= LOGFL_MULT_EXCH_TEXT;
+      else if (g_str_has_prefix (*t, "exch-text"))
+        {
+          def->mult |= LOGFL_MULT_EXCH_TEXT;
+          if ((*t)[9] == ':')
+            {
+              g_strfreev (def->mult_exch_text_from);
+              def->mult_exch_text_from = entity_list_parse (*t + 10);
+              if (!def->mult_exch_text_from)
+                goto bad;
+            }
+          else if ((*t)[9] != '\0')
+            goto bad;
+        }
       else if (g_str_has_prefix (*t, "exch"))
         {
           def->mult |= LOGFL_MULT_EXCH;
@@ -262,6 +275,34 @@ mult_parse (LogflExchDef *def, const char *value, GError **error)
         }
     }
   g_strfreev (toks);
+  return TRUE;
+}
+
+/* [field:X] cab_placeholder: the sponsor's stand-in for a slot the other
+ * side never sends (CQ WW RTTY: "DX" where a W/VE puts the state). It
+ * lands on a QSO line, so it must be one printable token; an empty value
+ * is no placeholder. */
+static gboolean
+placeholder_parse (GKeyFile *kf, const char *group, const char *key,
+                   LogflExchField *f, GError **error)
+{
+  char *ph = g_key_file_get_string (kf, group, "cab_placeholder", NULL);
+  if (!ph)
+    return TRUE;
+  g_strstrip (ph);
+  for (const char *c = ph; *c; c++)
+    if (!g_ascii_isgraph (*c))
+      {
+        g_set_error (error, LOGFL_CONTEST_ERROR, LOGFL_CONTEST_ERROR_PARSE,
+                     "field \"%s\" placeholder \"%s\" is not one token",
+                     key, ph);
+        g_free (ph);
+        return FALSE;
+      }
+  if (*ph)
+    f->cab_placeholder = ph;
+  else
+    g_free (ph);
   return TRUE;
 }
 
@@ -457,8 +498,11 @@ logfl_exch_def_parse (const char *text, GError **error)
                          : g_strdup ("SRX_STRING");
       g_free (num);
       g_free (txt);
+      gboolean ok = type_ok && f->adif_num && f->adif_text;
+      if (ok)
+        ok = placeholder_parse (kf, group, keys[i], f, error);
       g_free (group);
-      if (!type_ok || !f->adif_num || !f->adif_text)
+      if (!ok)
         {
           g_strfreev (keys);
           logfl_exch_def_free (def);
@@ -535,6 +579,12 @@ logfl_exch_def_serialize (const LogflExchDef *def)
           g_string_append (s, srcs[i].name);
           if (srcs[i].bit == LOGFL_MULT_EXCH && def->mult_exch_from)
             g_string_append_printf (s, ":%s", def->mult_exch_from);
+          if (srcs[i].bit == LOGFL_MULT_EXCH_TEXT && def->mult_exch_text_from)
+            {
+              char *list = g_strjoinv (",", def->mult_exch_text_from);
+              g_string_append_printf (s, ":%s", list);
+              g_free (list);
+            }
           if (srcs[i].bit == LOGFL_MULT_CALL_AREAS)
             {
               char *list = g_strjoinv (",", def->mult_area_entities);
@@ -595,6 +645,9 @@ logfl_exch_def_serialize (const LogflExchDef *def)
       g_key_file_set_string (kf, group, "adif_num", f->adif_num);
       g_key_file_set_string (kf, group, "adif_text", f->adif_text);
       g_key_file_set_boolean (kf, group, "required", f->required);
+      if (f->cab_placeholder)
+        g_key_file_set_string (kf, group, "cab_placeholder",
+                               f->cab_placeholder);
       g_free (group);
     }
   return g_key_file_to_data (kf, NULL, NULL);
@@ -946,14 +999,36 @@ band_is_low (const char *band)
                   || g_str_equal (band, "40m"));
 }
 
+/* The received exchange as tokens: one per field the station sent (see
+ * logfl_exch_apply). Empties dropped; free with g_strfreev. */
+static char **
+exch_tokens (const LogflQso *q)
+{
+  GPtrArray *a = g_ptr_array_new ();
+  char **raw = g_strsplit_set (q->srx_string ? q->srx_string : "",
+                               " \t", -1);
+  for (char **t = raw; *t; t++)
+    if (**t)
+      g_ptr_array_add (a, g_strdup (*t));
+  g_strfreev (raw);
+  g_ptr_array_add (a, NULL);
+  return (char **) g_ptr_array_free (a, FALSE);
+}
+
 /* Their zone: the received exchange when numeric — the station said it
- * itself — the cty default otherwise (0 = unknown). */
+ * itself — the cty default otherwise (0 = unknown). The zone is the
+ * exchange's first token: alone in CQ WW ("15"), ahead of the W/VE QTH
+ * in CQ WW RTTY ("05 MA"). */
 static int
 their_zone (const LogflQso *q, gboolean theirs_ok,
             const LogflCtyInfo *theirs, gboolean cq)
 {
-  if (q->srx_string && all_digits (q->srx_string))
-    return (int) g_ascii_strtoll (q->srx_string, NULL, 10);
+  char **tok = exch_tokens (q);
+  int z = tok[0] && all_digits (tok[0])
+            ? (int) g_ascii_strtoll (tok[0], NULL, 10) : 0;
+  g_strfreev (tok);
+  if (z > 0)
+    return z;
   if (theirs_ok)
     return cq ? theirs->cq_zone : theirs->itu_zone;
   return 0;
@@ -1093,13 +1168,26 @@ mult_eval (const LogflExchDef *def, const LogflQso *q,
                      mults);
           g_free (key);
         }
+      /* Its non-numeric tokens: the whole exchange in IARU ("R1"), the
+       * QTH behind the zone in CQ WW RTTY ("05 MA" → MA) — and only from
+       * the listed entities when the def names any: a "DX" typed behind
+       * a DL zone is no W/VE QTH, and Alaska's "AK" is a country there,
+       * not a state (cty names it KL, which is not on the list). */
       if ((def->mult & LOGFL_MULT_EXCH_TEXT)
-          && !all_digits (q->srx_string))
+          && (!def->mult_exch_text_from
+              || (theirs_ok
+                  && entity_listed (def->mult_exch_text_from, theirs))))
         {
-          char *key = g_ascii_strup (q->srx_string, -1);
-          mult_take (def, q->band, "e", g_strstrip (key), seen, label,
-                     mults);
-          g_free (key);
+          char **tok = exch_tokens (q);
+          for (char **t = tok; *t; t++)
+            {
+              if (all_digits (*t))
+                continue;
+              char *key = g_ascii_strup (*t, -1);
+              mult_take (def, q->band, "e", key, seen, label, mults);
+              g_free (key);
+            }
+          g_strfreev (tok);
         }
     }
   if (def->mult & LOGFL_MULT_PREFIX)
@@ -1203,6 +1291,12 @@ logfl_contest_score (const LogflExchDef *def, LogflCty *cty,
  * presets; all verified 2026-08-28. */
 #define PTS_CQWW   "own-country=0;same-cont=1;other-cont=3;"
 #define MULT_CQWW  "cqzone+country"
+/* CQ WW RTTY is a contest of its own (cqwwrtty.com/rules.htm IV, read
+ * 2026-09-26): a same-country QSO scores 1, never 0, and the W/VE QTH —
+ * the text behind the zone, from K and VE only — is a third multiplier
+ * next to zones and countries. */
+#define PTS_CQWWRTTY  "own-country=1;same-cont=2;other-cont=3;"
+#define MULT_CQWWRTTY "cqzone+country+exch-text:K,VE"
 #define PTS_WPX    "own-country=1;same-cont=1/2;other-cont=3/6;"
 #define MULT_WPX   "prefix"
 #define PTS_IARU   "exch-text=1;same-zone=1;same-cont=3;other-cont=5;"
@@ -1244,6 +1338,21 @@ logfl_contest_score (const LogflExchDef *def, LogflCty *cty,
   "band=ALL;160M;80M;40M;20M;15M;10M;\n" \
   "power=HIGH;LOW;QRP;\n" \
   "mode=CW;SSB;\n" \
+  "transmitter=ONE;TWO;UNLIMITED;\n" \
+  "assisted=ASSISTED;NON-ASSISTED;\n" \
+  "overlay=CLASSIC;ROOKIE;YOUTH;\n" \
+  "station=DISTRIBUTED;\n"
+/* cqwwrtty.com/cabrillo.htm value lists (read 2026-09-26). Rules II: five
+ * bands only, so no 160M; V.A.2: assisted is a category of its own; V.B
+ * names the overlays CLASSIC, ROOKIE and YOUTH with their tags (the
+ * Cabrillo page lists only the first two); CATEGORY-STATION: DISTRIBUTED
+ * is what V.C.4 asks of a Multi-Distributed entry, as in CQ WW. */
+#define CAB_CQWWRTTY \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;MULTI-OP;CHECKLOG;\n" \
+  "band=ALL;80M;40M;20M;15M;10M;\n" \
+  "power=HIGH;LOW;QRP;\n" \
+  "mode=RTTY;\n" \
   "transmitter=ONE;TWO;UNLIMITED;\n" \
   "assisted=ASSISTED;NON-ASSISTED;\n" \
   "overlay=CLASSIC;ROOKIE;YOUTH;\n" \
@@ -1396,6 +1505,10 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
     { "DARC-WAEDC", "eu-dx",   FALSE, PTS_WAE,   MULT_WAE,   NULL, WEIGHT_WAE,
       NULL },
     { "EU-HF",      "eu-only", FALSE, PTS_EUHFC, MULT_EUHFC, NULL, NULL, NULL },
+    /* Prefix match, first row wins: RTTY must sit above the bare CQ-WW,
+     * which would otherwise hand it the CW/SSB rule (0 own country). */
+    { "CQ-WW-RTTY", NULL,      FALSE, PTS_CQWWRTTY, MULT_CQWWRTTY, NULL,
+      NULL, NULL },
     { "CQ-WW",      NULL,      TRUE,  PTS_CQWW,  MULT_CQWW,  NULL, NULL, NULL },
     { "CQ-WPX",     NULL,      FALSE, PTS_WPX,   MULT_WPX,   "contest", NULL,
       NULL },
@@ -1415,7 +1528,8 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
     const char *cab;
   } cab_rules[] = {
     { "CQ-WW", CAB_CQWW },     { "CQ-WW-CW", CAB_CQWW },
-    { "CQ-WW-SSB", CAB_CQWW }, { "CQ-WPX", CAB_WPX },
+    { "CQ-WW-SSB", CAB_CQWW }, { "CQ-WW-RTTY", CAB_CQWWRTTY },
+    { "CQ-WPX", CAB_WPX },
     { "CQ-WPX-CW", CAB_WPX },  { "CQ-WPX-SSB", CAB_WPX },
     { "IARU-HF", CAB_IARU },   { "OK-OM-DX", CAB_OKOM },
     { "EU-HF", CAB_EUHFC },    { "DARC-WAEDC-CW", CAB_WAE },
@@ -1701,6 +1815,34 @@ static const LogflContestPreset presets[] = {
     CAB_SAC
     "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
     NULL },
+  /* CQ WW RTTY (cqwwrtty.com/rules.htm, 2026 rules read 2026-09-26): five
+   * bands, 80-10 m (II). Exchange RST + CQ zone, and stations in the
+   * continental USA and Canada add their QTH — "599 05 MA" (III): a second,
+   * optional TEXT field routed to ADIF STATE, labelled State — the rules
+   * say QTH, which reads as a place to the operator (Richard, 2026-09-26).
+   * Everyone works everyone;
+   * IV.B: 3 other continent / 2 same continent / 1 same country — nothing
+   * scores zero, unlike CQ WW CW/SSB, hence no zero_own_country. Mults
+   * IV.C, each per band: CQ zones + countries (DXCC + WAE + IG9/IH9, what
+   * cty.dat resolves) + W/VE QTHs — 48 states, DC and 14 Canadian call
+   * areas, the received text counted from K and VE only; KL7 and KH6 are
+   * countries, not states (IV.C note), and cty names them KL / KH6, so
+   * their text never counts. Cabrillo (cqwwrtty.com/cabrillo.htm):
+   * CONTEST: CQ-WW-RTTY, the ADIF id; the QSO line carries zone + QTH on
+   * both sides with "DX" as the placeholder for everyone outside W/VE —
+   * the writer fills it from cab_placeholder, on our sent side too
+   * ("599 15 DX"); X.3 asks LOCATION: DX of us. Not modeled: /MM stations
+   * count for the zone only; a Canadian area is the text as received (NF
+   * and NL would be two multipliers here, one for the robot) — the claimed
+   * score is an estimate. */
+  { "CQ WW RTTY", "CQ-WW-RTTY",
+    "[exchange]\ntx_serial=false\nfields=zone;qth;\n"
+    "points=" PTS_CQWWRTTY "\nmult=" MULT_CQWWRTTY "\n"
+    CAB_CQWWRTTY
+    "[field:zone]\nlabel=Zone\ntype=number\nadif_num=CQZ\nrequired=true\n"
+    "[field:qth]\nlabel=State\ntype=text\nadif_text=STATE\nrequired=false\n"
+    "cab_placeholder=DX\n",
+    "CQ zone (OK = 15)" },
   { "Custom", NULL,
     "[exchange]\ntx_serial=false\nfields=exch;\n"
     "[field:exch]\nlabel=Exch\ntype=auto\nrequired=false\n",

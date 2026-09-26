@@ -3,6 +3,7 @@
  * Part of log-for-linux. GPL-3.0-or-later.
  */
 #include "cabrillo.h"
+#include "contest.h"
 #include "engine.h"
 
 #include <math.h>
@@ -61,19 +62,44 @@ qso_mode_str (const LogflQso *q)
   return "DG";                 /* FT8, FT4, PSK31, … */
 }
 
-/* One side's exchange: serial (zero-padded when it is ours) + text. */
+/* One side's exchange: serial (zero-padded when it is ours) + text, then
+ * the placeholders of the trailing fields this side did not send (CQ WW
+ * RTTY: "DX" where a W/VE puts the state — our own side included, the
+ * sponsor's line has the slot on both). The exchange is one token per
+ * field, the serial a token of its own. The fill stops at a missing field
+ * without a placeholder: the line is short either way, and a later
+ * placeholder must not slide into that field's column. */
 static char *
-exch_str (gint64 serial, const char *text, gboolean pad_serial)
+exch_str (gint64 serial, const char *text, gboolean pad_serial,
+          const LogflExchDef *def)
 {
   GString *s = g_string_new (NULL);
+  guint n_tokens = 0;
   if (serial > 0)
-    g_string_append_printf (s, pad_serial ? "%03" G_GINT64_FORMAT
-                                          : "%" G_GINT64_FORMAT, serial);
+    {
+      g_string_append_printf (s, pad_serial ? "%03" G_GINT64_FORMAT
+                                            : "%" G_GINT64_FORMAT, serial);
+      n_tokens++;
+    }
   if (text && *text)
     {
       if (s->len)
         g_string_append_c (s, ' ');
       g_string_append (s, text);
+      char **tok = g_strsplit_set (text, " \t", -1);
+      for (char **t = tok; *t; t++)
+        if (**t)
+          n_tokens++;
+      g_strfreev (tok);
+    }
+  for (guint i = n_tokens; def && i < def->fields->len; i++)
+    {
+      const LogflExchField *f = def->fields->pdata[i];
+      if (!f->cab_placeholder)
+        break;
+      if (s->len)
+        g_string_append_c (s, ' ');
+      g_string_append (s, f->cab_placeholder);
     }
   if (!s->len)
     g_string_append_c (s, '-');
@@ -137,6 +163,18 @@ logfl_cabrillo_export (LogflStore *s, gint64 contest_id,
   g_free (created);
   put_tag (out, "SOAPBOX", o->soapbox);
 
+  /* The contest's own definition is the only place that knows the
+   * sponsor's placeholders (cab_placeholder); a def that fails to parse
+   * just leaves the exchanges as logged. */
+  LogflExchDef *def = NULL;
+  LogflContest *c = logfl_store_contest_get (s, contest_id, NULL);
+  if (c)
+    {
+      if (c->exch_def)
+        def = logfl_exch_def_parse (c->exch_def, NULL);
+      logfl_contest_free (c);
+    }
+
   /* list is newest-first; the spec wants chronological order. */
   guint n_lines = 0;
   for (guint i = list->len; i-- > 0; )
@@ -154,8 +192,8 @@ logfl_cabrillo_export (LogflStore *s, gint64 contest_id,
       const char *mode = qso_mode_str (q);
       const char *mycall = q->station_callsign && *q->station_callsign
                                ? q->station_callsign : o->callsign;
-      char *sent = exch_str (q->stx, q->stx_string, TRUE);
-      char *rcvd = exch_str (q->srx, q->srx_string, FALSE);
+      char *sent = exch_str (q->stx, q->stx_string, TRUE, def);
+      char *rcvd = exch_str (q->srx, q->srx_string, FALSE, def);
 
       g_string_append_printf (out,
           "QSO: %5s %-2s %s %s %-13s %-3s %-6s %-13s %-3s %s\n",
@@ -173,6 +211,7 @@ logfl_cabrillo_export (LogflStore *s, gint64 contest_id,
   g_string_append (out, "END-OF-LOG:\n");
   if (n_exported)
     *n_exported = n_lines;
+  logfl_exch_def_free (def);
   g_ptr_array_unref (list);
   return g_string_free (out, FALSE);
 }

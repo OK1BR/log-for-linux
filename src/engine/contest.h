@@ -46,6 +46,10 @@ typedef struct {
   char *adif_num;              /* ADIF field for digit values (SRX, CQZ, …) */
   char *adif_text;             /* ADIF field for text values (SRX_STRING, …) */
   gboolean required;           /* UI hint: don't log while empty */
+  char *cab_placeholder;       /* what the Cabrillo QSO line carries in this
+                                  field's slot when a side did not send it
+                                  (CQ WW RTTY: "DX" for everyone outside
+                                  W/VE); NULL = the slot just stays empty */
 } LogflExchField;
 
 /* Who counts in this contest — each rule verified against the sponsor's
@@ -102,7 +106,9 @@ typedef enum {
   LOGFL_MULT_ZONE          = 1 << 3, /* ITU zone (exchange, cty fallback) */
   LOGFL_MULT_EXCH          = 1 << 4, /* received exchange text, digits too
                                         (EUHFC years, YO counties) */
-  LOGFL_MULT_EXCH_TEXT     = 1 << 5, /* … non-numeric only (IARU HQ) */
+  LOGFL_MULT_EXCH_TEXT     = 1 << 5, /* … its non-numeric tokens only (IARU
+                                        HQ; the W/VE QTH behind the zone in
+                                        CQ WW RTTY) */
   LOGFL_MULT_PREFIX        = 1 << 6, /* WPX prefix of the call */
   LOGFL_MULT_CALL_AREAS    = 1 << 7, /* prefix number 0-9 within each listed
                                         entity, the entity itself elsewhere
@@ -142,6 +148,9 @@ typedef struct {
   guint mult;                  /* LogflMultSource mask; 0 = no rule */
   char *mult_exch_from;        /* EXCH counts only from this DXCC prefix
                                   (CVA: PY states; NULL = from anyone) */
+  char **mult_exch_text_from;  /* EXCH_TEXT counts only from these DXCC
+                                  prefixes, NULL-terminated (CQ WW RTTY:
+                                  K, VE); NULL = from anyone */
   char **mult_area_entities;   /* CALL_AREAS: the entities split by prefix
                                   number, NULL-terminated */
   gboolean mult_per_contest;   /* mults once per contest (WPX prefixes),
@@ -168,8 +177,8 @@ typedef struct {
  *                          # ordered, first match wins; N/L = low-band
  *                          # (160/80/40) override, e.g. other-cont=3/6
  *   mult=exch:YO+country   # country|country-areas|cqzone|zone|exch[:PFX]|
- *                          # exch-text|prefix|call-areas:LA,SM,…, joined
- *                          # with +
+ *                          # exch-text[:K,VE,…]|prefix|call-areas:LA,SM,…,
+ *                          # joined with +
  *   mult_scope=contest     # band (default) | contest
  *   mult_weight=80m:4;40m:3;20m:2;15m:2;10m:2   # WAE band bonus
  *   [cabrillo]             # optional; allowed CATEGORY-* values per tag:
@@ -185,6 +194,8 @@ typedef struct {
  *   adif_num=SRX           # defaults: SRX / SRX_STRING when omitted
  *   adif_text=SRX_STRING
  *   required=true
+ *   cab_placeholder=DX     # the Cabrillo QSO line's stand-in when a side
+ *                          # did not send this field; one token
  * An unknown points term or mult source fails the parse loudly, like an
  * unknown counts= rule — a build must never silently score wrong. NB the
  * round-trip asymmetry: this build carries points/mult through
@@ -211,7 +222,11 @@ const char *const *logfl_exch_def_cab_values (const LogflExchDef *def,
  * values runs parallel to def->fields (NULL/empty entries are skipped);
  * received values fill srx/srx_string or append ADIF tags to extras.
  * Sent side: stx = serial when def->tx_serial, stx_string = my_exch.
- * Routed values are uppercased (contest exchange convention). */
+ * Routed values are uppercased (contest exchange convention). Several
+ * fields join into srx_string on a space in field order, empties skipped
+ * — the string reads as one token per field sent (CQ WW RTTY: "05 MA"
+ * from a W, "14" from a DL), which is how the scorer and the Cabrillo
+ * writer take it apart again. */
 void logfl_exch_apply (const LogflExchDef *def,
                        const char *const *values, guint n_values,
                        const char *my_exch, guint serial,
