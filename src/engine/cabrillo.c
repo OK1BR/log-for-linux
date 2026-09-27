@@ -62,6 +62,21 @@ qso_mode_str (const LogflQso *q)
   return "DG";                 /* FT8, FT4, PSK31, … */
 }
 
+/* A CQ zone typed as one digit, in the slot of the def's zone field: the
+ * line carries it as two. Both sponsors' QSO lines have "05"
+ * (cqww.com/cabrillo.htm, cqwwrtty.com/cabrillo.htm, read 2026-09-27),
+ * the operator types what he hears — K1LZ went into the log as "5 ME" and
+ * out as "599 5 ME" (2026-09-27). The log keeps what was typed. */
+static gboolean
+zone_wants_zero (const LogflExchDef *def, guint slot, const char *tok)
+{
+  if (!def || slot >= def->fields->len)
+    return FALSE;
+  const LogflExchField *f = def->fields->pdata[slot];
+  return f->type == LOGFL_EXCH_NUMBER && g_strcmp0 (f->adif_num, "CQZ") == 0
+         && g_ascii_isdigit (tok[0]) && tok[1] == '\0';
+}
+
 /* One side's exchange: serial (zero-padded when it is ours) + text, then
  * the placeholders of the trailing fields this side did not send (CQ WW
  * RTTY: "DX" where a W/VE puts the state — our own side included, the
@@ -83,13 +98,18 @@ exch_str (gint64 serial, const char *text, gboolean pad_serial,
     }
   if (text && *text)
     {
-      if (s->len)
-        g_string_append_c (s, ' ');
-      g_string_append (s, text);
       char **tok = g_strsplit_set (text, " \t", -1);
       for (char **t = tok; *t; t++)
-        if (**t)
+        {
+          if (!**t)
+            continue;
+          if (s->len)
+            g_string_append_c (s, ' ');
+          if (zone_wants_zero (def, n_tokens, *t))
+            g_string_append_c (s, '0');
+          g_string_append (s, *t);
           n_tokens++;
+        }
       g_strfreev (tok);
     }
   for (guint i = n_tokens; def && i < def->fields->len; i++)

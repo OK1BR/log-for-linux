@@ -365,13 +365,21 @@ test_placeholders (void)
    * what was heard, wrong column and all, rather than a guess. */
   add_qso (s, id, "VE2XYZ", "20m", 14.089, "RTTY", T + 240, "599", "599",
            0, "15", 0, "QC");
+  /* The zone typed as one digit, on either side (K1LZ "5 ME", on air
+   * 2026-09-27): two digits on the line, like the sponsor's. */
+  add_qso (s, id, "K1LZ", "20m", 14.090, "RTTY", T + 300, "599", "599",
+           0, "5", 0, "5 ME");
 
   LogflCabrilloOpts o = OPTS;
   o.contest = "CQ-WW-RTTY";
   o.cat_mode = "RTTY";
   char *out = logfl_cabrillo_export (s, id, &o, &n, &err);
   g_assert_no_error (err);
-  g_assert_cmpuint (n, ==, 5);
+  g_assert_cmpuint (n, ==, 6);
+  char *lz = g_strdup_printf ("%-13s 599 %-6s %-13s 599 05 ME\n",
+                              "OK1BR", "05 DX", "K1LZ");
+  g_assert_nonnull (strstr (out, lz));
+  g_free (lz);
   char *sent = g_strdup_printf ("%-13s 599 %-6s %-13s 599 05 MA\n",
                                 "OK1BR", "15 DX", "K1AB");
   g_assert_nonnull (strstr (out, sent));
