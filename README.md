@@ -197,6 +197,14 @@ The plan lives in
   ([#12](https://github.com/OK1BR/log-for-linux/issues/12)), FT8/FT4 contests
   through WSJT-X ([#13](https://github.com/OK1BR/log-for-linux/issues/13))
 
+## Questions and conversation
+
+Setup and operating questions, ideas you'd like to talk through before they
+become a feature request, and your station or contest results go to
+[Discussions](https://github.com/OK1BR/log-for-linux/discussions) — **Q&A**,
+**Ideas** and **Show and tell**. Issues stay for concrete bugs and the
+roadmap above.
+
 ## License
 
 GPL-3.0-or-later. © Richard Fakenberg, OK1BR.
