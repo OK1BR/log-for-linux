@@ -1602,7 +1602,8 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
   };
   /* Category lists go by the whole ADIF id, not a prefix: CQ-WW-RTTY is a
    * contest of its own and must not be handed the CW/SSB lists. The bare
-   * CQ-WW / CQ-WPX are what the presets prefill. */
+   * CQ-WW / CQ-WPX are what the presets prefill and the store keeps — the
+   * part goes on at export, from the mode (logfl_contest_id_for_mode). */
   static const struct {
     const char *adif_id;
     const char *cab;
@@ -1722,6 +1723,80 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
   return n;
 }
 
+/* --- the id a QSO goes out under ----------------------------------------- */
+
+/* Contests run in parts by mode under one set of rules — one preset serves
+ * the CW and the SSB weekend (WAE: the RTTY one too). ADIF 3.1.7 lists no
+ * bare CQ-WW or SAC, only CQ-WW-CW / CQ-WW-SSB / SAC-CW / SAC-SSB … (adif.org
+ * Contest_ID enumeration, read 2026-10-24), and cqww.com/cabrillo.htm takes
+ * CONTEST: CQ-WW-CW or CQ-WW-SSB, "the only two that are accepted". A
+ * contest made from a preset stores the id the preset carries — bare
+ * (CQ-WW) or the part the preset was written for (SAC-CW); which part the
+ * log goes out under is settled here, from the QSO's mode, when the file is
+ * written (issue #27: a SAC SSB log would have gone out as SAC-CW, a CQ WW
+ * log as the bare CQ-WW). The parts listed are the ones ADIF knows for the
+ * family; a sibling that shares the prefix but is a contest of its own with
+ * its own preset (CQ-WW-RTTY, CQ-WPX-RTTY) is deliberately not among them,
+ * so it stays itself whatever mode a QSO carries. */
+static const struct {
+  const char *family;          /* the id without its part */
+  const char *const parts[4];  /* NULL-terminated */
+} contest_parts[] = {
+  { "CQ-WW",      { "CW", "SSB", NULL } },
+  { "CQ-WPX",     { "CW", "SSB", NULL } },
+  { "SAC",        { "CW", "SSB", NULL } },
+  { "DARC-WAEDC", { "CW", "SSB", "RTTY", NULL } },
+  { "CVA-DX",     { "CW", "SSB", NULL } },
+};
+
+/* ADIF mode → the part it belongs to; NULL for a mode that names no part
+ * (FT8 in a CW/SSB contest). Phone is one part — an FM QSO on 10 m in CQ WW
+ * SSB goes out as CQ-WW-SSB — unlike the Cabrillo CATEGORY-MODE, which
+ * keeps FM apart. */
+static const char *
+mode_part (const char *mode)
+{
+  if (!mode || !*mode)
+    return NULL;
+  if (g_ascii_strcasecmp (mode, "CW") == 0)
+    return "CW";
+  if (g_ascii_strcasecmp (mode, "SSB") == 0 ||
+      g_ascii_strcasecmp (mode, "AM") == 0 ||
+      g_ascii_strcasecmp (mode, "FM") == 0)
+    return "SSB";
+  if (g_ascii_strcasecmp (mode, "RTTY") == 0)
+    return "RTTY";
+  return NULL;
+}
+
+char *
+logfl_contest_id_for_mode (const char *adif_id, const char *mode)
+{
+  if (!adif_id)
+    return NULL;
+  const char *part = mode_part (mode);
+  for (gsize i = 0; part && i < G_N_ELEMENTS (contest_parts); i++)
+    {
+      const char *fam = contest_parts[i].family;
+      gsize len = strlen (fam);
+      if (strncmp (adif_id, fam, len) != 0)
+        continue;
+      /* The family alone, or the family with one of ITS parts — never
+       * another suffix: CQ-WW-RTTY shares the prefix and stays itself. */
+      const char *rest = adif_id + len;
+      if (*rest == '-')
+        rest++;
+      else if (*rest)
+        continue;
+      if (*rest && !g_strv_contains (contest_parts[i].parts, rest))
+        continue;
+      if (!g_strv_contains (contest_parts[i].parts, part))
+        continue;                /* RTTY in CQ WW: no part of it */
+      return g_strconcat (fam, "-", part, NULL);
+    }
+  return g_strdup (adif_id);
+}
+
 /* --- presets ------------------------------------------------------------ */
 
 /* Validity rules (counts= / zero_own_country) were verified against the
@@ -1798,10 +1873,12 @@ static const LogflContestPreset presets[] = {
   /* WAE (darc.de rules): RST + progressive serial, "000" when the other
    * side sends none; "a contest QSO can only be conducted between a
    * European and a non-European station" — counts=eu-dx. The ADIF id
-   * is per part — the CW prefill matches the August edition, SSB/RTTY
-   * editions edit the suffix. Cabrillo CONTEST equals the ADIF id per the
-   * WA7BNM master list; DARC's own rules name no value. DARC-WAEDC-CW
-   * confirmed live: the DARC robot accepted OK1BR's 2026 log under it. */
+   * is per part — the preset carries the CW one, and the part a QSO goes
+   * out under follows its mode (logfl_contest_id_for_mode: the SSB and
+   * RTTY editions get -SSB / -RTTY from the log itself). Cabrillo CONTEST
+   * equals the ADIF id per the WA7BNM master list; DARC's own rules name
+   * no value. DARC-WAEDC-CW confirmed live: the DARC robot accepted
+   * OK1BR's 2026 log under it. */
   { "WAE DX", "DARC-WAEDC-CW",
     /* Scoring §5/§6/§8 (darc.de WAE rules, 2026-08-28): 1 point per QSO
      * (derived from §8 "total QSOs plus QTCs"); mults = worked entities
@@ -1820,8 +1897,8 @@ static const LogflContestPreset presets[] = {
   /* CVA (cvadx.org/regulamento): we send RS(T) + continent ("599 EU"); PY
    * stations answer with their state — both two-letter TEXT, never a
    * serial. Everyone works everyone (2/3/4 points by distance) — not a
-   * PY-only contest despite the exchange shape. SSB edition edits the
-   * ADIF id suffix. */
+   * PY-only contest despite the exchange shape. The SSB edition's QSOs go
+   * out as CVA-DX-SSB by their mode (logfl_contest_id_for_mode). */
   { "CVA DX", "CVA-DX-CW",
     /* Scoring §9-§11 (cvadx.org English rules PDF, 2026-08-28): 2 own
      * country / 3 same continent / 4 other; mults = Brazilian states
@@ -1883,7 +1960,8 @@ static const LogflContestPreset presets[] = {
    * Scandinavian side (2/3 points, DXCC mults) and the non-European ladder
    * (3 points on 80/40). The 2026 special rule (no entries from Russia and
    * Belarus) changes nothing here — neither is Scandinavian. The ADIF id is
-   * per part; the October SSB part edits the suffix to SAC-SSB. Cabrillo
+   * per part; the October SSB part's QSOs go out as SAC-SSB by their mode
+   * (logfl_contest_id_for_mode). Cabrillo
    * CONTEST equals the ADIF id (sponsor's template, sactest.net
    * rules/cabrillo-3-0); the template's trailing transmitter id is "not
    * used in single-op" per the WWROF QSO spec it refers to, so the writer

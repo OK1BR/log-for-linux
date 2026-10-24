@@ -1854,6 +1854,140 @@ test_score_unavailable (void)
   logfl_cty_free (cty);
 }
 
+/* #27: the part of a contest run in parts follows the QSO's mode — ADIF
+ * has no bare CQ-WW, and cqww.com's robot takes CQ-WW-CW / -SSB only. */
+static void
+test_contest_id_for_mode (void)
+{
+  static const struct { const char *id, *mode, *want; } cases[] = {
+    { "CQ-WW", "SSB", "CQ-WW-SSB" },
+    { "CQ-WW", "CW", "CQ-WW-CW" },
+    { "CQ-WW", "FM", "CQ-WW-SSB" },        /* phone is one part */
+    { "CQ-WW", "AM", "CQ-WW-SSB" },
+    { "CQ-WW", "ssb", "CQ-WW-SSB" },
+    { "CQ-WW", "FT8", "CQ-WW" },           /* no such part: as stored */
+    { "CQ-WW", "RTTY", "CQ-WW" },          /* CQ WW RTTY is another contest */
+    { "CQ-WW", NULL, "CQ-WW" },
+    { "CQ-WW", "", "CQ-WW" },
+    { "CQ-WW-CW", "SSB", "CQ-WW-SSB" },    /* a stored part gives way */
+    { "CQ-WW-RTTY", "RTTY", "CQ-WW-RTTY" },
+    { "CQ-WW-RTTY", "SSB", "CQ-WW-RTTY" }, /* shares the prefix, stays */
+    { "CQ-WPX", "CW", "CQ-WPX-CW" },
+    { "CQ-WPX-RTTY", "CW", "CQ-WPX-RTTY" },
+    { "SAC-CW", "SSB", "SAC-SSB" },        /* the October part */
+    { "SAC-CW", "CW", "SAC-CW" },
+    { "SAC-CW", "FT8", "SAC-CW" },
+    { "SAC", "SSB", "SAC-SSB" },
+    { "DARC-WAEDC-CW", "RTTY", "DARC-WAEDC-RTTY" },
+    { "DARC-WAEDC-CW", "SSB", "DARC-WAEDC-SSB" },
+    { "CVA-DX-CW", "SSB", "CVA-DX-SSB" },
+    { "EU-HF", "SSB", "EU-HF" },
+    { "SARTG-RTTY", "RTTY", "SARTG-RTTY" },
+    { "YOHFDX", "CW", "YOHFDX" },
+    { "CQ-WWX", "SSB", "CQ-WWX" },         /* a prefix is not the family */
+    { "", "SSB", "" },
+  };
+  for (gsize i = 0; i < G_N_ELEMENTS (cases); i++)
+    {
+      char *got = logfl_contest_id_for_mode (cases[i].id, cases[i].mode);
+      g_assert_cmpstr (got, ==, cases[i].want);
+      g_free (got);
+    }
+  g_assert_null (logfl_contest_id_for_mode (NULL, "SSB"));
+
+  /* Every preset id goes out as an id ADIF 3.1.7 lists (adif.org
+   * Contest_ID enumeration, read 2026-10-24) — directly, or for a contest
+   * run in parts through each part the resolver hands it. */
+  static const char *const adif_ids[] = {
+    "CQ-WW-CW", "CQ-WW-SSB", "CQ-WW-RTTY", "CQ-WPX-CW", "CQ-WPX-SSB",
+    "CQ-WPX-RTTY", "SAC-CW", "SAC-SSB", "DARC-WAEDC-CW", "DARC-WAEDC-SSB",
+    "DARC-WAEDC-RTTY", "CVA-DX-CW", "CVA-DX-SSB", "EU-HF", "IARU-HF",
+    "OK-OM-DX", "SARTG-RTTY", "YOHFDX", NULL,
+  };
+  static const char *const modes[] = { "CW", "SSB", "RTTY" };
+  guint n = 0;
+  const LogflContestPreset *p = logfl_contest_presets (&n);
+  for (guint i = 0; i < n; i++)
+    {
+      if (!p[i].adif_id)
+        continue;                /* Custom */
+      gboolean parted = FALSE;
+      for (gsize m = 0; m < G_N_ELEMENTS (modes); m++)
+        {
+          char *got = logfl_contest_id_for_mode (p[i].adif_id, modes[m]);
+          if (g_strcmp0 (got, p[i].adif_id) != 0)
+            {
+              parted = TRUE;
+              g_assert_true (g_strv_contains (adif_ids, got));
+            }
+          g_free (got);
+        }
+      if (!parted)
+        g_assert_true (g_strv_contains (adif_ids, p[i].adif_id));
+    }
+}
+
+/* The record of one call in an ADIF export, up to its <EOR>. */
+static char *
+adif_record_of (const char *data, const char *call_tag)
+{
+  const char *at = strstr (data, call_tag);
+  g_assert_nonnull (at);
+  const char *end = strstr (at, "<EOR>");
+  g_assert_nonnull (end);
+  return g_strndup (at, (gsize) (end - at));
+}
+
+/* #27 on the ADIF side: CONTEST_ID carries the part the QSO's mode says.
+ * A CQ WW contest stores the bare CQ-WW; its SSB weekend goes out as
+ * CQ-WW-SSB, FM with it, a stray FT8 as stored. A SAC contest stored as
+ * SAC-CW hands its SSB QSOs SAC-SSB. */
+static void
+test_adif_export_contest_id_by_mode (void)
+{
+  GError *err = NULL;
+  LogflStore *s = mem_store ();
+  guint np = 0;
+  const LogflContestPreset *p = logfl_contest_presets (&np);
+  g_assert_cmpstr (p[0].adif_id, ==, "CQ-WW");
+  LogflContest *ww = mk_contest (s, "CQ WW SSB 2026", p[0].adif_id,
+                                 p[0].exch_def);
+  add_cqso (s, ww->id, "K1LZ", "20m", "SSB", 1761300000, 0);
+  add_cqso (s, ww->id, "JA1XYZ", "15m", "CW", 1761300100, 0);
+  add_cqso (s, ww->id, "DL1ABC", "10m", "FM", 1761300200, 0);
+  add_cqso (s, ww->id, "F5XYZ", "20m", "FT8", 1761300300, 0);
+  LogflContest *sac = mk_contest (s, "SAC SSB 2026", "SAC-CW",
+      "[exchange]\ntx_serial=true\nfields=nr;\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n");
+  add_cqso (s, sac->id, "SM5XYZ", "40m", "SSB", 1761300400, 1);
+
+  guint n = 0;
+  LogflStoreQuery all = { .contest = LOGFL_QUERY_CONTEST_ALL };
+  char *data = logfl_adif_export_data (s, &all, &n, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (n, ==, 5);
+
+  static const struct { const char *call_tag, *want; } recs[] = {
+    { "<CALL:4>K1LZ",   "<CONTEST_ID:9>CQ-WW-SSB" },
+    { "<CALL:6>JA1XYZ", "<CONTEST_ID:8>CQ-WW-CW" },
+    { "<CALL:6>DL1ABC", "<CONTEST_ID:9>CQ-WW-SSB" },
+    { "<CALL:5>F5XYZ",  "<CONTEST_ID:5>CQ-WW" },
+    { "<CALL:6>SM5XYZ", "<CONTEST_ID:7>SAC-SSB" },
+  };
+  for (gsize i = 0; i < G_N_ELEMENTS (recs); i++)
+    {
+      char *rec = adif_record_of (data, recs[i].call_tag);
+      g_assert_nonnull (strstr (rec, recs[i].want));
+      g_free (rec);
+    }
+  g_assert_null (strstr (data, "SAC-CW"));
+  g_free (data);
+
+  logfl_contest_free (sac);
+  logfl_contest_free (ww);
+  logfl_store_close (s);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1875,6 +2009,9 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/adif-roundtrip", test_adif_roundtrip);
   g_test_add_func ("/contest/adif-export-scoped", test_adif_export_scoped);
   g_test_add_func ("/contest/adif-serial-quirks", test_adif_serial_quirks);
+  g_test_add_func ("/contest/id-for-mode", test_contest_id_for_mode);
+  g_test_add_func ("/contest/adif-contest-id-by-mode",
+                   test_adif_export_contest_id_by_mode);
   g_test_add_func ("/contest/score/roundtrip", test_score_roundtrip);
   g_test_add_func ("/contest/score/errors", test_score_errors);
   g_test_add_func ("/contest/score/wpx-prefix", test_wpx_prefix);

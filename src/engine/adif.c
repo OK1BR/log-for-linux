@@ -515,8 +515,15 @@ logfl_adif_export_data (LogflStore *s, const LogflStoreQuery *query,
       put_str (out, "STATION_CALLSIGN", q->station_callsign);
       put_str (out, "MY_GRIDSQUARE", q->my_gridsquare);
       if (q->contest_ref > 0)
-        put_str (out, "CONTEST_ID",
-                 g_hash_table_lookup (contest_adif, &q->contest_ref));
+        {
+          /* The stored id may name the family alone (CQ-WW) or another
+           * part (SAC-CW on the SSB weekend); this QSO's mode says which
+           * part it belongs to. */
+          char *cid = logfl_contest_id_for_mode (
+              g_hash_table_lookup (contest_adif, &q->contest_ref), q->mode);
+          put_str (out, "CONTEST_ID", cid);
+          g_free (cid);
+        }
       put_int (out, "STX", q->stx);
       put_str (out, "STX_STRING", q->stx_string);
       put_int (out, "SRX", q->srx);

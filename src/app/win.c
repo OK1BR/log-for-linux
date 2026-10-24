@@ -4034,16 +4034,20 @@ on_cabrillo_file_ready (GObject *source, GAsyncResult *res,
 }
 
 /* Cabrillo CONTEST names are not ADIF ids — map the known differences,
- * else fall back to the ADIF id / a name-derived guess. */
+ * else fall back to the ADIF id / a name-derived guess. log_mode is what
+ * the log says for CATEGORY-MODE (CW, SSB, …, MIXED; NULL for an empty
+ * log): a contest run in parts gets the part the log was worked in —
+ * CQ-WW-SSB, which with -CW is all cqww.com's robot takes — while MIXED or
+ * an empty log leaves the stored id; the row stays editable either way. */
 static char *
-cabrillo_contest_guess (const LogflContest *c)
+cabrillo_contest_guess (const LogflContest *c, const char *log_mode)
 {
   if (g_strcmp0 (c->adif_id, "EU-HF") == 0)
     return g_strdup ("EUHFC");
   if (g_strcmp0 (c->adif_id, "YOHFDX") == 0)
     return g_strdup ("YO-DX-HF");
   if (c->adif_id && *c->adif_id)
-    return g_strdup (c->adif_id);
+    return logfl_contest_id_for_mode (c->adif_id, log_mode);
   char *up = g_ascii_strup (c->name, -1);
   return g_strdelimit (up, " ", '-');
 }
@@ -4265,9 +4269,25 @@ act_cabrillo (GSimpleAction *action, GVariant *param, gpointer user_data)
   AdwPreferencesPage *page =
       ADW_PREFERENCES_PAGE (adw_preferences_page_new ());
 
+  /* Band and Mode come from the log itself, not from what the last export
+   * happened to use: a remembered category outlives the contest it was
+   * picked for and silently mislabels the next one. Both stay editable —
+   * the log proves what was worked, not which category was entered. The
+   * mode also names the part of a contest run in parts (CONTEST row). */
+  char *log_mode = NULL, *log_band = NULL;
+  if (self->store)
+    {
+      GError *cat_err = NULL;
+      if (!logfl_cabrillo_categories_from_log (self->store,
+                                               self->contest->id,
+                                               &log_mode, &log_band,
+                                               &cat_err))
+        g_clear_error (&cat_err);   /* prefill only — fall back, never fail */
+    }
+
   AdwPreferencesGroup *lg = ADW_PREFERENCES_GROUP (g_object_new (
       ADW_TYPE_PREFERENCES_GROUP, "title", "Log", NULL));
-  char *guess = cabrillo_contest_guess (self->contest);
+  char *guess = cabrillo_contest_guess (self->contest, log_mode);
   cd->contest_row = cab_row (lg, "CONTEST", guess);
   g_free (guess);
   cd->call_row = cab_row (lg, "CALLSIGN",
@@ -4294,20 +4314,6 @@ act_cabrillo (GSimpleAction *action, GVariant *param, gpointer user_data)
                   "rules decide."
                 : "Cabrillo v3 values as announced by the contest.",
       NULL));
-  /* Band and Mode come from the log itself, not from what the last export
-   * happened to use: a remembered category outlives the contest it was
-   * picked for and silently mislabels the next one. Both stay editable —
-   * the log proves what was worked, not which category was entered. */
-  char *log_mode = NULL, *log_band = NULL;
-  if (self->store)
-    {
-      GError *cat_err = NULL;
-      if (!logfl_cabrillo_categories_from_log (self->store,
-                                               self->contest->id,
-                                               &log_mode, &log_band,
-                                               &cat_err))
-        g_clear_error (&cat_err);   /* prefill only — fall back, never fail */
-    }
 
   cd->op_row = cab_tag_row (self, cg, "Operator", LOGFL_CAB_OPERATOR, seat,
                             CAB_OPERATOR_VALUES, FALSE,

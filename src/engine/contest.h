@@ -312,6 +312,17 @@ GHashTable *logfl_contest_score (const LogflExchDef *def,
  * swaps the call area ("K5DJ/1"→"K1"). /P /M /MM /AM /QRP are ignored. */
 char *logfl_wpx_prefix (const char *call);
 
+/* The ADIF CONTEST_ID a QSO in this mode goes out under. Contests run in
+ * parts by mode under one set of rules (CQ WW, CQ WPX, SAC, WAE, CVA) have
+ * one id per part in ADIF — CQ-WW-CW / CQ-WW-SSB, never a bare CQ-WW —
+ * and the sponsors' robots take only those. A stored id naming the family
+ * (CQ-WW) or the part the preset was written for (SAC-CW) comes back with
+ * the part the mode says (SSB → SAC-SSB); every other id, and any mode
+ * that is no part of that contest (FT8; RTTY in CQ WW, whose RTTY contest
+ * is one of its own), comes back as it stands. Caller frees; NULL id gives
+ * NULL. */
+char *logfl_contest_id_for_mode (const char *adif_id, const char *mode);
+
 /* Built-in presets: name + ADIF CONTEST_ID prefill + serialized definition.
  * A new contest copies (and may edit) the definition — the preset list is a
  * starting point, not a registry. */
