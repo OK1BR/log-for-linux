@@ -134,6 +134,7 @@ static void refresh_esm_hint (LogflWindow *self);
 static void dup_notify (LogflWindow *self, const char *call,
                         const char *band, const char *mode);
 static void entry_reset_defaults (LogflWindow *self);
+static void score_repaint_visible (LogflWindow *self);
 static void clear_entry_row (LogflWindow *self);
 static void rescore (LogflWindow *self);
 static void score_repaint_visible (LogflWindow *self);
@@ -394,7 +395,16 @@ reload (LogflWindow *self)
     }
   g_ptr_array_unref (list);
 
-  rescore (self);              /* annotate rows before they bind */
+  rescore (self);
+  /* The rows were annotated after they were appended — and with the window
+   * up, the column view binds the visible rows at the append itself, so
+   * their Pts/Mult cells were painted empty. Nothing notifies a cell of a
+   * row's score (logfl_qso_row_set_score only stores it), hence the
+   * repaint, the same as after a cell edit. On the first fill, before the
+   * window shows, no cell is bound yet and the walk finds nothing (#24:
+   * filled after a start over an existing log, empty after each QSO
+   * logged live, SAC CW 2026-09-19 and CQ WW SSB 2026-10-24). */
+  score_repaint_visible (self);
   update_subtitle (self);
 }
 
