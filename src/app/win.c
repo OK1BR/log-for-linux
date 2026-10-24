@@ -971,6 +971,19 @@ rst_looks_default (const char *s)
   return !*s || g_str_equal (s, "59") || g_str_equal (s, "599");
 }
 
+/* Both reports back to the mode default (59 / 599). A report belongs to the
+ * QSO it was given in; the next station starts from the default. */
+static void
+entry_reset_rst (LogflWindow *self)
+{
+  const char *def = rst_default_for_mode (dd_selected (self->mode_dd, modes));
+  gboolean prev = self->syncing_row;
+  self->syncing_row = TRUE;
+  gtk_editable_set_text (GTK_EDITABLE (self->rst_s), def);
+  gtk_editable_set_text (GTK_EDITABLE (self->rst_r), def);
+  self->syncing_row = prev;
+}
+
 /* Full entry-row reset to the ready state: fields cleared, RST back to the
  * mode default, Sent back to the serial/exchange prefill. Leftovers of a
  * QSO that never happened must not leak into the next one. */
@@ -978,12 +991,7 @@ static void
 entry_reset_defaults (LogflWindow *self)
 {
   clear_entry_row (self);
-  const char *def = rst_default_for_mode (dd_selected (self->mode_dd, modes));
-  gboolean prev = self->syncing_row;
-  self->syncing_row = TRUE;
-  gtk_editable_set_text (GTK_EDITABLE (self->rst_s), def);
-  gtk_editable_set_text (GTK_EDITABLE (self->rst_r), def);
-  self->syncing_row = prev;
+  entry_reset_rst (self);
   refresh_serial (self);
 }
 
@@ -1179,6 +1187,11 @@ do_add_pending (LogflWindow *self)
       if (self->settings.esm_enabled)
         self->esm_phase = LOGFL_ESM_PHASE_TU;
       clear_entry_row (self);
+      /* The report just logged is not the next station's: back to 59 /
+       * 599. CW never showed the leak (599 every time); SSB did — a 57
+       * given to one station sat in the row for the next (CQ WW SSB,
+       * 2026-10-24). */
+      entry_reset_rst (self);
       reload (self);
       refresh_serial (self);
       refresh_esm_hint (self);
