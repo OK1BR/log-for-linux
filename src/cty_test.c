@@ -20,6 +20,10 @@ static const char *SAMPLE =
     "    =AJ3DI<12/34>~5~;\n"
     "European Turkey:          20:  39:  EU:   41.02:   -28.97:    -2.0:  *TA1:\n"
     "    TA1,=TC1X{AS};\n"
+    /* Spans zones: the plain prefix gets the header's 05/09, VE2 knows its
+     * ITU alone, VE7 both; VE2FK's [9] equals the default, yet is its own. */
+    "Canada:                   05:  09:  NA:   44.35:    78.75:     5.0:  VE:\n"
+    "    VA,VE,VE2[4],VE7(3)[2],=VE2FK[9];\n"
     "Version marker:           05:  08:  NA:    0.00:     0.00:     0.0:  VV:\n"
     "    =VER20260803;\n";
 
@@ -39,7 +43,7 @@ static void
 test_parse_and_basic (void)
 {
   LogflCty *c = load_sample ();
-  g_assert_cmpuint (logfl_cty_n_entities (c), ==, 4);
+  g_assert_cmpuint (logfl_cty_n_entities (c), ==, 5);
   g_assert_cmpstr (logfl_cty_version (c), ==, "20260803");
 
   LogflCtyInfo i;
@@ -112,6 +116,50 @@ test_portable (void)
   logfl_cty_free (c);
 }
 
+/* #28: a zone is "known" when the matched alias says so itself, or when
+ * every alias of the entity shares it; an entity spanning zones hands its
+ * plain prefixes a default that is only a guess. */
+static void
+test_zone_known (void)
+{
+  LogflCty *c = load_sample ();
+  LogflCtyInfo i;
+
+  g_assert_true (logfl_cty_lookup (c, "OK1BR", &i));
+  g_assert_true (i.cq_zone_known);
+  g_assert_true (i.itu_zone_known);
+
+  /* The sample's US: 4U1WB's explicit (5)[8] equals the header, so the
+   * entity spans nothing and a plain K is known. */
+  g_assert_true (logfl_cty_lookup (c, "K1ABC", &i));
+  g_assert_true (i.cq_zone_known);
+  g_assert_true (i.itu_zone_known);
+
+  /* Canada spans zones: the plain prefix guesses both … */
+  g_assert_true (logfl_cty_lookup (c, "VE3ABC", &i));
+  g_assert_cmpint (i.cq_zone, ==, 5);
+  g_assert_cmpint (i.itu_zone, ==, 9);
+  g_assert_false (i.cq_zone_known);
+  g_assert_false (i.itu_zone_known);
+  /* … an ITU-only override knows ITU and still guesses CQ … */
+  g_assert_true (logfl_cty_lookup (c, "VE2ABC", &i));
+  g_assert_cmpint (i.itu_zone, ==, 4);
+  g_assert_true (i.itu_zone_known);
+  g_assert_false (i.cq_zone_known);
+  /* … both overrides know both … */
+  g_assert_true (logfl_cty_lookup (c, "VE7ABC", &i));
+  g_assert_cmpint (i.cq_zone, ==, 3);
+  g_assert_cmpint (i.itu_zone, ==, 2);
+  g_assert_true (i.cq_zone_known);
+  g_assert_true (i.itu_zone_known);
+  /* … and an exact call's override equal to the default is still its own. */
+  g_assert_true (logfl_cty_lookup (c, "VE2FK", &i));
+  g_assert_cmpint (i.itu_zone, ==, 9);
+  g_assert_true (i.itu_zone_known);
+  g_assert_false (i.cq_zone_known);
+  logfl_cty_free (c);
+}
+
 /* --- the real bundled snapshot ------------------------------------------ */
 
 static const char *real_path;
@@ -153,6 +201,26 @@ test_real_file (void)
   /* Longest prefix beats shorter: 3B8 vs 3B6 family. */
   g_assert_true (logfl_cty_lookup (c, "3B8CF", &i));
   g_assert_cmpstr (i.country, ==, "Mauritius");
+
+  /* #28 zone certainty over the snapshot: Germany is one zone; the US
+   * spans CQ 3/4/5 through exact calls only, so a plain K is a guess while
+   * AA6KJ's own (4)[7] is not; Canada's VE2FK carries [9] alone. */
+  g_assert_true (logfl_cty_lookup (c, "DL1ABC", &i));
+  g_assert_cmpint (i.cq_zone, ==, 14);
+  g_assert_true (i.cq_zone_known);
+  g_assert_true (i.itu_zone_known);
+  g_assert_true (logfl_cty_lookup (c, "K7ABC", &i));
+  g_assert_false (i.cq_zone_known);
+  g_assert_false (i.itu_zone_known);
+  g_assert_true (logfl_cty_lookup (c, "AA6KJ", &i));
+  g_assert_cmpint (i.cq_zone, ==, 4);
+  g_assert_cmpint (i.itu_zone, ==, 7);
+  g_assert_true (i.cq_zone_known);
+  g_assert_true (i.itu_zone_known);
+  g_assert_true (logfl_cty_lookup (c, "VE2FK", &i));
+  g_assert_cmpint (i.itu_zone, ==, 9);
+  g_assert_true (i.itu_zone_known);
+  g_assert_false (i.cq_zone_known);
   logfl_cty_free (c);
 }
 
@@ -171,6 +239,7 @@ main (int argc, char **argv)
 
   g_test_add_func ("/cty/parse-basic", test_parse_and_basic);
   g_test_add_func ("/cty/overrides", test_overrides);
+  g_test_add_func ("/cty/zone-known", test_zone_known);
   g_test_add_func ("/cty/portable", test_portable);
   g_test_add_func ("/cty/real-file", test_real_file);
 

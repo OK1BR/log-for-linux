@@ -21,12 +21,16 @@ typedef struct {
   char     continent[3];
   int      cq_zone, itu_zone;
   gboolean waedc_only;
+  gboolean cq_multi, itu_multi; /* some alias resolves to another zone than
+                                   the entity's: the default alone is then a
+                                   guess for any alias without its own */
 } CtyEntity;
 
 typedef struct {
   CtyEntity *ent;
   char       continent[3];     /* effective values, overrides applied */
   int        cq_zone, itu_zone;
+  gboolean   cq_explicit, itu_explicit; /* "(cq)" / "[itu]" on this alias */
 } CtyAlias;
 
 struct _LogflCty {
@@ -117,10 +121,12 @@ add_alias (LogflCty *c, CtyEntity *e, const char *tok)
         {
         case '(':
           a->cq_zone = atoi (p + 1);
+          a->cq_explicit = TRUE;
           close = strchr (p, ')');
           break;
         case '[':
           a->itu_zone = atoi (p + 1);
+          a->itu_explicit = TRUE;
           close = strchr (p, ']');
           break;
         case '{':
@@ -142,6 +148,14 @@ add_alias (LogflCty *c, CtyEntity *e, const char *tok)
         break;
       p = close + 1;
     }
+
+  /* The entity spans a zone once any alias lands elsewhere than the
+   * header says. Judged on the effective value, not on the presence of
+   * an override: "=4U1WB(5)[8]" under the US (05/08) changes nothing. */
+  if (a->cq_zone != e->cq_zone)
+    e->cq_multi = TRUE;
+  if (a->itu_zone != e->itu_zone)
+    e->itu_multi = TRUE;
 
   if (exact && g_str_has_prefix (key, "VER") &&
       strlen (key) == 3 + 8 && !c->version)
@@ -329,6 +343,12 @@ logfl_cty_lookup (LogflCty *c, const char *call, LogflCtyInfo *out)
   out->cq_zone = a->cq_zone;
   out->itu_zone = a->itu_zone;
   out->waedc_only = a->ent->waedc_only;
+  /* Certain when this alias says so itself, or when nothing in the entity
+   * ever says otherwise (issue #28: the US block has no prefix-level zone
+   * at all — K, W, N resolve to CQ 5 whether in Maine or California, and
+   * only the exact-call list knows better). */
+  out->cq_zone_known = a->cq_explicit || !a->ent->cq_multi;
+  out->itu_zone_known = a->itu_explicit || !a->ent->itu_multi;
   return TRUE;
 }
 

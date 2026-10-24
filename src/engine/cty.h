@@ -32,6 +32,14 @@ typedef struct {
   int         cq_zone;
   int         itu_zone;
   gboolean    waedc_only;      /* '*' entity: on the WAE list, not DXCC */
+  gboolean    cq_zone_known;   /* the zone is certain for THIS call: the
+                                  matched alias carries its own "(cq)" /
+                                  "[itu]", or every alias of the entity
+                                  shares the one value. FALSE = the entity
+                                  default handed to a plain prefix of an
+                                  entity that spans zones (W, VE) — a
+                                  guess, not to be shown as if copied */
+  gboolean    itu_zone_known;
 } LogflCtyInfo;
 
 /* Parse a cty.dat file. NULL + error when unreadable or no entity parses. */

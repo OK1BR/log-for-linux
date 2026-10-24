@@ -90,6 +90,8 @@ struct _LogflWindow {
   double call_hz;              /* VFO at the last edit of Call; 0 = none
                                   known — a typed call clears on QSY away
                                   from it (#30) */
+  gboolean zone_from_call;     /* the zone exchange field holds an untouched
+                                  prefill derived from the call (#28) */
   LogflTciClient *tci;
   LogflWsjtxServer *wsjtx;     /* M6: UDP listener for WSJT-X / JTDX        */
   LogflDupSrv *dup_srv;        /* worked/dup answers for the skimmer        */
@@ -911,6 +913,85 @@ not_valid_reason (LogflWindow *self, const LogflCtyInfo *theirs)
   return g_strdup_printf ("%s is not on the contest's list", theirs->country);
 }
 
+/* The exchange field that asks for a zone — the first one routed to CQZ or
+ * ITUZ (CQ WW, CQ WW RTTY, IARU HF's Zone/HQ, a custom contest with such a
+ * field); -1 when the contest has none. Looked up every time: the entries
+ * are rebuilt on each contest switch. */
+static int
+zone_field_index (LogflWindow *self, gboolean *cq)
+{
+  if (!self->exch_def || !self->exch_entries)
+    return -1;
+  for (guint i = 0; i < self->exch_def->fields->len
+                    && i < self->exch_entries->len; i++)
+    {
+      const LogflExchField *f = self->exch_def->fields->pdata[i];
+      if (g_strcmp0 (f->adif_num, "CQZ") == 0
+          || g_strcmp0 (f->adif_num, "ITUZ") == 0)
+        {
+          *cq = g_str_equal (f->adif_num, "CQZ");
+          return (int) i;
+        }
+    }
+  return -1;
+}
+
+/* #28: the zone field follows the call for as long as it holds nothing the
+ * operator typed — empty, or an untouched prefill of ours. Prefilled only
+ * when cty is sure of the zone for THAT call (LogflCtyInfo.*_zone_known):
+ * an entity spanning zones (W, VE) resolves to its default unless the
+ * matched prefix or exact call says otherwise, and a wrong prefill looks
+ * exactly like a copied one — worse than an empty field, which the
+ * operator copies as before. Written under syncing_row like the serial
+ * and RST prefills, so it claims nothing: a spot-clicked call keeps its
+ * mark and QSY still resets the whole row. theirs_ok FALSE (no cty, no
+ * match, call too short) takes an untouched prefill away again. Nothing is
+ * rewritten when the text already is what it would be — a TCI mode echo
+ * runs through here too, and a same-text write would still move the
+ * cursor under an operator who tabbed into the field. */
+static void
+zone_follow_call (LogflWindow *self, gboolean theirs_ok,
+                  const LogflCtyInfo *theirs)
+{
+  gboolean cq = FALSE;
+  int idx = zone_field_index (self, &cq);
+  if (idx < 0)
+    return;
+  GtkWidget *e = self->exch_entries->pdata[idx];
+  const char *cur = entry_text (e);
+  if (*cur && !self->zone_from_call)
+    return;                      /* the operator's — hands off */
+
+  char buf[8] = "";
+  if (theirs_ok)
+    {
+      int z = cq ? theirs->cq_zone : theirs->itu_zone;
+      gboolean known = cq ? theirs->cq_zone_known : theirs->itu_zone_known;
+      if (known && z > 0)
+        g_snprintf (buf, sizeof buf, "%d", z);
+    }
+  if (!g_str_equal (cur, buf))
+    {
+      gboolean prev = self->syncing_row;
+      self->syncing_row = TRUE;
+      gtk_editable_set_text (GTK_EDITABLE (e), buf);
+      self->syncing_row = prev;
+    }
+  self->zone_from_call = buf[0] != '\0';
+}
+
+/* Typing in the zone field makes it the operator's: the prefill mark goes
+ * and the call stops driving it (an IARU HQ station sends its society, a
+ * mis-resolved call its real zone). Programmatic writes — the prefill
+ * itself, row resets — run under syncing_row and keep the mark. */
+static void
+on_zone_edited (LogflWindow *self)
+{
+  if (self->syncing_row || self->syncing_tci)
+    return;
+  self->zone_from_call = FALSE;
+}
+
 static void
 update_wb4 (LogflWindow *self)
 {
@@ -923,6 +1004,7 @@ update_wb4 (LogflWindow *self)
   if (!self->store || strlen (call) < 2)
     {
       gtk_label_set_text (GTK_LABEL (l), "");
+      zone_follow_call (self, FALSE, NULL);   /* "DL" → "D": 14 goes too */
       return;
     }
 
@@ -930,6 +1012,7 @@ update_wb4 (LogflWindow *self)
   gboolean theirs_ok = FALSE;
   LogflQsoValidity validity = validity_for_call (self, call, &theirs,
                                                  &theirs_ok);
+  zone_follow_call (self, theirs_ok, &theirs);
 
   /* In a contest every question is asked HERE: the dup check and the B4
    * counts both see only this contest, so a call worked last week in some
@@ -1124,6 +1207,7 @@ clear_entry_row (LogflWindow *self)
   for (guint i = 0; self->exch_entries && i < self->exch_entries->len; i++)
     gtk_editable_set_text (GTK_EDITABLE (self->exch_entries->pdata[i]), "");
   self->syncing_row = prev;
+  self->zone_from_call = FALSE;  /* cleared under syncing_row: say so here */
   gtk_label_set_text (GTK_LABEL (self->wb4_label), "");
   /* An open cell editor is never interrupted: the row still clears, but
    * focus stays where the operator is editing. */
@@ -3116,11 +3200,17 @@ rebuild_exch_fields (LogflWindow *self)
       entry_force_upper (e);
       g_signal_connect_swapped (e, "changed",
                                 G_CALLBACK (on_row_edited_drop_spot), self);
+      /* The zone field follows the call until typed in (#28). */
+      if (g_strcmp0 (f->adif_num, "CQZ") == 0
+          || g_strcmp0 (f->adif_num, "ITUZ") == 0)
+        g_signal_connect_swapped (e, "changed",
+                                  G_CALLBACK (on_zone_edited), self);
       if (f->required)
         gtk_widget_set_tooltip_text (e, "Contest exchange (required)");
       gtk_box_append (GTK_BOX (self->exch_box), labeled (f->label, e));
       g_ptr_array_add (self->exch_entries, e);
     }
+  self->zone_from_call = FALSE;  /* fresh, empty entries */
 }
 
 static void
