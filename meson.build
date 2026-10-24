@@ -164,3 +164,13 @@ executable('log-for-linux',
 )
 
 subdir('data')   # .desktop + icon + AppStream metainfo (install only)
+
+# The app's own licence travels with every install — a binary package has no
+# source tree to point at, and the LGPL of the bundled icons (data/icons)
+# asks for the GPL it builds on to come along (LGPL v3 §4b). One place for
+# all formats: the Arch package gets it where pacman looks
+# (/usr/share/licenses/<pkgname>/), the .rpm marks it %license, the .deb and
+# the AppImage carry it at the same path (#22: 0.1.0 … 0.3.1 shipped without
+# it everywhere but Arch, whose PKGBUILD installed it by hand).
+install_data('LICENSE',
+  install_dir : get_option('datadir') / 'licenses' / meson.project_name())

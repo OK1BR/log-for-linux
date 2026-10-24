@@ -1,3 +1,5 @@
 builddir/
 build/
 .claude/worktrees/
+build-pkg/
+dist/

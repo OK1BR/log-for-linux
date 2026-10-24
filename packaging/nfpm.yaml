@@ -38,6 +38,22 @@ contents:
   # fails when a staged file is missing here.
   - src: build-pkg/staging/usr/bin/log-for-linux
     dst: /usr/bin/log-for-linux
+  # The GPL text (#22). Twice on purpose: `type: license` is what makes the
+  # .rpm mark it %license (Fedora Licensing Guidelines), and nfpm 2.47 drops
+  # every entry of that type from any other packager (files.go,
+  # isRelevantForPackager) — so the .deb needs its own plain entry.
+  - src: build-pkg/staging/usr/share/licenses/log-for-linux/LICENSE
+    dst: /usr/share/licenses/log-for-linux/LICENSE
+    type: license
+    packager: rpm
+  - src: build-pkg/staging/usr/share/licenses/log-for-linux/LICENSE
+    dst: /usr/share/licenses/log-for-linux/LICENSE
+    packager: deb
+  # Debian Policy 12.5: the machine-readable copyright summary; .deb only,
+  # and the one file here meson does not stage — build.yml knows.
+  - src: packaging/copyright
+    dst: /usr/share/doc/log-for-linux/copyright
+    packager: deb
   - src: build-pkg/staging/usr/share/applications/cz.ok1br.log_for_linux.desktop
     dst: /usr/share/applications/cz.ok1br.log_for_linux.desktop
   - src: build-pkg/staging/usr/share/icons/hicolor/scalable/apps/cz.ok1br.log_for_linux.svg

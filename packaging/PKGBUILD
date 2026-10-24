@@ -28,6 +28,8 @@ check() {
 }
 
 package() {
+  # meson installs LICENSE to /usr/share/licenses/$pkgname/ itself (#22) —
+  # from the first release after 0.3.1; the AUR copy of the 0.3.1 PKGBUILD
+  # still carries the manual install line and keeps it until that bump.
   meson install -C build --destdir "$pkgdir"
-  install -Dm644 "$pkgname-$_pkgtag/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

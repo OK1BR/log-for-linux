@@ -27,4 +27,6 @@ Please link to http://www.gnome.org where available.
 log-for-linux takes the GNU LGPL v3 option: the FSF licence list
 (https://www.gnu.org/licenses/license-list.html) names LGPLv3 as compatible
 with GPLv3, the licence of the app. The LGPL text is COPYING.LGPL-3 next to
-this file; the GNU GPL v3 it builds on is LICENSE at the top of the tree.
+this file; the GNU GPL v3 it builds on is LICENSE at the top of the source
+tree and, installed, <datadir>/licenses/log-for-linux/LICENSE (on a distro
+install /usr/share/licenses/log-for-linux/LICENSE).

@@ -118,6 +118,11 @@ jobs:
             --appdir AppDir \
             --output appimage
           ls -la *.AppImage
+          # The GPL text rides inside (#22) — meson installs it into AppDir
+          # with everything else; check the packed image, not the AppDir.
+          ./Log_for_Linux-*.AppImage --appimage-extract usr/share/licenses/log-for-linux/LICENSE >/dev/null
+          test -f squashfs-root/usr/share/licenses/log-for-linux/LICENSE
+          rm -rf squashfs-root
       - name: Build the .deb (nfpm)
         run: |
           curl -sL https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz \
@@ -146,9 +151,17 @@ jobs:
         run: |
           # nfpm.yaml lists the payload by hand and fell behind once: 0.2.0 and
           # 0.3.0 went out without cty.dat. A staged file that is missing from
-          # the .deb (the .rpm is built from the same list) fails here.
-          diff <(cd build-pkg/staging && find usr -type f | sort) \
-               <(dpkg-deb --fsys-tarfile dist/*.deb | tar -t | grep -v '/$' | sed 's|^\./||' | sort)
+          # the .deb (the .rpm is built from the same list) fails here. The
+          # .deb alone may carry more: its Debian copyright file (#22) is not
+          # meson's to stage, so the check is one-way — staged ⊆ packaged —
+          # and names that file on its own.
+          missing=$(comm -23 <(cd build-pkg/staging && find usr -type f | sort) \
+                             <(dpkg-deb --fsys-tarfile dist/*.deb | tar -t | grep -v '/$' | sed 's|^\./||' | sort))
+          if [ -n "$missing" ]; then
+            echo "::error::staged by meson but missing from the .deb:"; echo "$missing"; exit 1
+          fi
+          dpkg-deb --fsys-tarfile dist/*.deb | tar -t | grep -q 'usr/share/doc/log-for-linux/copyright$'
+          dpkg-deb --fsys-tarfile dist/*.deb | tar -t | grep -q 'usr/share/licenses/log-for-linux/LICENSE$'
       - name: Install-test the .deb (ubuntu:26.04)
         run: |
           docker run --rm -v "$PWD/dist:/dist:ro" ubuntu:26.04 bash -ec '
@@ -158,6 +171,9 @@ jobs:
             if ldd /usr/bin/log-for-linux | grep "not found"; then exit 1; fi
             test -f /usr/share/applications/cz.ok1br.log_for_linux.desktop
             test -f /usr/share/log-for-linux/cty.dat
+            # #22: the GPL text and the Debian copyright summary are installed.
+            test -f /usr/share/licenses/log-for-linux/LICENSE
+            test -f /usr/share/doc/log-for-linux/copyright
             apt-get install -yq xvfb
             # The libraries resolving is half the chain — the window has to
             # come up on the target system too. The app runs under a throwaway
@@ -178,6 +194,10 @@ jobs:
             if ldd /usr/bin/log-for-linux | grep "not found"; then exit 1; fi
             test -f /usr/share/applications/cz.ok1br.log_for_linux.desktop
             test -f /usr/share/log-for-linux/cty.dat
+            # #22: the GPL text is installed AND flagged %license (rpm -qL
+            # lists exactly the %license files of the package).
+            test -f /usr/share/licenses/log-for-linux/LICENSE
+            rpm -qL log-for-linux | grep -q "/usr/share/licenses/log-for-linux/LICENSE$"
             dnf install -y -q xorg-x11-server-Xvfb
             # Same GUI smoke test as the .deb side, see there.
             set +e
