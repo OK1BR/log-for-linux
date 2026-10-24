@@ -34,11 +34,14 @@ typedef struct {
   gboolean    waedc_only;      /* '*' entity: on the WAE list, not DXCC */
   gboolean    cq_zone_known;   /* the zone is certain for THIS call: the
                                   matched alias carries its own "(cq)" /
-                                  "[itu]", or every alias of the entity
-                                  shares the one value. FALSE = the entity
-                                  default handed to a plain prefix of an
-                                  entity that spans zones (W, VE) — a
-                                  guess, not to be shown as if copied */
+                                  "[itu]", or the header zone it inherits
+                                  is one the file stands behind — no alias
+                                  leaves it, or the file maps the zone by
+                                  call area and the header is the rest.
+                                  FALSE = a header default the file patches
+                                  only through exact calls (W) or itself
+                                  contradicts (VE) — a guess, not to be
+                                  shown as if copied (cty.c: zone_known) */
   gboolean    itu_zone_known;
 } LogflCtyInfo;
 

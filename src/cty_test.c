@@ -16,12 +16,17 @@ static const char *SAMPLE =
     "Czech Republic:           15:  28:  EU:   50.00:   -16.00:    -1.0:  OK:\n"
     "    OK,OL;\n"
     "United States:            05:  08:  NA:   37.60:    91.87:     5.0:  K:\n"
-    "    AA,K,N,W,=4U1WB(5)[8],\n"
+    "    AA,K,N,W,=4U1WB(5)[8],=AA6KJ(4)[7],\n"
     "    =AJ3DI<12/34>~5~;\n"
+    /* Maps the zone by call area: R1I/R8X leave the header, the rest IS
+     * 16/29 — the header can be trusted for a plain R. */
+    "European Russia:          16:  29:  EU:   53.65:   -41.37:    -4.0:  UA:\n"
+    "    R,U,R1I(17)[20],R8X(17)[20],=R1ABC(17)[20];\n"
     "European Turkey:          20:  39:  EU:   41.02:   -28.97:    -2.0:  *TA1:\n"
     "    TA1,=TC1X{AS};\n"
-    /* Spans zones: the plain prefix gets the header's 05/09, VE2 knows its
-     * ITU alone, VE7 both; VE2FK's [9] equals the default, yet is its own. */
+    /* Header not trusted (cty.c zone_known): the plain prefix gets 05/09
+     * but is a guess; VE2 knows its ITU alone, VE7 both; VE2FK's [9]
+     * equals the default, yet is its own. */
     "Canada:                   05:  09:  NA:   44.35:    78.75:     5.0:  VE:\n"
     "    VA,VE,VE2[4],VE7(3)[2],=VE2FK[9];\n"
     "Version marker:           05:  08:  NA:    0.00:     0.00:     0.0:  VV:\n"
@@ -43,7 +48,7 @@ static void
 test_parse_and_basic (void)
 {
   LogflCty *c = load_sample ();
-  g_assert_cmpuint (logfl_cty_n_entities (c), ==, 5);
+  g_assert_cmpuint (logfl_cty_n_entities (c), ==, 6);
   g_assert_cmpstr (logfl_cty_version (c), ==, "20260803");
 
   LogflCtyInfo i;
@@ -129,13 +134,35 @@ test_zone_known (void)
   g_assert_true (i.cq_zone_known);
   g_assert_true (i.itu_zone_known);
 
-  /* The sample's US: 4U1WB's explicit (5)[8] equals the header, so the
-   * entity spans nothing and a plain K is known. */
+  /* The US leaves its header only through exact calls (AA6KJ): a plain K
+   * is a guess; the exact calls themselves are certain — 4U1WB's (5)[8]
+   * equals the header and still counts as its own. */
   g_assert_true (logfl_cty_lookup (c, "K1ABC", &i));
+  g_assert_cmpint (i.cq_zone, ==, 5);
+  g_assert_false (i.cq_zone_known);
+  g_assert_false (i.itu_zone_known);
+  g_assert_true (logfl_cty_lookup (c, "AA6KJ", &i));
+  g_assert_cmpint (i.cq_zone, ==, 4);
+  g_assert_true (i.cq_zone_known);
+  g_assert_true (i.itu_zone_known);
+  g_assert_true (logfl_cty_lookup (c, "4U1WB", &i));
   g_assert_true (i.cq_zone_known);
   g_assert_true (i.itu_zone_known);
 
-  /* Canada spans zones: the plain prefix guesses both … */
+  /* European Russia maps the zone by call area: the header is the rest,
+   * so a plain R is certain, and the listed areas carry their own. */
+  g_assert_true (logfl_cty_lookup (c, "RG6G", &i));
+  g_assert_cmpint (i.cq_zone, ==, 16);
+  g_assert_cmpint (i.itu_zone, ==, 29);
+  g_assert_true (i.cq_zone_known);
+  g_assert_true (i.itu_zone_known);
+  g_assert_true (logfl_cty_lookup (c, "R8XA", &i));
+  g_assert_cmpint (i.cq_zone, ==, 17);
+  g_assert_true (i.cq_zone_known);
+
+  /* Canada's header is not trusted even though VE7 maps by area: the file
+   * keeps VE3 … VE7 at 5/9 against the zone map, so the plain prefix
+   * guesses both … */
   g_assert_true (logfl_cty_lookup (c, "VE3ABC", &i));
   g_assert_cmpint (i.cq_zone, ==, 5);
   g_assert_cmpint (i.itu_zone, ==, 9);
@@ -202,9 +229,19 @@ test_real_file (void)
   g_assert_true (logfl_cty_lookup (c, "3B8CF", &i));
   g_assert_cmpstr (i.country, ==, "Mauritius");
 
-  /* #28 zone certainty over the snapshot: Germany is one zone; the US
-   * spans CQ 3/4/5 through exact calls only, so a plain K is a guess while
-   * AA6KJ's own (4)[7] is not; Canada's VE2FK carries [9] alone. */
+  /* #28 zone certainty over the snapshot: Germany is one zone; European
+   * Russia maps 17 by call area, so a plain R IS 16 (RG6G, heard
+   * 2026-10-24); the US leaves 5 through exact calls only, so a plain K
+   * is a guess while AA6KJ's own (4)[7] is not; Canada's header is not
+   * trusted (VE3 stays at the header's 5 against the zone map), VE2FK
+   * carries [9] alone. */
+  g_assert_true (logfl_cty_lookup (c, "RG6G", &i));
+  g_assert_cmpint (i.cq_zone, ==, 16);
+  g_assert_true (i.cq_zone_known);
+  g_assert_true (i.itu_zone_known);
+  g_assert_true (logfl_cty_lookup (c, "VE3ABC", &i));
+  g_assert_false (i.cq_zone_known);
+  g_assert_false (i.itu_zone_known);
   g_assert_true (logfl_cty_lookup (c, "DL1ABC", &i));
   g_assert_cmpint (i.cq_zone, ==, 14);
   g_assert_true (i.cq_zone_known);

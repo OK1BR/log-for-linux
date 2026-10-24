@@ -21,9 +21,13 @@ typedef struct {
   char     continent[3];
   int      cq_zone, itu_zone;
   gboolean waedc_only;
-  gboolean cq_multi, itu_multi; /* some alias resolves to another zone than
-                                   the entity's: the default alone is then a
-                                   guess for any alias without its own */
+  /* Where the entity's aliases leave the header zone: at the prefix level
+   * (the file maps the zone by call area — European Russia's R1I(17),
+   * China's west) and/or in exact calls only (the US: 2000+ "=CALL(4)"
+   * entries and not one prefix with a zone). Decides whether the header
+   * zone can be trusted for an alias without its own (zone_known). */
+  gboolean cq_dev_prefix, cq_dev_exact;
+  gboolean itu_dev_prefix, itu_dev_exact;
 } CtyEntity;
 
 typedef struct {
@@ -149,13 +153,13 @@ add_alias (LogflCty *c, CtyEntity *e, const char *tok)
       p = close + 1;
     }
 
-  /* The entity spans a zone once any alias lands elsewhere than the
-   * header says. Judged on the effective value, not on the presence of
-   * an override: "=4U1WB(5)[8]" under the US (05/08) changes nothing. */
+  /* The entity leaves its header zone once any alias lands elsewhere.
+   * Judged on the effective value, not on the presence of an override:
+   * "=4U1WB(5)[8]" under the US (05/08) changes nothing. */
   if (a->cq_zone != e->cq_zone)
-    e->cq_multi = TRUE;
+    *(exact ? &e->cq_dev_exact : &e->cq_dev_prefix) = TRUE;
   if (a->itu_zone != e->itu_zone)
-    e->itu_multi = TRUE;
+    *(exact ? &e->itu_dev_exact : &e->itu_dev_prefix) = TRUE;
 
   if (exact && g_str_has_prefix (key, "VER") &&
       strlen (key) == 3 + 8 && !c->version)
@@ -304,6 +308,32 @@ match_candidate (const char *up)
   return out;
 }
 
+/* Is the zone an alias hands out certain (issue #28)? Its own override,
+ * yes. Otherwise the header zone — certain when nothing in the entity ever
+ * leaves it, and when the entity's deviations are written at the prefix
+ * level: the file then maps the zone by call area and the header is the
+ * rest (European Russia: R1I/R8F/R9X … carry 17, every other area IS 16 —
+ * RG6G 2026-10-24). Not certain when the deviations exist only as exact
+ * calls (the US: no prefix carries a zone, K/W/N all read 5 whether in
+ * Maine or California, 2000+ "=CALL" entries patch single stations), nor
+ * for Canada, whose block maps only the far north (VO2, VY0, VY1) and
+ * keeps VE3 … VE7 at the header's 5/9 while the app's own W/VE table
+ * (logfl_waz_zone_of_qth, from the sponsor's list) has ON in 4 and BC in
+ * 3 — a default the file itself contradicts. */
+static gboolean
+zone_known (gboolean own, gboolean dev_prefix, gboolean dev_exact,
+            const CtyEntity *e)
+{
+  static const char *const header_untrusted[] = { "VE", NULL };
+  if (own)
+    return TRUE;
+  if (!dev_prefix && !dev_exact)
+    return TRUE;
+  if (dev_prefix && !g_strv_contains (header_untrusted, e->prefix))
+    return TRUE;
+  return FALSE;
+}
+
 gboolean
 logfl_cty_lookup (LogflCty *c, const char *call, LogflCtyInfo *out)
 {
@@ -343,12 +373,10 @@ logfl_cty_lookup (LogflCty *c, const char *call, LogflCtyInfo *out)
   out->cq_zone = a->cq_zone;
   out->itu_zone = a->itu_zone;
   out->waedc_only = a->ent->waedc_only;
-  /* Certain when this alias says so itself, or when nothing in the entity
-   * ever says otherwise (issue #28: the US block has no prefix-level zone
-   * at all — K, W, N resolve to CQ 5 whether in Maine or California, and
-   * only the exact-call list knows better). */
-  out->cq_zone_known = a->cq_explicit || !a->ent->cq_multi;
-  out->itu_zone_known = a->itu_explicit || !a->ent->itu_multi;
+  out->cq_zone_known = zone_known (a->cq_explicit, a->ent->cq_dev_prefix,
+                                   a->ent->cq_dev_exact, a->ent);
+  out->itu_zone_known = zone_known (a->itu_explicit, a->ent->itu_dev_prefix,
+                                    a->ent->itu_dev_exact, a->ent);
   return TRUE;
 }
 
