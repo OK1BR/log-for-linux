@@ -87,6 +87,9 @@ struct _LogflWindow {
   int cw_wpm;                  /* keyer speed shown in status; 0 = unknown */
   gboolean call_from_spot;     /* Call holds an untouched spot-click prefill */
   double spot_hz;              /* frequency that prefill belongs to */
+  double call_hz;              /* VFO at the last edit of Call; 0 = none
+                                  known — a typed call clears on QSY away
+                                  from it (#30) */
   LogflTciClient *tci;
   LogflWsjtxServer *wsjtx;     /* M6: UDP listener for WSJT-X / JTDX        */
   LogflDupSrv *dup_srv;        /* worked/dup answers for the skimmer        */
@@ -503,6 +506,15 @@ cw_speed_bump (LogflWindow *self, int delta)
  * tuning off it drops the call. */
 #define LOGFL_SPOT_KEEP_HZ 200.0
 
+/* How far the VFO may wander from where a call was TYPED before the row is
+ * considered stale. Wider than the spot's: a spot names an exact frequency,
+ * a typed call only the one the operator happened to be on, and tuning an
+ * SSB signal in for clarity moves a few hundred Hz. 1 kHz keeps that and
+ * drops the row at the next station on the band; the operator confirmed
+ * the value on 2026-10-24 (#30, CQ WW SSB: without this, with no skimmer
+ * spots in SSB, a worked or abandoned call never left the row). */
+#define LOGFL_TYPED_KEEP_HZ 1000.0
+
 /* Forget a spot prefill: either the operator tuned away from the station, or
  * they started typing over it (then the call is theirs, not the spot's, and
  * QSYing must never delete it under their hands). */
@@ -546,6 +558,16 @@ tci_apply_state (gpointer user_data)
        * skipped (clear_entry_row), so nothing yanks the operator out. */
       entry_reset_defaults (self);
     }
+  /* A typed call goes the same way once the operator has tuned well away
+   * from where it was typed (LOGFL_TYPED_KEEP_HZ). The reference is the
+   * VFO at the last keystroke in Call, so a call typed while tuning follows
+   * the tuning; typed with no VFO known, it has no reference and stays.
+   * The whole row resets, as for the spot: an exchange half-copied from a
+   * station that is gone must not haunt the next one. */
+  else if (!self->call_from_spot && self->call_hz > 0 && st->vfo_hz > 0
+           && gtk_editable_get_text (GTK_EDITABLE (self->call))[0] != '\0'
+           && ABS (st->vfo_hz - self->call_hz) > LOGFL_TYPED_KEEP_HZ)
+    entry_reset_defaults (self);
 
   /* Prefill entry from live VFO (entry strip is for new QSOs only). */
   self->syncing_tci = TRUE;
@@ -588,6 +610,19 @@ static void
 on_call_changed_drop_spot (LogflWindow *self)
 {
   spot_prefill_forget (self);
+  /* …and pins the call to where it is being typed: the VFO now, when the
+   * radio is on; an emptied Call (row clear) or no radio leaves no
+   * reference. A spot prefill writes Call too and lands here, but
+   * tci_apply_spot re-arms call_from_spot right after, and that mark takes
+   * precedence in tci_apply_state. */
+  self->call_hz = 0;
+  if (gtk_editable_get_text (GTK_EDITABLE (self->call))[0] != '\0'
+      && self->tci && logfl_tci_client_is_ready (self->tci))
+    {
+      LogflTciState st;
+      logfl_tci_client_get_state (self->tci, &st);
+      self->call_hz = st.vfo_hz;
+    }
 }
 
 /* Typing anywhere else in the QSO row claims it the same as typing over
