@@ -53,6 +53,7 @@ typedef struct {
   char     name[64];           /* uppercased */
   char    *value;              /* g_strndup'd, NULL for EOR/EOH */
   gboolean truncated;          /* declared length ran past EOF */
+  const char *start;           /* the tag's '<' in the input */
 } AdifTag;
 
 static gboolean
@@ -95,6 +96,7 @@ next_tag (const char **pp, const char *end, AdifTag *tag)
             *c = g_ascii_toupper (*c);
           tag->value = NULL;
           tag->truncated = FALSE;
+          tag->start = p;
           *pp = gt + 1;
           return TRUE;
         }
@@ -120,9 +122,38 @@ next_tag (const char **pp, const char *end, AdifTag *tag)
       tag->truncated = (gsize) len > avail;
       gsize take = tag->truncated ? avail : (gsize) len;
       tag->value = g_strndup (val, take);
+      tag->start = p;
       *pp = val + take;
       return TRUE;
     }
+}
+
+/* Splices the dropped tags out of the original bytes instead of writing
+ * the kept ones back: whatever extras holds stays exactly as it was. */
+char *
+logfl_adif_extras_drop (const char *extras, const char *name)
+{
+  if (!extras)
+    return NULL;
+  const char *p = extras, *end = extras + strlen (extras), *kept = extras;
+  GString *out = g_string_new (NULL);
+  AdifTag tag;
+  while (next_tag (&p, end, &tag))
+    {
+      if (g_ascii_strcasecmp (tag.name, name) == 0)
+        {
+          g_string_append_len (out, kept, tag.start - kept);
+          kept = p;
+        }
+      g_free (tag.value);
+    }
+  g_string_append_len (out, kept, end - kept);
+  if (!out->len)
+    {
+      g_string_free (out, TRUE);
+      return NULL;
+    }
+  return g_string_free (out, FALSE);
 }
 
 /* Pending record state while walking a file. */

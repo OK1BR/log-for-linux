@@ -270,6 +270,23 @@ test_dup_skip (void)
   logfl_store_close (s);
 }
 
+/* Dropping a tag from extras: every occurrence, matched on the name alone
+ * (not a prefix — CQZ leaves CQZONE be), case-insensitive, the rest byte
+ * for byte, values with '<' or '>' read by their length. */
+static void
+test_extras_drop (void)
+{
+  char *e = logfl_adif_extras_drop (
+      "<OPERATOR:5>OK1BR<CQZ:1>1<NOTES:5>a<b>c<CQZONE:2>14<cqz:2>14", "CQZ");
+  g_assert_cmpstr (e, ==, "<OPERATOR:5>OK1BR<NOTES:5>a<b>c<CQZONE:2>14");
+  g_free (e);
+  e = logfl_adif_extras_drop ("<OPERATOR:5>OK1BR", "STATE");
+  g_assert_cmpstr (e, ==, "<OPERATOR:5>OK1BR");
+  g_free (e);
+  g_assert_null (logfl_adif_extras_drop ("<CQZ:2>14", "CQZ"));
+  g_assert_null (logfl_adif_extras_drop (NULL, "CQZ"));
+}
+
 /* CQ WW RTTY, the state alone in the exchange: CQZ goes out from the
  * state (logfl_exch_missing_cq_zone); a QSO that carries its CQZ already
  * gets it once, a QSO outside any contest gets none. */
@@ -456,6 +473,7 @@ main (int argc, char **argv)
   g_test_add_func ("/adif/not-adif", test_not_adif);
   g_test_add_func ("/adif/dup-skip", test_dup_skip);
   g_test_add_func ("/adif/export-format", test_export_format);
+  g_test_add_func ("/adif/extras-drop", test_extras_drop);
   g_test_add_func ("/adif/cqz-from-state", test_cqz_from_state);
   g_test_add_func ("/adif/roundtrip-stable", test_roundtrip_stable);
   g_test_add_func ("/adif/file-io", test_file_io);

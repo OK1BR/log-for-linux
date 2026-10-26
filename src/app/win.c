@@ -4682,9 +4682,12 @@ rst_part_empty (const char *s)
 
 /* Apply one cell's text onto q. On failure sets error and leaves q partially
  * modified only for the fields that were assigned before the failure — caller
- * should discard q (we always work on a store_get copy). */
+ * should discard q (we always work on a store_get copy). def is the exchange
+ * of q's contest (NULL outside one): the Rcvd cell's mirrored ADIF tags are
+ * routed through it. */
 static gboolean
-apply_cell_to_qso (LogflQso *q, int col, const char *raw, GError **error)
+apply_cell_to_qso (LogflQso *q, int col, const char *raw,
+                   const LogflExchDef *def, GError **error)
 {
   char *text = g_strdup (raw ? raw : "");
   g_strstrip (text);
@@ -4830,6 +4833,9 @@ apply_cell_to_qso (LogflQso *q, int col, const char *raw, GError **error)
       break;
     case COL_EXCH:
       parse_exch_cell (text, q->srx > 0, &q->srx, &q->srx_string);
+      /* The tags logging mirrored into extras (CQZ, ITUZ, STATE) follow,
+       * or the ADIF export keeps the value as first typed. */
+      logfl_exch_remirror (def, q);
       break;
     default:
       g_free (text);
@@ -4876,7 +4882,12 @@ commit_cell_edit (LogflWindow *self, LogflQsoRow *row, int col,
       return FALSE;
     }
 
-  if (!apply_cell_to_qso (q, col, new_text, &err))
+  /* The table shows the active contest's QSOs only, so its def is the
+   * edited QSO's — the check just keeps a stray row from borrowing it. */
+  const LogflExchDef *def =
+    self->contest && q->contest_ref == self->contest->id ? self->exch_def
+                                                         : NULL;
+  if (!apply_cell_to_qso (q, col, new_text, def, &err))
     {
       toast (self, "Not saved: %s", err->message);
       g_clear_error (&err);

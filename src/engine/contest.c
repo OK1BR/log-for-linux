@@ -3,6 +3,7 @@
  * Part of log-for-linux. GPL-3.0-or-later.
  */
 #include "contest.h"
+#include "adif.h"
 
 #include <string.h>
 
@@ -1112,6 +1113,82 @@ logfl_exch_missing_cq_zone (const LogflExchDef *def, LogflCty *cty,
     }
   g_strfreev (tok);
   return z;
+}
+
+/* The store's own exchange columns — a value routed there leaves no tag in
+ * extras (route_value). */
+static gboolean
+store_column (const char *target)
+{
+  return g_str_equal (target, "SRX") || g_str_equal (target, "STX")
+         || g_str_equal (target, "SRX_STRING")
+         || g_str_equal (target, "STX_STRING");
+}
+
+void
+logfl_exch_remirror (const LogflExchDef *def, LogflQso *qso)
+{
+  if (!def || !qso)
+    return;
+
+  /* Every tag the def can mirror into goes first, also one whose value is
+   * gone: IARU "28" edited to "DARC" takes its ITUZ along. A tag of a store
+   * column stays — WSJT-X hands its exchange over as <SRX_STRING> in
+   * extras, and no field owns that. */
+  for (guint i = 0; i < def->fields->len; i++)
+    {
+      const LogflExchField *f = def->fields->pdata[i];
+      const char *names[] = { f->adif_num, f->adif_text };
+      for (guint k = 0; k < G_N_ELEMENTS (names); k++)
+        if (!store_column (names[k]))
+          {
+            char *rest = logfl_adif_extras_drop (qso->extras, names[k]);
+            g_free (qso->extras);
+            qso->extras = rest;
+          }
+    }
+
+  /* Then each tag again from the exchange as it reads now, routed the way
+   * logfl_exch_apply routes it. srx_string is one token per field that was
+   * sent, in field order — the empty ones were skipped — and the serial
+   * sits in srx, taken by the first field that routes digits there. A
+   * field that wants digits passes a text token on while a later field is
+   * left to take it: CQ WW RTTY "MA" alone is the state of a W/VE that
+   * sent no zone (logfl_exch_missing_cq_zone reads it the same way), and
+   * its STATE tag must survive the edit. */
+  char **tok = exch_tokens (qso);
+  gboolean serial_open = qso->srx > 0;
+  guint t = 0;
+  GString *e = g_string_new (qso->extras);
+  for (guint i = 0; i < def->fields->len && tok[t]; i++)
+    {
+      const LogflExchField *f = def->fields->pdata[i];
+      if (serial_open && f->type != LOGFL_EXCH_TEXT
+          && g_str_equal (f->adif_num, "SRX"))
+        {
+          serial_open = FALSE;
+          continue;
+        }
+      const char *v = tok[t];
+      gboolean digits = all_digits (v);
+      if (!digits && i + 1 < def->fields->len
+          && (f->type == LOGFL_EXCH_NUMBER || f->type == LOGFL_EXCH_SERIAL))
+        continue;
+      t++;
+      const char *target = f->type != LOGFL_EXCH_TEXT && digits
+                             ? f->adif_num : f->adif_text;
+      if (!store_column (target))
+        g_string_append_printf (e, "<%s:%zu>%s", target, strlen (v), v);
+    }
+  g_strfreev (tok);
+  g_free (qso->extras);
+  if (e->len)
+    qso->extras = g_string_free (e, FALSE);
+  else
+    {
+      g_string_free (e, TRUE);
+      qso->extras = NULL;
+    }
 }
 
 static int

@@ -43,6 +43,10 @@ gboolean logfl_adif_export_file (LogflStore *s, const char *path,
                                  const LogflStoreQuery *query,
                                  guint *n_exported, GError **error);
 
+/* extras (LogflQso.extras) without any tag of that name (case-insensitive),
+ * the rest byte for byte; NULL when nothing is left. Caller frees. */
+char *logfl_adif_extras_drop (const char *extras, const char *name);
+
 /* ADIF band name ("40m") for a frequency in MHz, NULL when outside every
  * amateur allocation the table knows. */
 const char *logfl_adif_band_for_freq (double mhz);

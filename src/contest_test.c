@@ -790,6 +790,117 @@ test_exch_apply (void)
   g_free (nr);
 }
 
+/* What a commit of the table's Rcvd cell does to a QSO without a serial:
+ * the typed text becomes srx_string, then the mirrored tags follow. */
+static void
+edit_rcvd (const LogflExchDef *def, LogflQso *q, const char *srx_string)
+{
+  g_free (q->srx_string);
+  q->srx_string = g_strdup (srx_string);
+  logfl_exch_remirror (def, q);
+}
+
+/* #33: the tags logging mirrored into extras follow an edit of the
+ * received exchange — replaced, never appended, and dropped when the value
+ * no longer routes there. */
+static void
+test_exch_remirror (void)
+{
+  GError *err = NULL;
+
+  /* CQ WW: EA1KR's zone logged as 1, corrected to 14 (2026-10-26). A second
+   * pass changes nothing; tags the def does not own stay byte for byte —
+   * WSJT-X's <SRX_STRING> in extras too, and a value holding '<'. */
+  LogflExchDef *def =
+    logfl_exch_def_parse (preset_named ("CQ WW")->exch_def, &err);
+  g_assert_no_error (err);
+  LogflQso *q = logfl_qso_new ();
+  const char *one[] = { "1" };
+  logfl_exch_apply (def, one, 1, NULL, 0, q);
+  g_assert_cmpstr (q->extras, ==, "<CQZ:1>1");
+  edit_rcvd (def, q, "14");
+  g_assert_cmpstr (q->srx_string, ==, "14");
+  g_assert_cmpstr (q->extras, ==, "<CQZ:2>14");
+  logfl_exch_remirror (def, q);
+  g_assert_cmpstr (q->extras, ==, "<CQZ:2>14");
+  g_free (q->extras);
+  q->extras = g_strdup ("<OPERATOR:5>OK1BR<CQZ:2>14<SRX_STRING:3>a<b");
+  edit_rcvd (def, q, "15");
+  g_assert_cmpstr (q->extras, ==,
+                   "<OPERATOR:5>OK1BR<SRX_STRING:3>a<b<CQZ:2>15");
+  /* Text in the zone slot: no zone, no tag. */
+  edit_rcvd (def, q, "DX");
+  g_assert_cmpstr (q->extras, ==, "<OPERATOR:5>OK1BR<SRX_STRING:3>a<b");
+  /* No def (a QSO outside any contest): extras untouched. */
+  edit_rcvd (NULL, q, "16");
+  g_assert_cmpstr (q->extras, ==, "<OPERATOR:5>OK1BR<SRX_STRING:3>a<b");
+  logfl_qso_free (q);
+  logfl_exch_def_free (def);
+
+  /* IARU HF: a zone mirrors into ITUZ, a society does not — the tag goes
+   * when the exchange turns to text and comes back with digits. */
+  def = logfl_exch_def_parse (preset_named ("IARU HF")->exch_def, &err);
+  g_assert_no_error (err);
+  q = logfl_qso_new ();
+  const char *zone28[] = { "28" };
+  logfl_exch_apply (def, zone28, 1, NULL, 0, q);
+  g_assert_cmpstr (q->extras, ==, "<ITUZ:2>28");
+  edit_rcvd (def, q, "DARC");
+  g_assert_null (q->extras);
+  edit_rcvd (def, q, "27");
+  g_assert_cmpstr (q->extras, ==, "<ITUZ:2>27");
+  logfl_qso_free (q);
+  logfl_exch_def_free (def);
+
+  /* CQ WW RTTY, zone + state: "05 MA" edited to a DX zone loses STATE. A
+   * W/VE that sent the state alone keeps it — the zone field passes the
+   * text on — and gains CQZ once a zone is typed in front. */
+  def = logfl_exch_def_parse (preset_named ("CQ WW RTTY")->exch_def, &err);
+  g_assert_no_error (err);
+  q = logfl_qso_new ();
+  const char *w1[] = { "05", "MA" };
+  logfl_exch_apply (def, w1, 2, NULL, 0, q);
+  g_assert_cmpstr (q->extras, ==, "<CQZ:2>05<STATE:2>MA");
+  edit_rcvd (def, q, "05 NH");
+  g_assert_cmpstr (q->extras, ==, "<CQZ:2>05<STATE:2>NH");
+  edit_rcvd (def, q, "14");
+  g_assert_cmpstr (q->extras, ==, "<CQZ:2>14");
+  logfl_qso_free (q);
+  q = logfl_qso_new ();
+  const char *state_only[] = { NULL, "MA" };
+  logfl_exch_apply (def, state_only, 2, NULL, 0, q);
+  g_assert_cmpstr (q->srx_string, ==, "MA");
+  g_assert_cmpstr (q->extras, ==, "<STATE:2>MA");
+  edit_rcvd (def, q, "NH");
+  g_assert_cmpstr (q->extras, ==, "<STATE:2>NH");
+  edit_rcvd (def, q, "5 NH");
+  g_assert_cmpstr (q->extras, ==, "<CQZ:1>5<STATE:2>NH");
+  logfl_qso_free (q);
+  logfl_exch_def_free (def);
+
+  /* A serial between the fields: it sits in srx, not among the tokens, and
+   * the field routing digits to SRX takes it — the district behind it
+   * stays aligned. Without a serial the text passes the serial field. */
+  def = logfl_exch_def_parse (
+      "[exchange]\ntx_serial=true\nfields=zone;nr;dist;\n"
+      "[field:zone]\nlabel=Zone\ntype=number\nadif_num=CQZ\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\n"
+      "[field:dist]\nlabel=District\ntype=text\nadif_text=STATE\n", &err);
+  g_assert_no_error (err);
+  q = logfl_qso_new ();
+  const char *full[] = { "15", "007", "apa" };
+  logfl_exch_apply (def, full, 3, NULL, 0, q);
+  g_assert_cmpint (q->srx, ==, 7);
+  g_assert_cmpstr (q->extras, ==, "<CQZ:2>15<STATE:3>APA");
+  edit_rcvd (def, q, "16 APB");
+  g_assert_cmpstr (q->extras, ==, "<CQZ:2>16<STATE:3>APB");
+  q->srx = 0;
+  edit_rcvd (def, q, "16 APC");
+  g_assert_cmpstr (q->extras, ==, "<CQZ:2>16<STATE:3>APC");
+  logfl_qso_free (q);
+  logfl_exch_def_free (def);
+}
+
 /* --- store -------------------------------------------------------------- */
 
 static void
@@ -1988,6 +2099,79 @@ test_adif_export_contest_id_by_mode (void)
   logfl_store_close (s);
 }
 
+/* Logs one exchange the way the entry row does, edits the Rcvd text the
+ * way the table cell does, both through the store. */
+static void
+log_then_edit (LogflStore *s, const LogflContest *c, const char *call,
+               const char *mode, gint64 ts, const char *const *vals,
+               guint n, const char *edited)
+{
+  GError *err = NULL;
+  g_autoptr (LogflExchDef) def = logfl_exch_def_parse (c->exch_def, &err);
+  g_assert_no_error (err);
+  LogflQso *q = mk_qso (call, "20m", mode, ts);
+  q->contest_ref = c->id;
+  logfl_exch_apply (def, vals, n, NULL, 0, q);
+  g_assert_true (logfl_store_add (s, q, &err));
+  g_assert_no_error (err);
+  LogflQso *e = logfl_store_get (s, q->id, &err);
+  g_assert_no_error (err);
+  edit_rcvd (def, e, edited);
+  g_assert_true (logfl_store_update (s, e, &err));
+  g_assert_no_error (err);
+  logfl_qso_free (e);
+  logfl_qso_free (q);
+}
+
+static guint
+count_of (const char *hay, const char *needle)
+{
+  guint n = 0;
+  for (const char *p = hay; (p = strstr (p, needle)); p++)
+    n++;
+  return n;
+}
+
+/* #33 where it was seen: the ADIF export after a Rcvd edit carries the
+ * corrected tag, once. CQ WW: EA1KR 1 → 14. CQ WW RTTY: K1AB "05 MA"
+ * corrected to the state alone loses its CQZ tag, and the exporter fills
+ * the zone from the state instead (logfl_exch_missing_cq_zone) — one CQZ,
+ * not the stale 05 next to it. */
+static void
+test_adif_export_after_rcvd_edit (void)
+{
+  GError *err = NULL;
+  LogflStore *s = mem_store ();
+  LogflContest *ww = mk_contest (s, "CQ WW SSB 2026", "CQ-WW",
+                                 preset_named ("CQ WW")->exch_def);
+  const char *one[] = { "1" };
+  log_then_edit (s, ww, "EA1KR", "SSB", 1761300000, one, 1, "14");
+  LogflContest *ry = mk_contest (s, "CQ WW RTTY 2026", "CQ-WW-RTTY",
+                                 preset_named ("CQ WW RTTY")->exch_def);
+  const char *w1[] = { "05", "MA" };
+  log_then_edit (s, ry, "K1AB", "RTTY", 1761300100, w1, 2, "MA");
+
+  guint n = 0;
+  LogflStoreQuery all = { .contest = LOGFL_QUERY_CONTEST_ALL };
+  char *data = logfl_adif_export_data (s, &all, &n, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (n, ==, 2);
+
+  char *rec = adif_record_of (data, "<CALL:5>EA1KR");
+  g_assert_nonnull (strstr (rec, "<SRX_STRING:2>14<CQZ:2>14"));
+  g_assert_cmpuint (count_of (rec, "<CQZ:"), ==, 1);
+  g_free (rec);
+  rec = adif_record_of (data, "<CALL:4>K1AB");
+  g_assert_nonnull (strstr (rec, "<SRX_STRING:2>MA<STATE:2>MA<CQZ:1>5"));
+  g_assert_cmpuint (count_of (rec, "<CQZ:"), ==, 1);
+  g_free (rec);
+  g_free (data);
+
+  logfl_contest_free (ry);
+  logfl_contest_free (ww);
+  logfl_store_close (s);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -2002,6 +2186,7 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/backfill-cab", test_backfill_cab);
   g_test_add_func ("/contest/presets", test_presets);
   g_test_add_func ("/contest/exch-apply", test_exch_apply);
+  g_test_add_func ("/contest/exch-remirror", test_exch_remirror);
   g_test_add_func ("/contest/store-crud", test_contest_crud);
   g_test_add_func ("/contest/migrate-v1", test_migrate_v1);
   g_test_add_func ("/contest/serial-dup-scoping", test_serial_dup_scoping);
@@ -2012,6 +2197,8 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/id-for-mode", test_contest_id_for_mode);
   g_test_add_func ("/contest/adif-contest-id-by-mode",
                    test_adif_export_contest_id_by_mode);
+  g_test_add_func ("/contest/adif-export-after-rcvd-edit",
+                   test_adif_export_after_rcvd_edit);
   g_test_add_func ("/contest/score/roundtrip", test_score_roundtrip);
   g_test_add_func ("/contest/score/errors", test_score_errors);
   g_test_add_func ("/contest/score/wpx-prefix", test_wpx_prefix);

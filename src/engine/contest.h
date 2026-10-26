@@ -232,6 +232,17 @@ void logfl_exch_apply (const LogflExchDef *def,
                        const char *my_exch, guint serial,
                        LogflQso *qso);
 
+/* Brings the ADIF tags the received exchange mirrors into extras (CQZ,
+ * ITUZ, STATE — whatever the def routes outside the store columns) back in
+ * line with srx/srx_string after the operator edited those (the table's
+ * Rcvd cell): the def's tags are dropped and set again from the exchange,
+ * so none stays stale and none doubles. srx/srx_string are left as they
+ * are; a NULL def changes nothing. Only the received side has tags — the
+ * sent exchange lives in stx/stx_string alone. 2026-10-26: EA1KR, zone
+ * corrected 1 → 14 in the table, went out in ADIF as
+ * <SRX_STRING:2>14<CQZ:1>1. */
+void logfl_exch_remirror (const LogflExchDef *def, LogflQso *qso);
+
 /* "1" → "001" — the on-air serial convention (grows past 999 naturally). */
 char *logfl_exch_serial_format (guint serial);
 
