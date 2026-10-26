@@ -35,6 +35,25 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.0" date="2026-10-26">
+      <description>
+        <p>
+          Contest preset for CQ WW RTTY: zone plus the W/VE state, the
+          state counted as a multiplier, the sponsor's DX placeholder in the
+          Cabrillo QSO line. The Cabrillo dialog offers only the categories
+          the contest's own rules allow, and the ADIF CONTEST_ID and
+          Cabrillo CONTEST follow the mode of the QSO (CQ-WW-SSB, SAC-SSB).
+          The entry row prefills the received CQ/ITU zone from the call
+          where cty.dat is certain, puts the reports back to 59/599 after
+          each QSO and clears a typed call once you tune more than 1 kHz
+          away. The Pts/Mult columns fill on every row as you log, and an
+          edit of the received exchange in the table now reaches the ADIF
+          export. File dialogs open in a folder that exists, and every
+          package carries the GPL text. Packages are built on current
+          bases: Ubuntu 26.04+, Fedora 44+, AppImage with glibc 2.43+.
+        </p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-09-18">
       <description>
         <p>

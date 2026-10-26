@@ -8,15 +8,16 @@ skimmer), sharing their technology and architecture: a headless, GLib-only
 engine under a GTK4/libadwaita front-end, plain C11, meson, SQLite. Successor
 of the retired Rust prototype (BRlog).
 
-> **Status: 0.3.1 — a usable daily logbook.** Everything below is implemented,
+> **Status: 0.4.0 — a usable daily logbook.** Everything below is implemented,
 > covered by offline test gates, and was run in anger through full
-> **EUHF Challenge 2026**, **WAE DX Contest CW 2026**, **SARTG WW RTTY 2026**
-> and **YO DX HF 2026** deployments — live entry, macros, serials, dup
+> **EUHF Challenge 2026**, **WAE DX Contest CW 2026**, **SARTG WW RTTY 2026**,
+> **YO DX HF 2026**, **SAC CW 2026** and **CQ WW RTTY 2026** deployments and
+> the first day of **CQ WW SSB 2026** — live entry, macros, serials, dup
 > checking, per-contest QSO validity and the Cabrillo submissions all came
-> from this app. The RTTY keying, new in 0.3.0, had its first on-air pass in
-> SARTG. The live score, new in 0.3.1, was checked against the YO DX HF log
-> after the contest — its first run during a contest is still ahead, and so
-> is the SAC preset's.
+> from this app, and from SAC on the live score too — there the sponsor's
+> robot matched the claimed score exactly. One path new in 0.4.0 has not met
+> a real QSO yet: the CQ zone taken from a W/VE state that came without it
+> (CQ WW RTTY).
 
 ![Log for Linux — EUHFC 2026, CW on 20 m: entry row pre-filled from the radio over TCI, macro strip, live log](docs/img/main-window.png)
 
@@ -59,7 +60,9 @@ entry row always pre-filled with the live VFO — nearly free.
   stays clean — contest QSOs live in their section, while worked-B4 and
   statistics stay global
 - Per-contest **sent serials**, whole-contest dup rule (call+band+mode),
-  received-exchange fields in the entry row, exchange column in the table
+  received-exchange fields in the entry row — the CQ/ITU zone prefilled from
+  the call where cty.dat is certain — exchange column in the table; ADIF
+  CONTEST_ID and Cabrillo CONTEST follow the QSO's mode (CQ-WW-SSB, SAC-SSB)
 - **Cabrillo v3 export** of the active contest: category dialog with
   dropdowns (persisted) that offer what the contest's own rules allow — a
   preset carries its sponsor's category values, SAC's even by seat (inside
