@@ -1,17 +1,23 @@
 /*
  * log-tci-test — offline gate for the TCI client (M4). No radio, no GUI.
  *
- * Mock TCI server (libwebsockets, sdr-for-linux wire dialect) on an
- * ephemeral 127.0.0.1 port drives logfl_tci_client:
+ * Mock TCI server (libwebsockets, sdr-for-linux wire dialect) with the two
+ * listeners the real server has since sdr-for-linux#46 — TCP on an
+ * ephemeral 127.0.0.1 port and a Unix socket in a scratch directory —
+ * drives logfl_tci_client over each transport in turn (#32):
  *   - handshake: batched init ending ready; → start() returns with
  *     protocol/device/vfo/mode filled,
  *   - live vfo: / modulation: broadcasts fire the state callback,
  *   - tune() queues a well-formed vfo:0,0,<hz>; command,
- *   - stop() leaves the client not-ready.
+ *   - stop() leaves the client not-ready;
+ * plus the server-string parser, the candidate order (a dead socket falls
+ * through to TCP at once, not after the handshake timeout), and the default
+ * order picking the socket under a scratch $XDG_RUNTIME_DIR.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */
 #include <glib.h>
+#include <glib/gstdio.h>
 #include <libwebsockets.h>
 #include <string.h>
 
@@ -36,6 +42,16 @@ static volatile gint s_push_rtty;
 static volatile gint s_push_wpm;
 static volatile gint s_push_spot;
 static volatile gint s_push_nul;
+
+/* Where the mock listens, in the client's own spelling. The socket lives
+ * under a scratch $XDG_RUNTIME_DIR (set in main before GLib caches it) at
+ * the path the client's default order looks at, so the auto test is the
+ * real lookup. ⛔ Never the live runtime dir: lws unlinks whatever sits at
+ * the path before it binds, and would steal a running radio's socket. */
+static char  s_tcp_addr[64];                       /* ws://127.0.0.1:<port> */
+static char  s_unix_addr[LOGFL_TCI_SOCK_PATH_MAX + 8];   /* unix:<path> */
+static char  s_unix_path[LOGFL_TCI_SOCK_PATH_MAX]; /* lws keeps the pointer */
+static char *s_runtime_dir;                        /* scratch XDG_RUNTIME_DIR */
 
 static void
 srv_queue_text (const char *txt)
@@ -190,6 +206,100 @@ server_thread (gpointer data)
   return NULL;
 }
 
+static GThread *s_thread;
+
+/* Both listeners in one context, the way sdr-for-linux binds them: explicit
+ * vhosts, the protocol table on each. TCP on 127.0.0.1 only (a gate must
+ * not open a LAN port) at an ephemeral port — a fixed one EADDRINUSEs on
+ * re-runs while TIME_WAIT lingers. */
+static void
+mock_start (void)
+{
+  g_mutex_init (&s_lock);
+  g_queue_init (&s_out);
+  s_rx = g_string_new (NULL);
+  g_atomic_int_set (&s_run, 1);
+  g_atomic_int_set (&s_push_vfo, 0);
+  g_atomic_int_set (&s_push_mode, 0);
+  g_atomic_int_set (&s_push_rtty, 0);
+  g_atomic_int_set (&s_push_wpm, 0);
+  g_atomic_int_set (&s_push_spot, 0);
+  g_atomic_int_set (&s_push_nul, 0);
+  s_wsi = NULL;
+
+  lws_set_log_level (LLL_ERR, NULL);
+  struct lws_context_creation_info info;
+  memset (&info, 0, sizeof info);
+  info.port = CONTEXT_PORT_NO_LISTEN;
+  info.options = LWS_SERVER_OPTION_EXPLICIT_VHOSTS;
+  info.gid = (gid_t) -1;
+  info.uid = (uid_t) -1;
+  s_ctx = lws_create_context (&info);
+  g_assert_nonnull (s_ctx);
+
+  struct lws_context_creation_info vi;
+  memset (&vi, 0, sizeof vi);
+  vi.vhost_name = "tcp";
+  vi.port = 0;
+  vi.iface = "127.0.0.1";
+  vi.options = LWS_SERVER_OPTION_DISABLE_IPV6 |
+               LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;
+  vi.protocols = s_protocols;
+  struct lws_vhost *vh_tcp = lws_create_vhost (s_ctx, &vi);
+  g_assert_nonnull (vh_tcp);
+  int port = lws_get_vhost_listen_port (vh_tcp);
+  g_assert_cmpint (port, >, 0);
+  g_snprintf (s_tcp_addr, sizeof s_tcp_addr, "ws://127.0.0.1:%d", port);
+
+  /* The socket at the client's default path under the scratch runtime
+   * dir; lws keeps the iface pointer and unlinks it at destroy, so the
+   * path lives in a static. */
+  char *dir = g_build_filename (s_runtime_dir, "sdr-for-linux", NULL);
+  g_assert_cmpint (g_mkdir_with_parents (dir, 0700), ==, 0);
+  char *sock = logfl_tci_default_socket_path ();
+  g_assert_true (g_str_has_prefix (sock, s_runtime_dir));
+  g_assert_cmpuint (strlen (sock), <, sizeof s_unix_path);
+  g_strlcpy (s_unix_path, sock, sizeof s_unix_path);
+  g_snprintf (s_unix_addr, sizeof s_unix_addr, "unix:%s", s_unix_path);
+  g_free (sock);
+  g_free (dir);
+  memset (&vi, 0, sizeof vi);
+  vi.vhost_name = "unix";
+  vi.port = 0;
+  vi.iface = s_unix_path;
+  vi.options = LWS_SERVER_OPTION_UNIX_SOCK;
+  vi.protocols = s_protocols;
+  struct lws_vhost *vh_unix = lws_create_vhost (s_ctx, &vi);
+  g_assert_nonnull (vh_unix);
+  g_assert_true (g_file_test (s_unix_path, G_FILE_TEST_EXISTS));
+
+  s_thread = g_thread_new ("mock-tci", server_thread, NULL);
+}
+
+static void
+mock_stop (void)
+{
+  g_atomic_int_set (&s_run, 0);
+  lws_cancel_service (s_ctx);
+  g_thread_join (s_thread);
+  s_thread = NULL;
+  lws_context_destroy (s_ctx);
+  s_ctx = NULL;
+  /* lws unlinks the socket file at destroy — the real server relies on
+   * the same, so a stale file never survives a clean stop. */
+  g_assert_false (g_file_test (s_unix_path, G_FILE_TEST_EXISTS));
+
+  Msg *m;
+  while ((m = g_queue_pop_head (&s_out)) != NULL)
+    {
+      g_free (m->data);
+      g_free (m);
+    }
+  g_string_free (s_rx, TRUE);
+  s_rx = NULL;
+  g_mutex_clear (&s_lock);
+}
+
 /* ---- client capture ---------------------------------------------------- */
 
 static GMutex c_lock;
@@ -260,18 +370,91 @@ test_mode_map (void)
   g_assert_null (logfl_tci_mode_to_log (NULL));
 }
 
+/* The three spellings the Server row takes, and what it must refuse. */
 static void
-test_handshake_and_live (void)
+test_endpoint_parse (void)
 {
-  g_mutex_init (&s_lock);
-  g_queue_init (&s_out);
-  s_rx = g_string_new (NULL);
-  g_atomic_int_set (&s_run, 1);
-  g_atomic_int_set (&s_push_vfo, 0);
-  g_atomic_int_set (&s_push_mode, 0);
-  g_atomic_int_set (&s_push_rtty, 0);
-  g_atomic_int_set (&s_push_wpm, 0);
-  g_atomic_int_set (&s_push_spot, 0);
+  LogflTciEndpoint ep;
+  char *s;
+
+  g_assert_true (logfl_tci_endpoint_parse (
+      "unix:/run/user/1000/sdr-for-linux/tci.sock", &ep));
+  g_assert_true (ep.unix_sock);
+  g_assert_cmpstr (ep.path, ==, "/run/user/1000/sdr-for-linux/tci.sock");
+  s = logfl_tci_endpoint_to_string (&ep);
+  g_assert_cmpstr (s, ==, "unix:/run/user/1000/sdr-for-linux/tci.sock");
+  g_free (s);
+
+  g_assert_true (logfl_tci_endpoint_parse ("ws://192.168.1.20:40001", &ep));
+  g_assert_false (ep.unix_sock);
+  g_assert_cmpstr (ep.host, ==, "192.168.1.20");
+  g_assert_cmpint (ep.port, ==, 40001);
+
+  /* Port defaults, a pasted URL's trailing slash, surrounding blanks. */
+  g_assert_true (logfl_tci_endpoint_parse ("ws://radio.lan", &ep));
+  g_assert_cmpstr (ep.host, ==, "radio.lan");
+  g_assert_cmpint (ep.port, ==, LOGFL_TCI_DEFAULT_PORT);
+  g_assert_true (logfl_tci_endpoint_parse ("  ws://radio.lan:40002/  ", &ep));
+  g_assert_cmpstr (ep.host, ==, "radio.lan");
+  g_assert_cmpint (ep.port, ==, 40002);
+
+  /* The old Host field's spelling: bare host, bare host:port. */
+  g_assert_true (logfl_tci_endpoint_parse ("127.0.0.1", &ep));
+  g_assert_false (ep.unix_sock);
+  g_assert_cmpstr (ep.host, ==, "127.0.0.1");
+  g_assert_cmpint (ep.port, ==, LOGFL_TCI_DEFAULT_PORT);
+  g_assert_true (logfl_tci_endpoint_parse ("10.0.0.5:40005", &ep));
+  g_assert_cmpstr (ep.host, ==, "10.0.0.5");
+  g_assert_cmpint (ep.port, ==, 40005);
+  s = logfl_tci_endpoint_to_string (&ep);
+  g_assert_cmpstr (s, ==, "ws://10.0.0.5:40005");
+  g_free (s);
+
+  /* Refused: empty, relative or abstract socket, TLS, bad port, a path
+   * where a host goes, a socket path longer than sun_path. */
+  memset (&ep, 0xAA, sizeof ep);
+  g_assert_false (logfl_tci_endpoint_parse ("", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("   ", &ep));
+  g_assert_false (logfl_tci_endpoint_parse (NULL, &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("unix:", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("unix:tci.sock", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("unix:@tci", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("wss://127.0.0.1:40001", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("http://127.0.0.1:40001", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("ws://127.0.0.1:0", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("ws://127.0.0.1:70000", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("ws://127.0.0.1:abc", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("ws://127.0.0.1:", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("ws://", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("ws://host/path", &ep));
+  g_assert_false (logfl_tci_endpoint_parse ("/run/user/1000/tci.sock", &ep));
+  char *longpath = g_strnfill (LOGFL_TCI_SOCK_PATH_MAX + 4, 'x');
+  longpath[0] = '/';
+  char *longaddr = g_strdup_printf ("unix:%s", longpath);
+  g_assert_false (logfl_tci_endpoint_parse (longaddr, &ep));
+  g_free (longaddr);
+  g_free (longpath);
+  /* A refusal leaves *out alone. */
+  g_assert_cmpint ((unsigned char) ep.path[0], ==, 0xAA);
+
+  /* The default socket path is the radio's: under the runtime dir. */
+  char *def = logfl_tci_default_socket_path ();
+  g_assert_true (g_str_has_suffix (def, "/sdr-for-linux/tci.sock"));
+  g_assert_true (g_str_has_prefix (def, g_get_user_runtime_dir ()));
+  g_free (def);
+}
+
+/* The whole handshake / live / tune suite over one transport — the mock's
+ * TCP port or its Unix socket, by the test path's data. The two runs must
+ * see the same wire behaviour: WebSocket framing does not care. */
+static void
+test_handshake_and_live (gconstpointer data)
+{
+  const char *transport = data;
+  mock_start ();
+  const char *server = strcmp (transport, "unix") == 0 ? s_unix_addr
+                                                        : s_tcp_addr;
+
   g_atomic_int_set (&c_states, 0);
   g_atomic_int_set (&c_closed, 0);
   c_last_vfo = 0;
@@ -279,32 +462,18 @@ test_handshake_and_live (void)
   c_spots = g_ptr_array_new_with_free_func (g_free);
   g_mutex_init (&c_lock);
 
-  lws_set_log_level (LLL_ERR, NULL);
-  struct lws_context_creation_info info;
-  memset (&info, 0, sizeof info);
-  info.port = 0;               /* ephemeral — a fixed port EADDRINUSEs on
-                                * re-runs while TIME_WAIT lingers */
-  info.protocols = s_protocols;
-  info.gid = (gid_t) -1;
-  info.uid = (uid_t) -1;
-  info.options = LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;
-  s_ctx = lws_create_context (&info);
-  g_assert_nonnull (s_ctx);
-  struct lws_vhost *vh = lws_get_vhost_by_name (s_ctx, "default");
-  g_assert_nonnull (vh);
-  int port = lws_get_vhost_listen_port (vh);
-  g_assert_cmpint (port, >, 0);
-  GThread *srv_thr = g_thread_new ("mock-tci", server_thread, NULL);
-
-  LogflTciClient *cli = logfl_tci_client_new ("127.0.0.1", (guint16) port);
+  LogflTciClient *cli = logfl_tci_client_new (server);
   logfl_tci_client_set_state_cb (cli, on_state, NULL);
   logfl_tci_client_set_closed_cb (cli, on_closed, NULL);
   logfl_tci_client_set_spot_cb (cli, on_spot, NULL);
 
+  g_assert_null (logfl_tci_client_endpoint (cli));
   GError *err = NULL;
   g_assert_true (logfl_tci_client_start (cli, &err));
   g_assert_no_error (err);
   g_assert_true (logfl_tci_client_is_ready (cli));
+  /* The link reports the address it took, in the canonical spelling. */
+  g_assert_cmpstr (logfl_tci_client_endpoint (cli), ==, server);
 
   /* Initial emit_state after handshake. */
   g_assert_true (wait_states (1, 2000));
@@ -451,44 +620,127 @@ test_handshake_and_live (void)
 
   logfl_tci_client_stop (cli);
   g_assert_false (logfl_tci_client_is_ready (cli));
+  g_assert_null (logfl_tci_client_endpoint (cli));
   logfl_tci_client_free (cli);
 
-  g_atomic_int_set (&s_run, 0);
-  lws_cancel_service (s_ctx);
-  g_thread_join (srv_thr);
-  lws_context_destroy (s_ctx);
-  s_ctx = NULL;
-
-  Msg *m;
-  while ((m = g_queue_pop_head (&s_out)) != NULL)
-    {
-      g_free (m->data);
-      g_free (m);
-    }
-  g_string_free (s_rx, TRUE);
   g_ptr_array_free (c_spots, TRUE);
-  g_mutex_clear (&s_lock);
   g_mutex_clear (&c_lock);
+  mock_stop ();
 }
 
+/* The candidate order: a socket nobody serves fails inside connect(), so
+ * the client is on the TCP candidate well inside the per-candidate
+ * handshake timeout — the default order must not cost a radio on TCP
+ * three seconds per reconnect. */
+static void
+test_order_fallback (void)
+{
+  mock_start ();
+  char *absent = g_build_filename (s_runtime_dir, "nobody", "tci.sock", NULL);
+  char *absent_addr = g_strdup_printf ("unix:%s", absent);
+  const char *order[] = { absent_addr, s_tcp_addr, NULL };
+  LogflTciClient *cli = logfl_tci_client_new_order (order);
+
+  gint64 t0 = g_get_monotonic_time ();
+  GError *err = NULL;
+  g_assert_true (logfl_tci_client_start (cli, &err));
+  g_assert_no_error (err);
+  gint64 took_ms = (g_get_monotonic_time () - t0) / 1000;
+  g_assert_cmpint (took_ms, <, 1500);
+  g_assert_cmpstr (logfl_tci_client_endpoint (cli), ==, s_tcp_addr);
+  g_assert_true (logfl_tci_client_is_ready (cli));
+
+  logfl_tci_client_free (cli);
+  g_free (absent_addr);
+  g_free (absent);
+  mock_stop ();
+}
+
+/* The default order with no server string: the socket at the radio's
+ * default path wins (the mock's TCP port is ephemeral, so a wrong turn to
+ * ws://127.0.0.1:40001 would find nothing — or, with a live radio on the
+ * machine, a device that is not MockLogSDR). */
+static void
+test_default_order (void)
+{
+  mock_start ();
+  LogflTciClient *cli = logfl_tci_client_new (NULL);
+  GError *err = NULL;
+  g_assert_true (logfl_tci_client_start (cli, &err));
+  g_assert_no_error (err);
+  g_assert_cmpstr (logfl_tci_client_endpoint (cli), ==, s_unix_addr);
+  LogflTciState st;
+  logfl_tci_client_get_state (cli, &st);
+  g_assert_cmpstr (st.device, ==, "MockLogSDR");
+  logfl_tci_client_free (cli);
+
+  /* Blank is the same as NULL. */
+  cli = logfl_tci_client_new ("   ");
+  g_assert_true (logfl_tci_client_start (cli, &err));
+  g_assert_no_error (err);
+  g_assert_cmpstr (logfl_tci_client_endpoint (cli), ==, s_unix_addr);
+  logfl_tci_client_free (cli);
+  mock_stop ();
+}
+
+/* Nothing answers: the error names every candidate and why. A malformed
+ * server string is its own error, before any dial. */
 static void
 test_connect_refused (void)
 {
-  LogflTciClient *cli = logfl_tci_client_new ("127.0.0.1", 9); /* discard */
+  char *absent = g_build_filename (s_runtime_dir, "nobody", "tci.sock", NULL);
+  char *absent_addr = g_strdup_printf ("unix:%s", absent);
+  const char *order[] = { absent_addr, "ws://127.0.0.1:9", NULL }; /* discard */
+  LogflTciClient *cli = logfl_tci_client_new_order (order);
   GError *err = NULL;
   g_assert_false (logfl_tci_client_start (cli, &err));
   g_assert_nonnull (err);
+  g_assert_nonnull (strstr (err->message, absent_addr));
+  g_assert_nonnull (strstr (err->message, "ws://127.0.0.1:9 (refused)"));
   g_clear_error (&err);
   g_assert_false (logfl_tci_client_is_ready (cli));
+  g_assert_null (logfl_tci_client_endpoint (cli));
+  logfl_tci_client_free (cli);
+  g_free (absent_addr);
+  g_free (absent);
+
+  cli = logfl_tci_client_new ("wss://127.0.0.1:40001");
+  g_assert_false (logfl_tci_client_start (cli, &err));
+  g_assert_nonnull (err);
+  g_assert_nonnull (strstr (err->message, "malformed"));
+  g_assert_nonnull (strstr (err->message, "wss://127.0.0.1:40001"));
+  g_clear_error (&err);
   logfl_tci_client_free (cli);
 }
 
 int
 main (int argc, char **argv)
 {
+  /* A scratch runtime dir, set before GLib reads XDG_RUNTIME_DIR, so the
+   * client's default socket path lands in it — never the live one (see
+   * mock_start). */
+  s_runtime_dir = g_dir_make_tmp ("logfl-tci-XXXXXX", NULL);
+  g_assert_nonnull (s_runtime_dir);
+  g_setenv ("XDG_RUNTIME_DIR", s_runtime_dir, TRUE);
+
   g_test_init (&argc, &argv, NULL);
   g_test_add_func ("/tci/mode-map", test_mode_map);
-  g_test_add_func ("/tci/handshake-live-tune", test_handshake_and_live);
+  g_test_add_func ("/tci/endpoint-parse", test_endpoint_parse);
+  g_test_add_data_func ("/tci/handshake-live-tune/tcp", "tcp",
+                        test_handshake_and_live);
+  g_test_add_data_func ("/tci/handshake-live-tune/unix", "unix",
+                        test_handshake_and_live);
+  g_test_add_func ("/tci/order-fallback", test_order_fallback);
+  g_test_add_func ("/tci/default-order", test_default_order);
   g_test_add_func ("/tci/connect-refused", test_connect_refused);
-  return g_test_run ();
+  int rc = g_test_run ();
+
+  /* Our own scratch: the socket is gone with the mock, the directories
+   * follow (rmdir refuses anything not empty, which would be a leak). */
+  char *dir = g_build_filename (s_runtime_dir, "sdr-for-linux", NULL);
+  g_rmdir (dir);
+  g_free (dir);
+  g_rmdir (s_runtime_dir);
+  g_free (s_runtime_dir);
+  return rc;
 }

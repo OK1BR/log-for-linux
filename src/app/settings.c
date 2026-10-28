@@ -97,11 +97,10 @@ void
 logfl_settings_init_defaults (LogflSettings *s)
 {
   g_return_if_fail (s != NULL);
-  g_free (s->tci_host);
+  g_free (s->tci_server);
   g_free (s->station_callsign);
   g_free (s->station_grid);
-  s->tci_host = g_strdup (LOGFL_TCI_DEFAULT_HOST);
-  s->tci_port = LOGFL_TCI_DEFAULT_PORT;
+  s->tci_server = g_strdup ("");
   s->station_callsign = g_strdup ("OK1BR");
   s->station_grid = g_strdup ("");
   s->station_cqz = 15;
@@ -135,20 +134,44 @@ logfl_settings_load (LogflSettings *s)
   GKeyFile *kf = g_key_file_new ();
   if (g_key_file_load_from_file (kf, path, G_KEY_FILE_NONE, NULL))
     {
-      char *host = g_key_file_get_string (kf, "tci", "host", NULL);
-      if (host && *host)
+      /* One server string since #32 ([tci] server; "" = the default
+       * order, socket then TCP). A pre-#32 ini has host + port instead:
+       * the 127.0.0.1:40001 pair is what the dialog showed from day one,
+       * never a choice, so it migrates to the default order — read as an
+       * explicit TCP address it would keep every existing install off the
+       * socket for good. Only a changed host or port was deliberate and
+       * becomes ws://host:port. */
+      if (g_key_file_has_key (kf, "tci", "server", NULL))
         {
-          g_free (s->tci_host);
-          s->tci_host = g_strstrip (host);
+          char *srv = g_key_file_get_string (kf, "tci", "server", NULL);
+          srv = g_strstrip (srv ? srv : g_strdup (""));
+          LogflTciEndpoint ep;
+          if (*srv && !logfl_tci_endpoint_parse (srv, &ep))
+            {
+              g_warning ("settings: [tci] server \"%s\" is not unix:/path "
+                         "or ws://host:port — using the default order",
+                         srv);
+              srv[0] = '\0';
+            }
+          g_free (s->tci_server);
+          s->tci_server = srv;
         }
       else
-        g_free (host);
-
-      if (g_key_file_has_key (kf, "tci", "port", NULL))
         {
-          int p = g_key_file_get_integer (kf, "tci", "port", NULL);
-          if (p > 0 && p <= 65535)
-            s->tci_port = (guint16) p;
+          char *host = g_key_file_get_string (kf, "tci", "host", NULL);
+          int port = g_key_file_get_integer (kf, "tci", "port", NULL);
+          if (host)
+            g_strstrip (host);
+          if (port < 1 || port > 65535)
+            port = LOGFL_TCI_DEFAULT_PORT;
+          if (host && *host &&
+              (g_strcmp0 (host, "127.0.0.1") != 0 ||
+               port != LOGFL_TCI_DEFAULT_PORT))
+            {
+              g_free (s->tci_server);
+              s->tci_server = g_strdup_printf ("ws://%s:%d", host, port);
+            }
+          g_free (host);
         }
 
       char *call = g_key_file_get_string (kf, "station", "callsign", NULL);
@@ -259,12 +282,12 @@ logfl_settings_save (const LogflSettings *s)
   /* Preserve unknown groups/keys from future versions or hand edits. */
   g_key_file_load_from_file (kf, path, G_KEY_FILE_KEEP_COMMENTS, NULL);
 
-  g_key_file_set_string (kf, "tci", "host",
-                         s->tci_host && *s->tci_host
-                             ? s->tci_host
-                             : LOGFL_TCI_DEFAULT_HOST);
-  g_key_file_set_integer (kf, "tci", "port",
-                          s->tci_port ? s->tci_port : LOGFL_TCI_DEFAULT_PORT);
+  /* The pre-#32 host/port pair is migrated on load (see there) and dropped
+   * here, so the file carries one spelling of the server. */
+  g_key_file_set_string (kf, "tci", "server",
+                         s->tci_server ? s->tci_server : "");
+  g_key_file_remove_key (kf, "tci", "host", NULL);
+  g_key_file_remove_key (kf, "tci", "port", NULL);
   g_key_file_set_string (kf, "station", "callsign",
                          s->station_callsign ? s->station_callsign : "");
   g_key_file_set_string (kf, "station", "locator",
@@ -315,12 +338,11 @@ logfl_settings_clear (LogflSettings *s)
 {
   if (!s)
     return;
-  g_clear_pointer (&s->tci_host, g_free);
+  g_clear_pointer (&s->tci_server, g_free);
   g_clear_pointer (&s->station_callsign, g_free);
   g_clear_pointer (&s->station_grid, g_free);
   s->station_cqz = 0;
   s->station_ituz = 0;
-  s->tci_port = 0;
   s->esm_enabled = FALSE;
   s->cw_cut_numbers = FALSE;
   g_clear_pointer (&s->cw_cut_map, g_free);

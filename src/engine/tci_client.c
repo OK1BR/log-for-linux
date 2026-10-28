@@ -3,6 +3,8 @@
  * libwebsockets client on its own service thread (skimmer / sdr-for-linux
  * pattern): lws_service loop, outgoing text queued and flushed on WRITEABLE,
  * incoming text accumulated and split on ';'. No binary Stream handling.
+ * The transport is a Unix socket or TCP (#32) — WebSocket framing is the
+ * same over both, so nothing above the dial knows the difference.
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */
@@ -17,8 +19,10 @@
 #define TCI_TXT_MAX          (64 * 1024)   /* cap on unterminated rx text */
 
 struct _LogflTciClient {
-  char    *host;
-  guint16  port;
+  GPtrArray *order;            /* LogflTciEndpoint*, tried in this order */
+  char      *bad;              /* a malformed server string — start() says so */
+  char      *dial;             /* address handed to lws for the live dial */
+  char      *endpoint;         /* canonical spelling of the winner; NULL down */
 
   LogflTciStateCb  state_cb;
   gpointer         state_cb_data;
@@ -48,6 +52,83 @@ struct _LogflTciClient {
   volatile gint run;
   gboolean started;
 };
+
+/* ---- server address ---------------------------------------------------- */
+
+gboolean
+logfl_tci_endpoint_parse (const char *s, LogflTciEndpoint *out)
+{
+  g_return_val_if_fail (out != NULL, FALSE);
+  if (!s)
+    return FALSE;
+  while (g_ascii_isspace (*s))
+    s++;
+  char *t = g_strchomp (g_strdup (s));
+  LogflTciEndpoint ep;
+  memset (&ep, 0, sizeof ep);
+  gboolean ok = FALSE;
+
+  if (g_str_has_prefix (t, "unix:"))
+    {
+      /* An absolute, dialable path. lws would also take "+@name" for an
+       * abstract-namespace socket, but the radio offers no such thing. */
+      const char *p = t + 5;
+      if (p[0] == '/' && strlen (p) < LOGFL_TCI_SOCK_PATH_MAX)
+        {
+          ep.unix_sock = TRUE;
+          g_strlcpy (ep.path, p, sizeof ep.path);
+          ok = TRUE;
+        }
+    }
+  else if (strstr (t, "://") == NULL || g_str_has_prefix (t, "ws://"))
+    {
+      /* ws://host[:port] or bare host[:port]; wss:// and friends fail here
+       * (no TLS on a TCI link). A pasted URL may end in "/". No IPv6
+       * literals — the radio's localhost-only listener is 127.0.0.1. */
+      char *hp = g_strdup (g_str_has_prefix (t, "ws://") ? t + 5 : t);
+      size_t n = strlen (hp);
+      if (n && hp[n - 1] == '/')
+        hp[n - 1] = '\0';
+      guint64 port = LOGFL_TCI_DEFAULT_PORT;
+      gboolean port_ok = TRUE;
+      char *colon = strrchr (hp, ':');
+      if (colon)
+        {
+          *colon = '\0';
+          port_ok = colon[1] &&
+                    g_ascii_string_to_unsigned (colon + 1, 10, 1, 65535,
+                                                &port, NULL);
+        }
+      if (port_ok && hp[0] && strpbrk (hp, "/:@ \t") == NULL &&
+          strlen (hp) < sizeof ep.host)
+        {
+          g_strlcpy (ep.host, hp, sizeof ep.host);
+          ep.port = (guint16) port;
+          ok = TRUE;
+        }
+      g_free (hp);
+    }
+
+  g_free (t);
+  if (ok)
+    *out = ep;
+  return ok;
+}
+
+char *
+logfl_tci_endpoint_to_string (const LogflTciEndpoint *ep)
+{
+  g_return_val_if_fail (ep != NULL, NULL);
+  return ep->unix_sock ? g_strdup_printf ("unix:%s", ep->path)
+                       : g_strdup_printf ("ws://%s:%u", ep->host, ep->port);
+}
+
+char *
+logfl_tci_default_socket_path (void)
+{
+  return g_build_filename (g_get_user_runtime_dir (), "sdr-for-linux",
+                           "tci.sock", NULL);
+}
 
 /* ---- outgoing ---------------------------------------------------------- */
 
@@ -341,15 +422,45 @@ service_thread (gpointer data)
 /* ---- public API -------------------------------------------------------- */
 
 LogflTciClient *
-logfl_tci_client_new (const char *host, guint16 port)
+logfl_tci_client_new_order (const char *const *servers)
 {
   LogflTciClient *c = g_new0 (LogflTciClient, 1);
-  c->host = g_strdup (host && *host ? host : LOGFL_TCI_DEFAULT_HOST);
-  c->port = port ? port : LOGFL_TCI_DEFAULT_PORT;
+  c->order = g_ptr_array_new_with_free_func (g_free);
+  for (; servers && *servers; servers++)
+    {
+      LogflTciEndpoint ep;
+      if (logfl_tci_endpoint_parse (*servers, &ep))
+        g_ptr_array_add (c->order, g_memdup2 (&ep, sizeof ep));
+      else if (!c->bad)
+        c->bad = g_strdup (*servers);
+    }
   g_mutex_init (&c->lock);
   g_cond_init (&c->cond);
   g_queue_init (&c->out);
   c->txt = g_string_new (NULL);
+  return c;
+}
+
+LogflTciClient *
+logfl_tci_client_new (const char *server)
+{
+  while (server && g_ascii_isspace (*server))
+    server++;
+  if (server && *server)
+    {
+      const char *one[] = { server, NULL };
+      return logfl_tci_client_new_order (one);
+    }
+  /* The default order: the local radio's socket, then its TCP port — a
+   * fresh install finds sdr-for-linux whichever listener it has on. The
+   * socket path is sdr-for-linux's own default; a socket moved by its
+   * preference is typed in here as unix:/path. */
+  char *sock = logfl_tci_default_socket_path ();
+  char *unix_addr = g_strdup_printf ("unix:%s", sock);
+  const char *def[] = { unix_addr, LOGFL_TCI_DEFAULT_TCP, NULL };
+  LogflTciClient *c = logfl_tci_client_new_order (def);
+  g_free (unix_addr);
+  g_free (sock);
   return c;
 }
 
@@ -365,7 +476,10 @@ logfl_tci_client_free (LogflTciClient *c)
   g_string_free (c->txt, TRUE);
   g_mutex_clear (&c->lock);
   g_cond_clear (&c->cond);
-  g_free (c->host);
+  g_ptr_array_free (c->order, TRUE);
+  g_free (c->bad);
+  g_free (c->dial);
+  g_free (c->endpoint);
   g_free (c);
 }
 
@@ -402,15 +516,36 @@ logfl_tci_client_set_spot_cb (LogflTciClient *c, LogflTciSpotCb cb,
   g_mutex_unlock (&c->lock);
 }
 
-gboolean
-logfl_tci_client_start (LogflTciClient *c, GError **error)
+/* Tear one dial down: stop the service thread, drop the context. Shared by
+ * a failed candidate (so the next one starts clean) and stop(). */
+static void
+teardown (LogflTciClient *c)
 {
+  g_atomic_int_set (&c->run, 0);
+  if (c->ctx)
+    lws_cancel_service (c->ctx);
   if (c->thread)
     {
-      g_set_error (error, LOGFL_TCI_ERROR, 1, "TCI client already started");
-      return FALSE;
+      g_thread_join (c->thread);
+      c->thread = NULL;
     }
+  if (c->ctx)
+    {
+      lws_context_destroy (c->ctx);
+      c->ctx = NULL;
+    }
+  c->wsi = NULL;
+  c->up = c->ready = c->failed = FALSE;
+  g_string_set_size (c->txt, 0);
+  g_clear_pointer (&c->dial, g_free);
+}
 
+/* One candidate: context, dial, service thread, then wait for ready; or a
+ * failure. On failure the attempt is torn down and *why names the reason
+ * for start()'s error. */
+static gboolean
+try_endpoint (LogflTciClient *c, const LogflTciEndpoint *ep, const char **why)
+{
   lws_set_log_level (LLL_ERR, NULL);
   struct lws_context_creation_info info;
   memset (&info, 0, sizeof info);
@@ -422,7 +557,7 @@ logfl_tci_client_start (LogflTciClient *c, GError **error)
   c->ctx = lws_create_context (&info);
   if (!c->ctx)
     {
-      g_set_error (error, LOGFL_TCI_ERROR, 2, "lws_create_context failed");
+      *why = "lws_create_context failed";
       return FALSE;
     }
 
@@ -434,13 +569,37 @@ logfl_tci_client_start (LogflTciClient *c, GError **error)
   struct lws_client_connect_info ci;
   memset (&ci, 0, sizeof ci);
   ci.context = c->ctx;
-  ci.address = c->host;
-  ci.port = c->port;
   ci.path = "/";
-  ci.host = c->host;
-  ci.origin = c->host;
   ci.protocol = "tci";
-  lws_client_connect_via_info (&ci);
+  g_free (c->dial);
+  if (ep->unix_sock)
+    {
+      /* lws dials a Unix socket when the ADDRESS starts with '+' (its
+       * lib/core-net/client/connect2.c) — not the URL path, whatever the
+       * comment on lws_client_connect_info.path and the #32 ticket text
+       * say; sdr-for-linux proved it on this lws with sdrfl-tci-send -u.
+       * The port is ignored and the path stays "/", but the Host: header
+       * still needs a name. The client owns the address string for the
+       * life of the dial rather than trusting lws to copy it. */
+      c->dial = g_strdup_printf ("+%s", ep->path);
+      ci.address = c->dial;
+      ci.port = 0;
+      ci.host = ci.origin = "localhost";
+    }
+  else
+    {
+      c->dial = g_strdup (ep->host);
+      ci.address = ci.host = ci.origin = c->dial;
+      ci.port = ep->port;
+    }
+  /* A NULL back from the dial is a failure lws need not also report
+   * through the callback (a missing socket file fails inside connect()). */
+  if (!lws_client_connect_via_info (&ci))
+    {
+      g_mutex_lock (&c->lock);
+      c->failed = TRUE;
+      g_mutex_unlock (&c->lock);
+    }
 
   g_atomic_int_set (&c->run, 1);
   c->thread = g_thread_new ("logfl-tci", service_thread, c);
@@ -456,20 +615,59 @@ logfl_tci_client_start (LogflTciClient *c, GError **error)
   gboolean ready = c->ready, failed = c->failed;
   g_mutex_unlock (&c->lock);
 
-  if (!ready)
+  if (ready)
+    return TRUE;
+  *why = failed ? "refused" : "no ready; within 3 s";
+  teardown (c);
+  return FALSE;
+}
+
+gboolean
+logfl_tci_client_start (LogflTciClient *c, GError **error)
+{
+  if (c->thread)
     {
-      g_set_error (error, LOGFL_TCI_ERROR, 3,
-                   failed ? "connection to ws://%s:%u refused"
-                          : "handshake timeout against ws://%s:%u (no ready;)",
-                   c->host, c->port);
-      logfl_tci_client_stop (c);
+      g_set_error (error, LOGFL_TCI_ERROR, 1, "TCI client already started");
+      return FALSE;
+    }
+  if (c->order->len == 0)
+    {
+      g_set_error (error, LOGFL_TCI_ERROR, 2,
+                   "malformed TCI server address \"%s\"",
+                   c->bad ? c->bad : "");
       return FALSE;
     }
 
-  c->started = TRUE;
-  /* Push initial snapshot so the UI can prefill without waiting for a change. */
-  emit_state (c);
-  return TRUE;
+  /* The first candidate to answer ready; wins; the rest are never dialled.
+   * A candidate that is not there fails inside connect(), so the default
+   * order costs nothing when the radio only has TCP on. */
+  GString *tried = g_string_new (NULL);
+  for (guint i = 0; i < c->order->len; i++)
+    {
+      const LogflTciEndpoint *ep = g_ptr_array_index (c->order, i);
+      const char *why = NULL;
+      char *name = logfl_tci_endpoint_to_string (ep);
+      if (try_endpoint (c, ep, &why))
+        {
+          g_mutex_lock (&c->lock);
+          g_free (c->endpoint);
+          c->endpoint = name;
+          g_mutex_unlock (&c->lock);
+          g_string_free (tried, TRUE);
+          c->started = TRUE;
+          /* Push initial snapshot so the UI can prefill without waiting
+           * for a change. */
+          emit_state (c);
+          return TRUE;
+        }
+      g_string_append_printf (tried, "%s%s (%s)", tried->len ? ", " : "",
+                              name, why);
+      g_free (name);
+    }
+  g_set_error (error, LOGFL_TCI_ERROR, 3, "no TCI server answered: %s",
+               tried->str);
+  g_string_free (tried, TRUE);
+  return FALSE;
 }
 
 void
@@ -478,19 +676,21 @@ logfl_tci_client_stop (LogflTciClient *c)
   if (!c || !c->thread)
     return;
   c->started = FALSE;
-  g_atomic_int_set (&c->run, 0);
-  if (c->ctx)
-    lws_cancel_service (c->ctx);
-  g_thread_join (c->thread);
-  c->thread = NULL;
-  if (c->ctx)
-    {
-      lws_context_destroy (c->ctx);
-      c->ctx = NULL;
-    }
-  c->wsi = NULL;
-  c->up = c->ready = c->failed = FALSE;
-  g_string_set_size (c->txt, 0);
+  teardown (c);
+  g_mutex_lock (&c->lock);
+  g_clear_pointer (&c->endpoint, g_free);
+  g_mutex_unlock (&c->lock);
+}
+
+const char *
+logfl_tci_client_endpoint (LogflTciClient *c)
+{
+  if (!c)
+    return NULL;
+  g_mutex_lock (&c->lock);
+  const char *e = c->endpoint;
+  g_mutex_unlock (&c->lock);
+  return e;
 }
 
 gboolean

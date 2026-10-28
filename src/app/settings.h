@@ -17,8 +17,8 @@
 G_BEGIN_DECLS
 
 typedef struct {
-  char   *tci_host;            /* sdr-for-linux WebSocket host               */
-  guint16 tci_port;            /* default 40001                              */
+  char   *tci_server;          /* unix:/path | ws://host:port | "" = the
+                                * default order (local socket, then TCP) */
   char   *station_callsign;    /* STATION_CALLSIGN stamped on new QSOs       */
   char   *station_grid;        /* my locator → MY_GRIDSQUARE on new QSOs     */
   guint   station_cqz;         /* my CQ (DX) zone, 0 = unset (OK = 15)       */

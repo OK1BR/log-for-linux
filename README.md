@@ -82,7 +82,10 @@ entry row always pre-filled with the live VFO — nearly free.
   RTTY by the log-mode dropdown
 
 **Integration**
-- **TCI client** to `sdr-for-linux` (`ws://127.0.0.1:40001`): the entry row
+- **TCI client** to `sdr-for-linux` — over its Unix socket
+  (`$XDG_RUNTIME_DIR/sdr-for-linux/tci.sock`) when the radio runs on this
+  machine, over TCP (`ws://127.0.0.1:40001`, or any `ws://host:port`)
+  otherwise: the entry row
   pre-fills frequency, band and mode from the live VFO; **clicking a skimmer
   spot on the panadapter drops the callsign into the Call entry** with the
   worked-B4/dup verdict run as if typed; CW/RTTY macros key the radio;

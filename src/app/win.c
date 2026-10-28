@@ -839,13 +839,8 @@ tci_connect_kick (gpointer user_data)
   if (self->tci && logfl_tci_client_is_ready (self->tci))
     return G_SOURCE_REMOVE;
 
-  const char *host = self->settings.tci_host && *self->settings.tci_host
-                         ? self->settings.tci_host
-                         : LOGFL_TCI_DEFAULT_HOST;
-  guint16 port = self->settings.tci_port
-                     ? self->settings.tci_port
-                     : LOGFL_TCI_DEFAULT_PORT;
-  LogflTciClient *cli = logfl_tci_client_new (host, port);
+  /* "" = the default order: the radio's Unix socket, then TCP (#32). */
+  LogflTciClient *cli = logfl_tci_client_new (self->settings.tci_server);
   logfl_tci_client_set_state_cb (cli, on_tci_state, self);
   logfl_tci_client_set_closed_cb (cli, on_tci_closed, self);
   logfl_tci_client_set_spot_cb (cli, on_tci_spot, self);
@@ -2628,6 +2623,23 @@ tci_reconnect_now (LogflWindow *self)
     tci_connect_kick (self);
 }
 
+/* Red while the Server text is neither empty nor a spelling the client
+ * dials (unix:/path, ws://host:port, host:port) — libadwaita styles
+ * row.entry.error. prefs_closed does not apply such a text. */
+static void
+on_tci_server_changed (GtkEditable *row, gpointer user_data)
+{
+  (void) user_data;
+  const char *t = gtk_editable_get_text (row);
+  char *s = g_strstrip (g_strdup (t ? t : ""));
+  LogflTciEndpoint ep;
+  if (*s && !logfl_tci_endpoint_parse (s, &ep))
+    gtk_widget_add_css_class (GTK_WIDGET (row), "error");
+  else
+    gtk_widget_remove_css_class (GTK_WIDGET (row), "error");
+  g_free (s);
+}
+
 static void
 prefs_closed (AdwDialog *dlg, gpointer user_data)
 {
@@ -2635,8 +2647,7 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
   if (self->prefs_dlg != GTK_WIDGET (dlg))
     return;                    /* already flushed on window close-request */
   self->prefs_dlg = NULL;
-  GtkWidget *host_row = g_object_get_data (G_OBJECT (dlg), "tci-host");
-  GtkWidget *port_row = g_object_get_data (G_OBJECT (dlg), "tci-port");
+  GtkWidget *server_row = g_object_get_data (G_OBJECT (dlg), "tci-server");
   GtkWidget *call_row = g_object_get_data (G_OBJECT (dlg), "station-call");
   GtkWidget *grid_row = g_object_get_data (G_OBJECT (dlg), "station-grid");
   GtkWidget *cqz_row = g_object_get_data (G_OBJECT (dlg), "station-cqz");
@@ -2645,11 +2656,17 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
   GtkWidget *wsjtx_en_row = g_object_get_data (G_OBJECT (dlg), "wsjtx-en");
   GtkWidget *wsjtx_port_row = g_object_get_data (G_OBJECT (dlg), "wsjtx-port");
 
-  const char *h = gtk_editable_get_text (GTK_EDITABLE (host_row));
-  char *host = g_strstrip (g_strdup ((h && *h) ? h : LOGFL_TCI_DEFAULT_HOST));
-  int port = (int) adw_spin_row_get_value (ADW_SPIN_ROW (port_row));
-  if (port < 1 || port > 65535)
-    port = LOGFL_TCI_DEFAULT_PORT;
+  const char *sv = gtk_editable_get_text (GTK_EDITABLE (server_row));
+  char *server = g_strstrip (g_strdup (sv ? sv : ""));
+  /* A malformed text (the row showed it red) is not applied — the previous
+   * server stays rather than a dead one being saved. */
+  LogflTciEndpoint ep;
+  if (*server && !logfl_tci_endpoint_parse (server, &ep))
+    {
+      g_free (server);
+      server = g_strdup (self->settings.tci_server ? self->settings.tci_server
+                                                   : "");
+    }
   const char *c = gtk_editable_get_text (GTK_EDITABLE (call_row));
   char *call = g_strstrip (g_strdup (c ? c : ""));
   const char *gtxt = gtk_editable_get_text (GTK_EDITABLE (grid_row));
@@ -2684,9 +2701,7 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
   if (wsjtx_port < 1 || wsjtx_port > 65535)
     wsjtx_port = LOGFL_WSJTX_DEFAULT_PORT;
 
-  gboolean tci_changed =
-      g_strcmp0 (host, self->settings.tci_host) != 0 ||
-      (guint16) port != self->settings.tci_port;
+  gboolean tci_changed = g_strcmp0 (server, self->settings.tci_server) != 0;
   gboolean call_changed =
       g_strcmp0 (call, self->settings.station_callsign) != 0 ||
       g_strcmp0 (grid, self->settings.station_grid) != 0 ||
@@ -2703,9 +2718,8 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
   if (tci_changed || call_changed || esm_changed || cut_changed ||
       wsjtx_changed)
     {
-      g_free (self->settings.tci_host);
-      self->settings.tci_host = host;
-      self->settings.tci_port = (guint16) port;
+      g_free (self->settings.tci_server);
+      self->settings.tci_server = server;
       g_free (self->settings.station_callsign);
       self->settings.station_callsign = call;
       g_free (self->settings.station_grid);
@@ -2729,7 +2743,7 @@ prefs_closed (AdwDialog *dlg, gpointer user_data)
     }
   else
     {
-      g_free (host);
+      g_free (server);
       g_free (call);
       g_free (grid);
       g_free (cut_map);
@@ -2924,30 +2938,26 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
       "title", "TCI",
       "icon-name", "network-transmit-receive-symbolic",
       NULL));
+  /* One row for the server since #32: empty = the default order (the
+   * radio's Unix socket, then TCP), or one explicit address. */
   AdwPreferencesGroup *tgrp = ADW_PREFERENCES_GROUP (g_object_new (
       ADW_TYPE_PREFERENCES_GROUP,
       "title", "Server",
       "description",
-      "sdr-for-linux WebSocket endpoint — connection is automatic; "
-      "changing host or port reconnects immediately",
+      "sdr-for-linux TCI server — connection is automatic; a change "
+      "reconnects at once. Empty: the local Unix socket "
+      "($XDG_RUNTIME_DIR/sdr-for-linux/tci.sock), then ws://127.0.0.1:40001. "
+      "Otherwise unix:/path, or ws://host:port for a radio on another "
+      "machine.",
       NULL));
-  GtkWidget *host_row = adw_entry_row_new ();
-  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (host_row), "Host");
+  GtkWidget *server_row = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (server_row), "Server");
   gtk_editable_set_text (
-      GTK_EDITABLE (host_row),
-      self->settings.tci_host ? self->settings.tci_host
-                              : LOGFL_TCI_DEFAULT_HOST);
-  adw_preferences_group_add (tgrp, host_row);
-
-  GtkWidget *port_row = adw_spin_row_new_with_range (1, 65535, 1);
-  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (port_row), "Port");
-  adw_action_row_set_subtitle (ADW_ACTION_ROW (port_row),
-                               "ExpertSDR / sdr-for-linux default 40001");
-  adw_spin_row_set_value (
-      ADW_SPIN_ROW (port_row),
-      self->settings.tci_port ? self->settings.tci_port
-                              : LOGFL_TCI_DEFAULT_PORT);
-  adw_preferences_group_add (tgrp, port_row);
+      GTK_EDITABLE (server_row),
+      self->settings.tci_server ? self->settings.tci_server : "");
+  g_signal_connect (server_row, "changed",
+                    G_CALLBACK (on_tci_server_changed), NULL);
+  adw_preferences_group_add (tgrp, server_row);
   adw_preferences_page_add (p_tci, tgrp);
   adw_preferences_dialog_add (ADW_PREFERENCES_DIALOG (dlg), p_tci);
 
@@ -3075,8 +3085,7 @@ act_preferences (GSimpleAction *action, GVariant *param, gpointer user_data)
   adw_dialog_set_content_width (dlg, 640);
   adw_dialog_set_content_height (dlg, 480);
 
-  g_object_set_data (G_OBJECT (dlg), "tci-host", host_row);
-  g_object_set_data (G_OBJECT (dlg), "tci-port", port_row);
+  g_object_set_data (G_OBJECT (dlg), "tci-server", server_row);
   g_object_set_data (G_OBJECT (dlg), "station-call", call_row);
   g_object_set_data (G_OBJECT (dlg), "station-grid", grid_row);
   g_object_set_data (G_OBJECT (dlg), "station-cqz", cqz_row);
@@ -3117,13 +3126,18 @@ act_about (GSimpleAction *action, GVariant *param, gpointer user_data)
   adw_about_dialog_set_issue_url (
       ADW_ABOUT_DIALOG (dlg),
       "https://github.com/OK1BR/log-for-linux/issues");
+  /* The configured server and the address the live link actually took —
+   * with the default order that is how one sees the socket won (#32). */
+  const char *tci_link = self->tci ? logfl_tci_client_endpoint (self->tci)
+                                   : NULL;
   char *dbg = g_strdup_printf (
-      "SQLite %s\nLog: %s\nTCI: %s:%u\nSettings: %s/log-for-linux/settings.ini",
+      "SQLite %s\nLog: %s\nTCI server: %s\nTCI link: %s\n"
+      "Settings: %s/log-for-linux/settings.ini",
       logfl_engine_sqlite_version (), self->db_path,
-      self->settings.tci_host ? self->settings.tci_host
-                              : LOGFL_TCI_DEFAULT_HOST,
-      self->settings.tci_port ? self->settings.tci_port
-                              : LOGFL_TCI_DEFAULT_PORT,
+      self->settings.tci_server && *self->settings.tci_server
+          ? self->settings.tci_server
+          : "default order (unix socket, then " LOGFL_TCI_DEFAULT_TCP ")",
+      tci_link ? tci_link : "offline",
       g_get_user_config_dir ());
   adw_about_dialog_set_debug_info (ADW_ABOUT_DIALOG (dlg), dbg);
   g_free (dbg);
