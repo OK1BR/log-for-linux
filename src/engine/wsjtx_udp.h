@@ -91,7 +91,22 @@ typedef struct {
   char            *prop_mode;
 } LogflWsjtxQsoLogged;
 
+/* Decode (type 2): one decoded message from the client's Band Activity. */
+typedef struct {
+  LogflWsjtxHeader hdr;
+  gboolean         is_new;
+  guint32          time_ms;  /* QTime, ms since midnight UTC */
+  gint32           snr;
+  double           dt;
+  guint32          df;
+  char            *mode;     /* jt9 mode letter: "~" FT8, "+" FT4 … */
+  char            *message;
+  gboolean         low_confidence;
+  gboolean         off_air;
+} LogflWsjtxDecode;
+
 void logfl_wsjtx_header_clear (LogflWsjtxHeader *h);
+void logfl_wsjtx_decode_clear (LogflWsjtxDecode *d);
 void logfl_wsjtx_status_clear (LogflWsjtxStatus *s);
 void logfl_wsjtx_qso_logged_clear (LogflWsjtxQsoLogged *q);
 
@@ -105,6 +120,16 @@ gboolean logfl_wsjtx_parse_header (const guint8 *data, gsize len,
 gboolean logfl_wsjtx_parse_qso_logged (const guint8 *data, gsize len,
                                        LogflWsjtxQsoLogged *out,
                                        GError **error);
+
+/* Full type-2 parse. */
+gboolean logfl_wsjtx_parse_decode (const guint8 *data, gsize len,
+                                   LogflWsjtxDecode *out, GError **error);
+
+/* The station that sent a standard WSJT-X message, newly allocated, or
+ * NULL when the text has no usable callsign (free text, contest exchanges
+ * with ';'…).  WSJT-X decodedtext.cpp tokens_re: "CQ [DX|AAAA|nnn] CALL …",
+ * "CALL RR73; …" prefix, otherwise "TO FROM …"; <…> hashed calls unwrapped. */
+char *logfl_wsjtx_message_de_call (const char *message);
 
 /* Full type-1 parse (required fields + common optional tail ignored). */
 gboolean logfl_wsjtx_parse_status (const guint8 *data, gsize len,
@@ -120,6 +145,12 @@ LogflQso *logfl_wsjtx_to_qso (const LogflWsjtxQsoLogged *m);
 GByteArray *logfl_wsjtx_build_heartbeat (const char *id, guint32 max_schema,
                                          const char *version,
                                          const char *revision);
+
+/* Decode for tests / replay. */
+GByteArray *logfl_wsjtx_build_decode (const char *id, gboolean is_new,
+                                      guint32 time_ms, gint32 snr, double dt,
+                                      guint32 df, const char *mode,
+                                      const char *message, gboolean low_conf);
 
 /* Minimal Status for tests (dial_hz, mode, dx_call, de_call). */
 GByteArray *logfl_wsjtx_build_status (const char *id, guint64 dial_hz,
@@ -154,6 +185,10 @@ typedef void (*LogflWsjtxLoggedCb) (LogflQso *q, const LogflWsjtxQsoLogged *raw,
 /* Status snapshot for worked-B4 highlight decisions. */
 typedef void (*LogflWsjtxStatusCb) (const LogflWsjtxStatus *st,
                                     gpointer user_data);
+/* Every decode the client prints (FTX for Linux and WSJT-X send one per
+ * line) — the worked-before verdict for the whole Band Activity. */
+typedef void (*LogflWsjtxDecodeCb) (const LogflWsjtxDecode *d,
+                                    gpointer user_data);
 
 LogflWsjtxServer *logfl_wsjtx_server_new  (const char *bind_host,
                                            guint16 port);
@@ -165,6 +200,13 @@ void logfl_wsjtx_server_set_logged_cb (LogflWsjtxServer *s,
 void logfl_wsjtx_server_set_status_cb (LogflWsjtxServer *s,
                                        LogflWsjtxStatusCb cb,
                                        gpointer user_data);
+void logfl_wsjtx_server_set_decode_cb (LogflWsjtxServer *s,
+                                       LogflWsjtxDecodeCb cb,
+                                       gpointer user_data);
+/* The last Status seen: the client's dial and mode, which a Decode message
+ * does not carry (0 / NULL before the first Status). */
+guint64     logfl_wsjtx_server_last_dial_hz (const LogflWsjtxServer *s);
+const char *logfl_wsjtx_server_last_mode (const LogflWsjtxServer *s);
 
 /* Bind UDP and attach a GSource. FALSE + error on bind failure. */
 gboolean logfl_wsjtx_server_start (LogflWsjtxServer *s, GError **error);
@@ -177,6 +219,14 @@ guint16 logfl_wsjtx_server_port (const LogflWsjtxServer *s);
  * client id when non-NULL). No-op if no peer yet. */
 gboolean logfl_wsjtx_server_send (LogflWsjtxServer *s, const guint8 *data,
                                   gsize len, GError **error);
+
+/* Worked on this band and mode → yellow Highlight to the last peer; not
+ * worked → nothing (the client's default colours already say "new"; one
+ * reply per worked decode keeps the traffic down). */
+gboolean logfl_wsjtx_server_highlight_worked (LogflWsjtxServer *s,
+                                              const char *client_id,
+                                              const char *call,
+                                              gboolean worked, GError **error);
 
 /* Convenience: highlight call on last peer. bg yellow when worked, green when
  * new (n_total==0); invalid bg clears. */

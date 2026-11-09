@@ -5,6 +5,8 @@
  *   - to_qso maps freq→band, power, station call
  *   - UDP server on loopback receives a datagram and fires logged_cb
  *   - highlight packet builds without error
+ *   - Decode round-trip and the sender call of standard messages
+ *     (CQ modifiers, RR73; prefix, hashed calls, free text)
  *
  * Part of log-for-linux. GPL-3.0-or-later.
  */
@@ -111,6 +113,70 @@ test_parse_status (void)
   g_assert_cmpstr (st.de_call, ==, "OK1BR");
   logfl_wsjtx_status_clear (&st);
   g_byte_array_unref (pkt);
+}
+
+static void
+test_parse_decode (void)
+{
+  GByteArray *pkt = logfl_wsjtx_build_decode ("FTX for Linux", TRUE, 56317000, -5,
+                                              -0.5, 840, "+", "OK1BR G7BTP IO93", FALSE);
+  LogflWsjtxDecode d = { 0 };
+  GError *err = NULL;
+  g_assert_true (logfl_wsjtx_parse_decode (pkt->data, pkt->len, &d, &err));
+  g_assert_no_error (err);
+  g_assert_cmpstr (d.hdr.id, ==, "FTX for Linux");
+  g_assert_true (d.is_new);
+  g_assert_cmpuint (d.time_ms, ==, 56317000);
+  g_assert_cmpint (d.snr, ==, -5);
+  g_assert_cmpfloat (d.dt, ==, -0.5);
+  g_assert_cmpuint (d.df, ==, 840);
+  g_assert_cmpstr (d.mode, ==, "+");
+  g_assert_cmpstr (d.message, ==, "OK1BR G7BTP IO93");
+  g_assert_false (d.low_confidence);
+  logfl_wsjtx_decode_clear (&d);
+  /* a Status is not a Decode */
+  GByteArray *st = logfl_wsjtx_build_status ("X", 14074000, "FT8", "", "OK1BR");
+  g_assert_false (logfl_wsjtx_parse_decode (st->data, st->len, &d, NULL));
+  g_byte_array_unref (st);
+  /* truncated */
+  g_assert_false (logfl_wsjtx_parse_decode (pkt->data, pkt->len - 6, &d, NULL));
+  g_byte_array_unref (pkt);
+}
+
+static void
+check_de (const char *msg, const char *want)
+{
+  char *got = logfl_wsjtx_message_de_call (msg);
+  if (want)
+    g_assert_cmpstr (got, ==, want);
+  else
+    g_assert_null (got);
+  g_free (got);
+}
+
+static void
+test_message_de_call (void)
+{
+  check_de ("CQ OK1BR JO70", "OK1BR");
+  check_de ("CQ DX OK1BR JO70", "OK1BR");
+  check_de ("CQ POTA OK1BR JO70", "OK1BR");
+  check_de ("CQ 123 OK1BR JO70", "OK1BR");
+  check_de ("CQ EU G7BTP IO93", "G7BTP");
+  check_de ("QRZ OK1BR JO70", "OK1BR");
+  check_de ("DE OK1BR JO70", "OK1BR");
+  check_de ("OK1BR G7BTP IO93", "G7BTP");
+  check_de ("OK1BR G7BTP R+03", "G7BTP");
+  check_de ("G7BTP OK1BR RR73", "OK1BR");
+  check_de ("OK1BR LZ2TS 73", "LZ2TS");
+  check_de ("<OK1BR> PI40EUDXF 73", "PI40EUDXF");
+  check_de ("OK1BR <9H/VK4CJB> -10", "9H/VK4CJB");
+  check_de ("W1AW RR73; K1JT HA0DU -10", "HA0DU");
+  check_de ("CQ K1JT", "K1JT");
+  check_de ("TNX FOR QSO 73", NULL);        /* free text */
+  check_de ("CQ", NULL);
+  check_de ("", NULL);
+  check_de (NULL, NULL);
+  check_de ("CQ DX", NULL);                 /* modifier, no call */
 }
 
 static void
@@ -262,6 +328,8 @@ main (int argc, char **argv)
   g_test_add_func ("/wsjtx/to-qso", test_to_qso);
   g_test_add_func ("/wsjtx/parse-status", test_parse_status);
   g_test_add_func ("/wsjtx/bad-magic", test_bad_magic);
+  g_test_add_func ("/wsjtx/parse-decode", test_parse_decode);
+  g_test_add_func ("/wsjtx/message-de-call", test_message_de_call);
   g_test_add_func ("/wsjtx/highlight-build", test_highlight_build);
   g_test_add_func ("/wsjtx/server-loopback", test_server_loopback);
   g_test_add_func ("/wsjtx/empty-call", test_empty_call_to_qso);

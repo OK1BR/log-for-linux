@@ -87,6 +87,18 @@ rd_i64 (Cur *c, gint64 *o, GError **error)
   return TRUE;
 }
 
+static gboolean
+rd_f64 (Cur *c, double *o, GError **error)
+{
+  guint64 u;
+  if (!rd_u64 (c, &u, error))
+    return FALSE;
+  union { guint64 u; double d; } x;
+  x.u = u;
+  *o = x.d;
+  return TRUE;
+}
+
 /* utf8 / QByteArray: length quint32; 0xffffffff = null; 0 = empty. */
 static gboolean
 rd_utf8 (Cur *c, char **out, GError **error)
@@ -348,6 +360,128 @@ logfl_wsjtx_parse_status (const guint8 *data, gsize len, LogflWsjtxStatus *out,
   return TRUE;
 }
 
+void
+logfl_wsjtx_decode_clear (LogflWsjtxDecode *d)
+{
+  if (!d)
+    return;
+  logfl_wsjtx_header_clear (&d->hdr);
+  g_clear_pointer (&d->mode, g_free);
+  g_clear_pointer (&d->message, g_free);
+}
+
+gboolean
+logfl_wsjtx_parse_decode (const guint8 *data, gsize len, LogflWsjtxDecode *out,
+                          GError **error)
+{
+  g_return_val_if_fail (out != NULL, FALSE);
+  memset (out, 0, sizeof *out);
+  gsize off = 0;
+  if (!logfl_wsjtx_parse_header (data, len, &out->hdr, &off, error))
+    return FALSE;
+  if (out->hdr.type != LOGFL_WSJTX_MSG_DECODE)
+    {
+      g_set_error (error, LOGFL_WSJTX_ERROR, LOGFL_WSJTX_ERROR_PARSE,
+                   "expected Decode (2), got %u", (guint) out->hdr.type);
+      logfl_wsjtx_decode_clear (out);
+      return FALSE;
+    }
+  Cur c = { .p = data, .n = len, .i = off };
+  guint8 b_new, b_low, b_off = 0;
+  /* New, Time (QTime ms), snr, dt (double), df, mode, message, low confidence,
+   * off air (NetworkMessage.hpp) — off air may be missing in old clients. */
+  if (!rd_u8 (&c, &b_new, error) || !rd_u32 (&c, &out->time_ms, error) ||
+      !rd_i32 (&c, &out->snr, error) || !rd_f64 (&c, &out->dt, error) ||
+      !rd_u32 (&c, &out->df, error) || !rd_utf8 (&c, &out->mode, error) ||
+      !rd_utf8 (&c, &out->message, error) || !rd_u8 (&c, &b_low, error))
+    {
+      logfl_wsjtx_decode_clear (out);
+      return FALSE;
+    }
+  if (c.i < c.n)
+    rd_u8 (&c, &b_off, NULL);
+  out->is_new = b_new != 0;
+  out->low_confidence = b_low != 0;
+  out->off_air = b_off != 0;
+  return TRUE;
+}
+
+/* A plausible amateur callsign: 3+ chars of [A-Z0-9/], at least one letter
+ * and one digit, no '/' at either end.  Rejects CQ modifiers that slipped
+ * through ("DX", "POTA"), grids and reports. */
+static gboolean
+plausible_call (const char *w)
+{
+  gsize n = w ? strlen (w) : 0;
+  if (n < 3 || n > 13 || w[0] == '/' || w[n - 1] == '/')
+    return FALSE;
+  gboolean letter = FALSE, digit = FALSE;
+  for (const char *p = w; *p; p++)
+    {
+      if (g_ascii_isupper (*p)) letter = TRUE;
+      else if (g_ascii_isdigit (*p)) digit = TRUE;
+      else if (*p != '/') return FALSE;
+    }
+  return letter && digit;
+}
+
+/* WSJT-X decodedtext.cpp tokens_re: an optional "CALL RR73; " prefix, then
+ * word1 = "CQ"/"DE"/"QRZ" with an optional modifier (DX | 1-4 letters |
+ * 3 digits) or a callsign, then word2 = the sender. */
+static gboolean
+cq_modifier (const char *w)
+{
+  gsize n = strlen (w);
+  if (n >= 1 && n <= 4)
+    {
+      gboolean all_letters = TRUE;
+      for (const char *p = w; *p; p++) if (!g_ascii_isupper (*p)) all_letters = FALSE;
+      if (all_letters) return TRUE;
+    }
+  if (n == 3 && g_ascii_isdigit (w[0]) && g_ascii_isdigit (w[1]) && g_ascii_isdigit (w[2]))
+    return TRUE;
+  return FALSE;
+}
+
+char *
+logfl_wsjtx_message_de_call (const char *message)
+{
+  if (!message)
+    return NULL;
+  /* unwrap <HASHED> calls, drop anything after the message proper */
+  GString *clean = g_string_new (NULL);
+  for (const char *p = message; *p; p++)
+    if (*p != '<' && *p != '>')
+      g_string_append_c (clean, *p);
+  char **w = g_strsplit (g_strstrip (clean->str), " ", -1);
+  g_string_free (clean, TRUE);
+  const char *tok[8];
+  int n = 0;
+  for (char **p = w; *p && n < 8; p++)
+    if (**p)
+      tok[n++] = *p;
+  char *call = NULL;
+  int i = 0;
+  if (n >= 3 && g_str_has_suffix (tok[1], ";"))
+    i = 2;                                   /* "CALL RR73; TO FROM …" */
+  if (n > i + 1)
+    {
+      const char *w1 = tok[i];
+      int sender = i + 1;
+      if (strcmp (w1, "CQ") == 0 || strcmp (w1, "DE") == 0 || strcmp (w1, "QRZ") == 0)
+        {
+          if (n > i + 2 && cq_modifier (tok[i + 1]) && !plausible_call (tok[i + 1]))
+            sender = i + 2;
+        }
+      else if (!plausible_call (w1))
+        sender = -1;                           /* free text */
+      if (sender >= 0 && sender < n && plausible_call (tok[sender]))
+        call = g_strdup (tok[sender]);
+    }
+  g_strfreev (w);
+  return call;
+}
+
 static double
 parse_power_w (const char *s)
 {
@@ -579,6 +713,26 @@ logfl_wsjtx_build_status (const char *id, guint64 dial_hz, const char *mode,
 }
 
 GByteArray *
+logfl_wsjtx_build_decode (const char *id, gboolean is_new, guint32 time_ms,
+                          gint32 snr, double dt, guint32 df, const char *mode,
+                          const char *message, gboolean low_conf)
+{
+  GByteArray *a = begin_msg (LOGFL_WSJTX_MSG_DECODE, id);
+  wr_u8 (a, is_new ? 1 : 0);
+  wr_u32 (a, time_ms);
+  wr_i32 (a, snr);
+  union { double d; guint64 u; } x;
+  x.d = dt;
+  wr_u64 (a, x.u);
+  wr_u32 (a, df);
+  wr_utf8 (a, mode ? mode : "~");
+  wr_utf8 (a, message);
+  wr_u8 (a, low_conf ? 1 : 0);
+  wr_u8 (a, 0); /* off air */
+  return a;
+}
+
+GByteArray *
 logfl_wsjtx_build_qso_logged (const char *id, gint64 ts_on, gint64 ts_off,
                               const char *dx_call, const char *dx_grid,
                               guint64 freq_hz, const char *mode,
@@ -633,6 +787,10 @@ struct _LogflWsjtxServer {
   LogflWsjtxLoggedCb  logged_cb;
   gpointer            logged_data;
   LogflWsjtxStatusCb  status_cb;
+  LogflWsjtxDecodeCb  decode_cb;
+  gpointer            decode_data;
+  guint64             last_dial_hz; /* from the last Status */
+  char               *last_mode;
   gpointer            status_data;
 };
 
@@ -653,6 +811,7 @@ logfl_wsjtx_server_free (LogflWsjtxServer *s)
     return;
   logfl_wsjtx_server_stop (s);
   g_free (s->host);
+  g_free (s->last_mode);
   g_free (s->peer_id);
   g_clear_object (&s->peer);
   g_free (s);
@@ -666,6 +825,20 @@ logfl_wsjtx_server_set_logged_cb (LogflWsjtxServer *s, LogflWsjtxLoggedCb cb,
   s->logged_cb = cb;
   s->logged_data = user_data;
 }
+
+void
+logfl_wsjtx_server_set_decode_cb (LogflWsjtxServer *s, LogflWsjtxDecodeCb cb,
+                                  gpointer user_data)
+{
+  g_return_if_fail (s != NULL);
+  s->decode_cb = cb;
+  s->decode_data = user_data;
+}
+
+guint64
+logfl_wsjtx_server_last_dial_hz (const LogflWsjtxServer *s) { return s ? s->last_dial_hz : 0; }
+const char *
+logfl_wsjtx_server_last_mode (const LogflWsjtxServer *s) { return s ? s->last_mode : NULL; }
 
 void
 logfl_wsjtx_server_set_status_cb (LogflWsjtxServer *s, LogflWsjtxStatusCb cb,
@@ -759,9 +932,23 @@ on_udp (GSocket *sock, GIOCondition cond, gpointer user_data)
         LogflWsjtxStatus st = { 0 };
         if (logfl_wsjtx_parse_status (buf, (gsize) n, &st, NULL))
           {
+            s->last_dial_hz = st.dial_hz;
+            g_free (s->last_mode);
+            s->last_mode = g_strdup (st.mode ? st.mode : "");
             if (s->status_cb)
               s->status_cb (&st, s->status_data);
             logfl_wsjtx_status_clear (&st);
+          }
+        break;
+      }
+    case LOGFL_WSJTX_MSG_DECODE:
+      {
+        LogflWsjtxDecode d = { 0 };
+        if (logfl_wsjtx_parse_decode (buf, (gsize) n, &d, NULL))
+          {
+            if (s->decode_cb)
+              s->decode_cb (&d, s->decode_data);
+            logfl_wsjtx_decode_clear (&d);
           }
         break;
       }
@@ -873,6 +1060,24 @@ logfl_wsjtx_server_send (LogflWsjtxServer *s, const guint8 *data, gsize len,
       return FALSE;
     }
   return TRUE;
+}
+
+gboolean
+logfl_wsjtx_server_highlight_worked (LogflWsjtxServer *s, const char *client_id,
+                                     const char *call, gboolean worked,
+                                     GError **error)
+{
+  g_return_val_if_fail (s != NULL, FALSE);
+  if (!call || !*call || !worked)
+    return TRUE;
+  const char *id = client_id && *client_id
+                       ? client_id
+                       : (s->peer_id ? s->peer_id : "WSJT-X");
+  GByteArray *pkt = logfl_wsjtx_build_highlight (id, call, TRUE, 0xff, 0xff, 0x66,
+                                                 TRUE, 0x00, 0x00, 0x00, FALSE);
+  gboolean ok = logfl_wsjtx_server_send (s, pkt->data, pkt->len, error);
+  g_byte_array_unref (pkt);
+  return ok;
 }
 
 gboolean

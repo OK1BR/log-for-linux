@@ -90,9 +90,11 @@ entry row always pre-filled with the live VFO — nearly free.
   spot on the panadapter drops the callsign into the Call entry** with the
   worked-B4/dup verdict run as if typed; CW/RTTY macros key the radio;
   automatic reconnect
-- **WSJT-X / JTDX auto-logging** (UDP `127.0.0.1:2237`, schema 2/3): every
-  *QSO Logged* lands in the store (dup-safe), and decode lists get
-  worked-before **Highlight Callsign** replies (green = new, yellow = B4)
+- **WSJT-X / JTDX / FTX for Linux auto-logging** (UDP `127.0.0.1:2237`,
+  schema 2/3): every *QSO Logged* lands in the store (dup-safe), and the
+  decode lists get worked-before **Highlight Callsign** replies — for the DX
+  call in *Status* (green = new, yellow = B4) and for every station in the
+  *Decode* stream (yellow when worked on that band **and** mode)
 - **Duplicate lookup service for `skimmer-for-linux`** (UDP `127.0.0.1:2238`,
   always on): `DUP? <call> <freq_hz> <mode>` → `NEW|B4|DUP|INV` (INV = not a
   valid QSO in the active contest), so the skimmer

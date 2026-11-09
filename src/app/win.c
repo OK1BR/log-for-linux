@@ -94,6 +94,9 @@ struct _LogflWindow {
                                   prefill derived from the call (#28) */
   LogflTciClient *tci;
   LogflWsjtxServer *wsjtx;     /* M6: UDP listener for WSJT-X / JTDX        */
+  GHashTable *wsjtx_b4;        /* "CALL|band|mode" → worked verdict for the
+                                  Decode stream; dropped whenever the log
+                                  changes (reload)                          */
   LogflDupSrv *dup_srv;        /* worked/dup answers for the skimmer        */
   GtkWidget *cw_text_win;      /* Ctrl+K free CW text window (weak ptr)     */
   LogflQso *pending;           /* QSO awaiting dup confirmation */
@@ -366,6 +369,8 @@ rescore (LogflWindow *self)
 static void
 reload (LogflWindow *self)
 {
+  if (self->wsjtx_b4)
+    g_hash_table_remove_all (self->wsjtx_b4);   /* the log changed: WSJT-X verdicts are stale */
   if (!self->store)
     {
       if (self->rows)
@@ -2478,8 +2483,63 @@ on_wsjtx_status (const LogflWsjtxStatus *st, gpointer user_data)
                                             : LOGFL_QUERY_CONTEST_ALL,
                               st->dx_call, band, st->mode, &wb, NULL))
     return;
+  /* Worked before means on THIS band and mode (Richard 2026-11-09: a station
+   * worked on FT4 is still new on FT8, and new again on another band) —
+   * n_total would paint every band yellow. */
   logfl_wsjtx_server_highlight_b4 (self->wsjtx, st->hdr.id, st->dx_call,
-                                   wb.n_total, NULL);
+                                   wb.n_band_mode, NULL);
+}
+
+/* One Highlight per decoded station the client has worked on the current
+ * band and mode (the band from the client's last Status dial, the mode from
+ * its Status), so the whole Band Activity shows B4, not just the DX call.
+ * FTX for Linux sends every decode; WSJT-X does too.  Verdicts are cached
+ * per call|band|mode until the log changes (reload). */
+static void
+on_wsjtx_decode (const LogflWsjtxDecode *d, gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  if (!self->store || !self->wsjtx || !d || !d->message)
+    return;
+  char *call = logfl_wsjtx_message_de_call (d->message);
+  if (!call)
+    return;
+  guint64 dial = logfl_wsjtx_server_last_dial_hz (self->wsjtx);
+  const char *mode = logfl_wsjtx_server_last_mode (self->wsjtx);
+  const char *band = dial > 0 ? logfl_adif_band_for_freq ((double) dial / 1e6) : NULL;
+  if (!band || !mode || !mode[0])
+    {
+      g_free (call);
+      return;
+    }
+  if (!self->wsjtx_b4)
+    self->wsjtx_b4 = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  char *key = g_strdup_printf ("%s|%s|%s", call, band, mode);
+  gpointer cached = g_hash_table_lookup (self->wsjtx_b4, key);
+  gboolean worked;
+  if (cached)
+    {
+      worked = GPOINTER_TO_INT (cached) == 2;
+      g_free (key);
+    }
+  else
+    {
+      LogflWorkedB4 wb = { 0 };
+      if (!logfl_store_worked_b4 (self->store,
+                                  self->contest ? self->contest->id
+                                                : LOGFL_QUERY_CONTEST_ALL,
+                                  call, band, mode, &wb, NULL))
+        {
+          g_free (key);
+          g_free (call);
+          return;
+        }
+      worked = wb.n_band_mode > 0;
+      g_hash_table_insert (self->wsjtx_b4, key, GINT_TO_POINTER (worked ? 2 : 1));
+    }
+  if (worked)
+    logfl_wsjtx_server_highlight_worked (self->wsjtx, d->hdr.id, call, TRUE, NULL);
+  g_free (call);
 }
 
 static void
@@ -2489,9 +2549,11 @@ wsjtx_stop (LogflWindow *self)
     {
       logfl_wsjtx_server_set_logged_cb (self->wsjtx, NULL, NULL);
       logfl_wsjtx_server_set_status_cb (self->wsjtx, NULL, NULL);
+      logfl_wsjtx_server_set_decode_cb (self->wsjtx, NULL, NULL);
       logfl_wsjtx_server_free (self->wsjtx);
       self->wsjtx = NULL;
     }
+  g_clear_pointer (&self->wsjtx_b4, g_hash_table_unref);
   wsjtx_set_status (self, "WSJT-X off");
 }
 
@@ -2510,6 +2572,7 @@ wsjtx_start (LogflWindow *self)
   self->wsjtx = logfl_wsjtx_server_new (LOGFL_WSJTX_DEFAULT_HOST, port);
   logfl_wsjtx_server_set_logged_cb (self->wsjtx, on_wsjtx_logged, self);
   logfl_wsjtx_server_set_status_cb (self->wsjtx, on_wsjtx_status, self);
+  logfl_wsjtx_server_set_decode_cb (self->wsjtx, on_wsjtx_decode, self);
   GError *err = NULL;
   if (!logfl_wsjtx_server_start (self->wsjtx, &err))
     {
