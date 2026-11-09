@@ -228,6 +228,19 @@ gboolean logfl_wsjtx_server_highlight_worked (LogflWsjtxServer *s,
                                               const char *call,
                                               gboolean worked, GError **error);
 
+/* The station's DXCC entity is not in the log on this band and mode →
+ * magenta Highlight (WSJT-X's default "New DXCC" colour) to the last peer. */
+gboolean logfl_wsjtx_server_highlight_new_dxcc (LogflWsjtxServer *s,
+                                                const char *client_id,
+                                                const char *call,
+                                                GError **error);
+
+/* Take a highlight back (invalid colours), e.g. a "new DXCC" verdict that a
+ * logged QSO has just made stale. */
+gboolean logfl_wsjtx_server_highlight_clear (LogflWsjtxServer *s,
+                                             const char *client_id,
+                                             const char *call, GError **error);
+
 /* Convenience: highlight call on last peer. bg yellow when worked, green when
  * new (n_total==0); invalid bg clears. */
 gboolean logfl_wsjtx_server_highlight_b4 (LogflWsjtxServer *s,

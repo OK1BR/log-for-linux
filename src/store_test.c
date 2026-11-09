@@ -223,6 +223,12 @@ test_dup_check (void)
 }
 
 static void
+collect_cbm (const char *call, const char *band, const char *mode, gpointer user_data)
+{
+  g_string_append_printf (user_data, "%s|%s|%s;", call, band, mode);
+}
+
+static void
 test_worked_b4 (void)
 {
   GError *err = NULL;
@@ -258,6 +264,19 @@ test_worked_b4 (void)
                                         "OK1ABC", NULL, NULL, &wb, &err));
   g_assert_cmpuint (wb.n_total, ==, 3);
   g_assert_cmpuint (wb.n_band, ==, 0);
+
+  /* Distinct (call, band, mode): a repeat of an existing triple adds none. */
+  LogflQso *again = mk_qso ("OK1ABC", "40m", "CW", T + 9 * 3600);
+  g_assert_true (logfl_store_add (s, again, &err));
+  logfl_qso_free (again);
+  GString *seen = g_string_new (NULL);
+  g_assert_true (logfl_store_foreach_call_band_mode (s, LOGFL_QUERY_CONTEST_ALL,
+                                                     collect_cbm, seen, &err));
+  g_assert_nonnull (strstr (seen->str, "OK1ABC|40m|CW;"));
+  g_assert_nonnull (strstr (seen->str, "OK1ABC|20m|CW;"));
+  g_assert_nonnull (strstr (seen->str, "OK1ABC|40m|FT8;"));
+  g_assert_cmpuint (seen->len, ==, strlen ("OK1ABC|40m|CW;OK1ABC|20m|CW;OK1ABC|40m|FT8;"));
+  g_string_free (seen, TRUE);
 
   logfl_store_close (s);
 }

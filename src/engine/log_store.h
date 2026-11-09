@@ -111,6 +111,17 @@ gboolean logfl_store_worked_b4 (LogflStore *s, gint64 contest,
                                 const char *band, const char *mode,
                                 LogflWorkedB4 *out, GError **error);
 
+/* Every distinct (call, band, mode) in the log, scoped by contest like
+ * worked_b4 — the raw material for "which DXCC entities are worked on this
+ * band and mode" (the store keeps no entity column; the caller resolves the
+ * calls through cty). Strings are valid during the callback only. */
+typedef void (*LogflStoreCbmFunc) (const char *call, const char *band,
+                                   const char *mode, gpointer user_data);
+gboolean logfl_store_foreach_call_band_mode (LogflStore *s, gint64 contest,
+                                             LogflStoreCbmFunc func,
+                                             gpointer user_data,
+                                             GError **error);
+
 /* Dup check: does a QSO with the same call+band+mode exist within
  * ±window_s seconds of ts? */
 gboolean logfl_store_dup_check (LogflStore *s, const char *call,

@@ -600,6 +600,41 @@ out:
 }
 
 gboolean
+logfl_store_foreach_call_band_mode (LogflStore *s, gint64 contest,
+                                    LogflStoreCbmFunc func, gpointer user_data,
+                                    GError **error)
+{
+  char *sql = g_strdup_printf (
+      "SELECT DISTINCT call, band, mode FROM qso%s;",
+      contest > 0                           ? " WHERE contest_ref = ?1"
+      : contest == LOGFL_QUERY_CONTEST_NONE ? " WHERE contest_ref IS NULL"
+                                            : "");
+  sqlite3_stmt *st = NULL;
+  gboolean ok = FALSE;
+  if (sqlite3_prepare_v2 (s->db, sql, -1, &st, NULL) != SQLITE_OK)
+    {
+      sql_fail (s->db, "call-band-mode", error);
+      goto out;
+    }
+  if (contest > 0)
+    sqlite3_bind_int64 (st, 1, contest);
+  int rc;
+  while ((rc = sqlite3_step (st)) == SQLITE_ROW)
+    func ((const char *) sqlite3_column_text (st, 0),
+          (const char *) sqlite3_column_text (st, 1),
+          (const char *) sqlite3_column_text (st, 2), user_data);
+  if (rc == SQLITE_DONE)
+    ok = TRUE;
+  else
+    sql_fail (s->db, "call-band-mode", error);
+
+out:
+  sqlite3_finalize (st);
+  g_free (sql);
+  return ok;
+}
+
+gboolean
 logfl_store_dup_check (LogflStore *s, const char *call,
                        const char *band, const char *mode,
                        gint64 ts, guint window_s,

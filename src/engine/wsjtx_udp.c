@@ -1081,6 +1081,41 @@ logfl_wsjtx_server_highlight_worked (LogflWsjtxServer *s, const char *client_id,
 }
 
 gboolean
+logfl_wsjtx_server_highlight_new_dxcc (LogflWsjtxServer *s, const char *client_id,
+                                       const char *call, GError **error)
+{
+  g_return_val_if_fail (s != NULL, FALSE);
+  if (!call || !*call)
+    return TRUE;
+  const char *id = client_id && *client_id
+                       ? client_id
+                       : (s->peer_id ? s->peer_id : "WSJT-X");
+  /* WSJT-X's default "New DXCC" background (DecodeHighlightingModel.cpp) */
+  GByteArray *pkt = logfl_wsjtx_build_highlight (id, call, TRUE, 0xff, 0x00, 0xff,
+                                                 TRUE, 0x00, 0x00, 0x00, FALSE);
+  gboolean ok = logfl_wsjtx_server_send (s, pkt->data, pkt->len, error);
+  g_byte_array_unref (pkt);
+  return ok;
+}
+
+gboolean
+logfl_wsjtx_server_highlight_clear (LogflWsjtxServer *s, const char *client_id,
+                                    const char *call, GError **error)
+{
+  g_return_val_if_fail (s != NULL, FALSE);
+  if (!call || !*call)
+    return TRUE;
+  const char *id = client_id && *client_id
+                       ? client_id
+                       : (s->peer_id ? s->peer_id : "WSJT-X");
+  GByteArray *pkt = logfl_wsjtx_build_highlight (id, call, FALSE, 0, 0, 0,
+                                                 FALSE, 0, 0, 0, FALSE);
+  gboolean ok = logfl_wsjtx_server_send (s, pkt->data, pkt->len, error);
+  g_byte_array_unref (pkt);
+  return ok;
+}
+
+gboolean
 logfl_wsjtx_server_highlight_b4 (LogflWsjtxServer *s, const char *client_id,
                                  const char *call, guint n_total,
                                  GError **error)

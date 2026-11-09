@@ -97,6 +97,13 @@ struct _LogflWindow {
   GHashTable *wsjtx_b4;        /* "CALL|band|mode" → worked verdict for the
                                   Decode stream; dropped whenever the log
                                   changes (reload)                          */
+  GHashTable *wsjtx_dxcc;      /* set "PFX|band|MODE": DXCC entities in the
+                                  log per band and mode; NULL = not built
+                                  (built on the first Decode, dropped on
+                                  reload)                                   */
+  GHashTable *wsjtx_new_sent;  /* calls the client holds a "new DXCC"
+                                  highlight for — taken back when a logged
+                                  QSO makes the verdict stale               */
   LogflDupSrv *dup_srv;        /* worked/dup answers for the skimmer        */
   GtkWidget *cw_text_win;      /* Ctrl+K free CW text window (weak ptr)     */
   LogflQso *pending;           /* QSO awaiting dup confirmation */
@@ -371,6 +378,7 @@ reload (LogflWindow *self)
 {
   if (self->wsjtx_b4)
     g_hash_table_remove_all (self->wsjtx_b4);   /* the log changed: WSJT-X verdicts are stale */
+  g_clear_pointer (&self->wsjtx_dxcc, g_hash_table_unref);
   if (!self->store)
     {
       if (self->rows)
@@ -2490,9 +2498,52 @@ on_wsjtx_status (const LogflWsjtxStatus *st, gpointer user_data)
                                    wb.n_band_mode, NULL);
 }
 
-/* One Highlight per decoded station the client has worked on the current
- * band and mode (the band from the client's last Status dial, the mode from
- * its Status), so the whole Band Activity shows B4, not just the DX call.
+/* The DXCC entity of a call as a key: the primary prefix, with the WAE-only
+ * entities of cty.dat folded into the DXCC entity they belong to (Sicily is
+ * Italy for DXCC).  NULL when cty cannot place the call. */
+static const char *
+wsjtx_dxcc_prefix (LogflWindow *self, const char *call)
+{
+  LogflCtyInfo ci;
+  if (!self->cty || !logfl_cty_lookup (self->cty, call, &ci) || !ci.prefix)
+    return NULL;
+  if (ci.waedc_only)
+    {
+      static const char *const wae[][2] = {
+        { "4U1V", "OE" }, { "GM/s", "GM" }, { "IG9", "I" },
+        { "IT9", "I" },   { "JW/b", "JW" }, { "TA1", "TA" },
+      };
+      for (gsize i = 0; i < G_N_ELEMENTS (wae); i++)
+        if (strcmp (ci.prefix, wae[i][0]) == 0)
+          return wae[i][1];
+    }
+  return ci.prefix;
+}
+
+static char *
+wsjtx_dxcc_key (const char *pfx, const char *band, const char *mode)
+{
+  char *b = g_ascii_strdown (band, -1), *m = g_ascii_strup (mode, -1);
+  char *key = g_strdup_printf ("%s|%s|%s", pfx, b, m);
+  g_free (b);
+  g_free (m);
+  return key;
+}
+
+static void
+wsjtx_dxcc_add (const char *call, const char *band, const char *mode,
+                gpointer user_data)
+{
+  LogflWindow *self = user_data;
+  const char *pfx = call && band && mode ? wsjtx_dxcc_prefix (self, call) : NULL;
+  if (pfx)
+    g_hash_table_add (self->wsjtx_dxcc, wsjtx_dxcc_key (pfx, band, mode));
+}
+
+/* One Highlight per decoded station (the band from the client's last Status
+ * dial, the mode from its Status), so the whole Band Activity is marked, not
+ * just the DX call: yellow = worked on this band and mode, magenta = its
+ * DXCC entity is not in the log on this band and mode, nothing otherwise.
  * FTX for Linux sends every decode; WSJT-X does too.  Verdicts are cached
  * per call|band|mode until the log changes (reload). */
 static void
@@ -2516,10 +2567,10 @@ on_wsjtx_decode (const LogflWsjtxDecode *d, gpointer user_data)
     self->wsjtx_b4 = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
   char *key = g_strdup_printf ("%s|%s|%s", call, band, mode);
   gpointer cached = g_hash_table_lookup (self->wsjtx_b4, key);
-  gboolean worked;
+  int verdict;                  /* 1 nothing to say, 2 worked, 3 new DXCC */
   if (cached)
     {
-      worked = GPOINTER_TO_INT (cached) == 2;
+      verdict = GPOINTER_TO_INT (cached);
       g_free (key);
     }
   else
@@ -2534,11 +2585,42 @@ on_wsjtx_decode (const LogflWsjtxDecode *d, gpointer user_data)
           g_free (call);
           return;
         }
-      worked = wb.n_band_mode > 0;
-      g_hash_table_insert (self->wsjtx_b4, key, GINT_TO_POINTER (worked ? 2 : 1));
+      verdict = wb.n_band_mode > 0 ? 2 : 1;
+      const char *pfx = verdict == 1 ? wsjtx_dxcc_prefix (self, call) : NULL;
+      if (pfx)
+        {
+          if (!self->wsjtx_dxcc)
+            {
+              self->wsjtx_dxcc = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+              logfl_store_foreach_call_band_mode (self->store,
+                                                  self->contest ? self->contest->id
+                                                                : LOGFL_QUERY_CONTEST_ALL,
+                                                  wsjtx_dxcc_add, self, NULL);
+            }
+          char *ek = wsjtx_dxcc_key (pfx, band, mode);
+          if (!g_hash_table_contains (self->wsjtx_dxcc, ek))
+            verdict = 3;
+          g_free (ek);
+        }
+      g_hash_table_insert (self->wsjtx_b4, key, GINT_TO_POINTER (verdict));
     }
-  if (worked)
-    logfl_wsjtx_server_highlight_worked (self->wsjtx, d->hdr.id, call, TRUE, NULL);
+  if (!self->wsjtx_new_sent)
+    self->wsjtx_new_sent = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  if (verdict == 3)
+    {
+      logfl_wsjtx_server_highlight_new_dxcc (self->wsjtx, d->hdr.id, call, NULL);
+      g_hash_table_add (self->wsjtx_new_sent, g_strdup (call));
+    }
+  else
+    {
+      /* a QSO logged since made an earlier "new DXCC" stale: yellow replaces
+       * it for the station worked, the others of that entity are cleared */
+      gboolean had_new = g_hash_table_remove (self->wsjtx_new_sent, call);
+      if (verdict == 2)
+        logfl_wsjtx_server_highlight_worked (self->wsjtx, d->hdr.id, call, TRUE, NULL);
+      else if (had_new)
+        logfl_wsjtx_server_highlight_clear (self->wsjtx, d->hdr.id, call, NULL);
+    }
   g_free (call);
 }
 
@@ -2554,6 +2636,8 @@ wsjtx_stop (LogflWindow *self)
       self->wsjtx = NULL;
     }
   g_clear_pointer (&self->wsjtx_b4, g_hash_table_unref);
+  g_clear_pointer (&self->wsjtx_dxcc, g_hash_table_unref);
+  g_clear_pointer (&self->wsjtx_new_sent, g_hash_table_unref);
   wsjtx_set_status (self, "WSJT-X off");
 }
 
