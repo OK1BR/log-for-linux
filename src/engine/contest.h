@@ -273,8 +273,9 @@ LogflQsoValidity logfl_contest_qso_validity (const LogflExchDef *def,
 
 /* One-time repair for contests created before validity rules existed: a
  * stored exch_def carrying neither counts nor zero_own_country gets the
- * rule its ADIF id implies (DARC-WAEDC* → eu-dx, EU-HF → eu-only,
- * CQ-WW* → zero_own_country) written back to the store. Since LOG-3 the
+ * rule its ADIF id implies (DARC-WAEDC* → eu-dx, save for the RTTY part,
+ * which has no continental limit; EU-HF → eu-only; CQ-WW* →
+ * zero_own_country) written back to the store. Since LOG-3 the
  * same pass also backfills points=/mult= for contests whose ADIF id maps
  * to a preset scoring rule and whose def names neither key, and the
  * [cabrillo] category lists for a def without that group — matched on the

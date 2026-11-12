@@ -1583,6 +1583,16 @@ logfl_contest_score (const LogflExchDef *def, LogflCty *cty,
   "power=HIGH;LOW;\n" \
   "mode=CW;SSB;RTTY;\n" \
   "assisted=\n"
+/* The RTTY part: §3 holds for all three parts and §12 changes nothing in
+ * it (darc.de WAE rules, read 2026-11-12) — the lists of CAB_WAE with the
+ * one mode this part is run in. */
+#define CAB_WAERTTY \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;MULTI-OP;CHECKLOG;\n" \
+  "band=ALL;\n" \
+  "power=HIGH;LOW;\n" \
+  "mode=RTTY;\n" \
+  "assisted=\n"
 /* cvadx.org/regulamento (67th edition, 2026-08-03) §4-§6 and the value
  * lists of the sponsor's validator (cvadx.org/logs/logs.php): DUAL is
  * CVA's own band value for SODB (10 + 80 m); the upload form asks for
@@ -1659,6 +1669,12 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
     const char *weight;
     const char *counts_name;     /* rides with an entities: counts rule */
   } rules[] = {
+    /* Prefix match, first row wins: the RTTY part must sit above the bare
+     * DARC-WAEDC, which would otherwise hand it the CW/SSB validity — and
+     * WAE rules §12 lift the continental limit there, so from an EU seat
+     * every European QSO would stop counting. */
+    { "DARC-WAEDC-RTTY", NULL, FALSE, PTS_WAE,   MULT_WAE,   NULL, WEIGHT_WAE,
+      NULL },
     { "DARC-WAEDC", "eu-dx",   FALSE, PTS_WAE,   MULT_WAE,   NULL, WEIGHT_WAE,
       NULL },
     { "EU-HF",      "eu-only", FALSE, PTS_EUHFC, MULT_EUHFC, NULL, NULL, NULL },
@@ -1691,7 +1707,7 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
     { "CQ-WPX-CW", CAB_WPX },  { "CQ-WPX-SSB", CAB_WPX },
     { "IARU-HF", CAB_IARU },   { "OK-OM-DX", CAB_OKOM },
     { "EU-HF", CAB_EUHFC },    { "DARC-WAEDC-CW", CAB_WAE },
-    { "DARC-WAEDC-SSB", CAB_WAE }, { "DARC-WAEDC-RTTY", CAB_WAE },
+    { "DARC-WAEDC-SSB", CAB_WAE }, { "DARC-WAEDC-RTTY", CAB_WAERTTY },
     { "CVA-DX-CW", CAB_CVA },  { "CVA-DX-SSB", CAB_CVA },
     { "SARTG-RTTY", CAB_SARTG }, { "YOHFDX", CAB_YODX },
     { "SAC-CW", CAB_SAC },     { "SAC-SSB", CAB_SAC },
@@ -1803,18 +1819,21 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
 /* --- the id a QSO goes out under ----------------------------------------- */
 
 /* Contests run in parts by mode under one set of rules — one preset serves
- * the CW and the SSB weekend (WAE: the RTTY one too). ADIF 3.1.7 lists no
- * bare CQ-WW or SAC, only CQ-WW-CW / CQ-WW-SSB / SAC-CW / SAC-SSB … (adif.org
- * Contest_ID enumeration, read 2026-10-24), and cqww.com/cabrillo.htm takes
- * CONTEST: CQ-WW-CW or CQ-WW-SSB, "the only two that are accepted". A
- * contest made from a preset stores the id the preset carries — bare
- * (CQ-WW) or the part the preset was written for (SAC-CW); which part the
- * log goes out under is settled here, from the QSO's mode, when the file is
- * written (issue #27: a SAC SSB log would have gone out as SAC-CW, a CQ WW
- * log as the bare CQ-WW). The parts listed are the ones ADIF knows for the
- * family; a sibling that shares the prefix but is a contest of its own with
- * its own preset (CQ-WW-RTTY, CQ-WPX-RTTY) is deliberately not among them,
- * so it stays itself whatever mode a QSO carries. */
+ * the CW and the SSB weekend. (WAE's RTTY weekend has a preset of its own
+ * for what rules §12 change, yet stays a part of the family: an RTTY QSO
+ * logged under the CW/SSB preset still goes out as -RTTY.) ADIF 3.1.7
+ * lists no bare CQ-WW or SAC, only CQ-WW-CW / CQ-WW-SSB / SAC-CW /
+ * SAC-SSB … (adif.org Contest_ID enumeration, read 2026-10-24), and
+ * cqww.com/cabrillo.htm takes CONTEST: CQ-WW-CW or CQ-WW-SSB, "the only
+ * two that are accepted". A contest made from a preset stores the id the
+ * preset carries — bare (CQ-WW) or the part the preset was written for
+ * (SAC-CW); which part the log goes out under is settled here, from the
+ * QSO's mode, when the file is written (issue #27: a SAC SSB log would have
+ * gone out as SAC-CW, a CQ WW log as the bare CQ-WW). The parts listed are
+ * the ones ADIF knows for the family; a sibling that shares the prefix but
+ * is a contest of its own with its own preset (CQ-WW-RTTY, CQ-WPX-RTTY) is
+ * deliberately not among them, so it stays itself whatever mode a QSO
+ * carries. */
 static const struct {
   const char *family;          /* the id without its part */
   const char *const parts[4];  /* NULL-terminated */
@@ -1947,28 +1966,57 @@ static const LogflContestPreset presets[] = {
     CAB_EUHFC
     "[field:year]\nlabel=Year\ntype=text\nrequired=true\n",
     "two-digit year of first licence (e.g. 99)" },
-  /* WAE (darc.de rules): RST + progressive serial, "000" when the other
-   * side sends none; "a contest QSO can only be conducted between a
-   * European and a non-European station" — counts=eu-dx. The ADIF id
-   * is per part — the preset carries the CW one, and the part a QSO goes
-   * out under follows its mode (logfl_contest_id_for_mode: the SSB and
-   * RTTY editions get -SSB / -RTTY from the log itself). Cabrillo CONTEST
-   * equals the ADIF id per the WA7BNM master list; DARC's own rules name
-   * no value. DARC-WAEDC-CW confirmed live: the DARC robot accepted
-   * OK1BR's 2026 log under it. */
+  /* WAE, the CW and SSB parts (darc.de rules): RST + progressive serial,
+   * "000" when the other side sends none; "a contest QSO can only be
+   * conducted between a European and a non-European station" —
+   * counts=eu-dx. The RTTY part lifts that limit and has the preset below.
+   * The ADIF id is per part — the preset carries the CW one, and the part
+   * a QSO goes out under follows its mode (logfl_contest_id_for_mode: the
+   * SSB edition gets -SSB from the log itself). Cabrillo CONTEST equals
+   * the ADIF id per the WA7BNM master list; DARC's own rules name no
+   * value. DARC-WAEDC-CW confirmed live: the DARC robot accepted OK1BR's
+   * 2026 log under it. */
   { "WAE DX", "DARC-WAEDC-CW",
     /* Scoring §5/§6/§8 (darc.de WAE rules, 2026-08-28): 1 point per QSO
      * (derived from §8 "total QSOs plus QTCs"); mults = worked entities
      * with numerical call areas split in W VE VK ZL ZS JA BY PY RA8/9/0,
      * weighted 80m×4 / 40m×3 / 20-10m×2. The eu-dx validity restricts an
-     * EU seat's mults to non-EU; for the RTTY leg (no continental limit,
-     * §12) the operator edits counts= and the mult rule then counts every
-     * side's entities, which is what §12 asks. QTC points are NOT counted
-     * (QTC traffic is deferred — issue #12) — the claimed score is a
-     * documented underestimate until then. */
+     * EU seat's mults to non-EU, which is what §6 gives a European
+     * station. QTC points are NOT counted (QTC traffic is deferred —
+     * issue #12) — the claimed score is a documented underestimate until
+     * then. */
     "[exchange]\ntx_serial=true\nfields=nr;\ncounts=eu-dx\n"
     "points=" PTS_WAE "\nmult=" MULT_WAE "\nmult_weight=" WEIGHT_WAE "\n"
     CAB_WAE
+    "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
+    NULL },
+  /* WAE, the RTTY part (darc.de WAE rules §12 "Special Rules for RTTY",
+   * read 2026-11-12): "there are no continental limits; everybody can work
+   * everybody" — OK-OK too. That is why the part has a preset of its own:
+   * under eu-dx every European QSO from an OK seat would raise the "not
+   * valid" confirmation and score nothing, and a preset's validity cannot
+   * be edited in the contest dialog. counts=all is spelled out — it is the
+   * rule this preset exists for.
+   * Exchange, points, dupes and band weight are those of the other parts:
+   * RST + serial from 001, "000" when none is sent, once per band (§5);
+   * 1 point per QSO (§8); 80m×4 / 40m×3 / 20-10m×2 (§6). Mults §12: "the
+   * European and non-European multipliers indicated in §6 count for all
+   * stations" — the WAE-list countries and the non-European DXCC entities
+   * alike, call areas split as in §6; with no side filtered out by the
+   * validity, that is what country-areas counts.
+   * Not modeled: QTC traffic — here every station may send and receive,
+   * between different continents only, at most 10 per pair of stations
+   * (§12; issue #12) — so the claimed score is an underestimate, more so
+   * than on CW/SSB, where an EU seat only receives. Nor §5's "QSOs logged
+   * with 000 give only credit, if a new multi is worked with this QSO": a
+   * 000 QSO scores its point either way, as in the CW/SSB preset.
+   * Cabrillo CONTEST: DARC names no value; DARC-WAEDC-RTTY, the ADIF id,
+   * is by analogy with the -CW one its robot accepted in August 2026 —
+   * unconfirmed until the first upload. */
+  { "WAE DX RTTY", "DARC-WAEDC-RTTY",
+    "[exchange]\ntx_serial=true\nfields=nr;\ncounts=all\n"
+    "points=" PTS_WAE "\nmult=" MULT_WAE "\nmult_weight=" WEIGHT_WAE "\n"
+    CAB_WAERTTY
     "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n",
     NULL },
   /* CVA (cvadx.org/regulamento): we send RS(T) + continent ("599 EU"); PY

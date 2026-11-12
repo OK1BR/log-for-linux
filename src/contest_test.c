@@ -217,6 +217,23 @@ test_qso_validity (void)
                    LOGFL_QSO_VALID);
   logfl_exch_def_free (wae);
 
+  /* WAE RTTY: rules §12 lift the continental limit — everybody works
+   * everybody, the own country included, and nothing scores zero. */
+  LogflExchDef *waertty =
+      logfl_exch_def_parse (preset_named ("WAE DX RTTY")->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (waertty->counts, ==, LOGFL_COUNTS_ALL);
+  g_assert_false (waertty->zero_own_country);
+  g_assert_cmpint (logfl_contest_qso_validity (waertty, &ok, &oh), ==,
+                   LOGFL_QSO_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (waertty, &ok, &ok), ==,
+                   LOGFL_QSO_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (waertty, &ok, &k), ==,
+                   LOGFL_QSO_VALID);
+  g_assert_cmpint (logfl_contest_qso_validity (waertty, &k, &py), ==,
+                   LOGFL_QSO_VALID);
+  logfl_exch_def_free (waertty);
+
   /* EUHFC: Europeans only — judged from their side alone. */
   LogflExchDef *euhfc =
       logfl_exch_def_parse (preset_named ("EUHFC")->exch_def, &err);
@@ -381,6 +398,70 @@ test_backfill_validity (void)
   logfl_store_close (s);
 }
 
+/* WAE RTTY has no continental limit (rules §12): the backfill must never
+ * hand a DARC-WAEDC-RTTY contest the eu-dx rule of the CW/SSB parts, which
+ * it finds by the family's prefix. */
+static void
+test_backfill_waertty (void)
+{
+  GError *err = NULL;
+  LogflStore *s = mem_store ();
+  static const char *OLD_DEF =
+      "[exchange]\ntx_serial=true\nfields=nr;\n"
+      "[field:nr]\nlabel=Nr\ntype=serial\nrequired=true\n";
+  const LogflContestPreset *p = preset_named ("WAE DX RTTY");
+
+  /* Made from the preset: it names every key, so not a byte moves. */
+  LogflContest *fresh =
+      mk_contest (s, "WAE DX RTTY 2026", p->adif_id, p->exch_def);
+  /* The id on a definition that names no rule at all: scoring and the
+   * category lists come, the validity stays open. */
+  LogflContest *bare =
+      mk_contest (s, "WAE RTTY by hand", "DARC-WAEDC-RTTY", OLD_DEF);
+  /* The CW part next to it still gets its limit. */
+  LogflContest *cw = mk_contest (s, "WAE DX 2026", "DARC-WAEDC-CW", OLD_DEF);
+
+  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 2);
+  g_assert_no_error (err);
+
+  LogflContest *back = logfl_store_contest_get (s, fresh->id, &err);
+  g_assert_cmpstr (back->exch_def, ==, p->exch_def);
+  LogflExchDef *def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
+  back = logfl_store_contest_get (s, bare->id, &err);
+  def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
+  g_assert_nonnull (def->points);
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_COUNTRY_AREAS);
+  g_assert_nonnull (def->mult_weight);
+  g_assert_cmpstr (def->cab[LOGFL_CAB_MODE][0], ==, "RTTY");
+  g_assert_null (def->cab[LOGFL_CAB_MODE][1]);
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
+  back = logfl_store_contest_get (s, cw->id, &err);
+  def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_EU_DX);
+  g_assert_cmpstr (def->cab[LOGFL_CAB_MODE][0], ==, "CW");
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
+  /* Second run: nothing left to do. */
+  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 0);
+  g_assert_no_error (err);
+
+  logfl_contest_free (fresh);
+  logfl_contest_free (bare);
+  logfl_contest_free (cw);
+  logfl_store_close (s);
+}
+
 /* The 2026-09-20 finding: the category lists belong to the contest, and in
  * SAC to the seat. */
 static void
@@ -448,9 +529,10 @@ test_cab_categories (void)
   logfl_exch_def_free (back);
   logfl_exch_def_free (sac);
 
-  /* No single-band category exists in these three — the list is ALL and
+  /* No single-band category exists in these four — the list is ALL and
    * nothing else, whatever the log looks like. */
-  static const char *const all_band_only[] = { "IARU HF", "WAE DX", "EUHFC" };
+  static const char *const all_band_only[] =
+    { "IARU HF", "WAE DX", "WAE DX RTTY", "EUHFC" };
   for (gsize i = 0; i < G_N_ELEMENTS (all_band_only); i++)
     {
       LogflExchDef *d = logfl_exch_def_parse (
@@ -477,6 +559,16 @@ test_cab_categories (void)
   v = logfl_exch_def_cab_values (d, LOGFL_CAB_POWER, &ok);
   g_assert_false (g_strv_contains (v, "QRP"));
   /* DARC says nothing on transmitters: no rule, the v3 list stays. */
+  g_assert_null (logfl_exch_def_cab_values (d, LOGFL_CAB_TRANSMITTER, &ok));
+  logfl_exch_def_free (d);
+  /* The RTTY part: the same categories (rules §3), its one mode. */
+  d = logfl_exch_def_parse (preset_named ("WAE DX RTTY")->exch_def, &err);
+  g_assert_no_error (err);
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_MODE, &ok);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 1);
+  g_assert_cmpstr (v[0], ==, "RTTY");
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_POWER, &ok);
+  g_assert_false (g_strv_contains (v, "QRP"));
   g_assert_null (logfl_exch_def_cab_values (d, LOGFL_CAB_TRANSMITTER, &ok));
   logfl_exch_def_free (d);
   d = logfl_exch_def_parse (preset_named ("CVA DX")->exch_def, &err);
@@ -640,7 +732,8 @@ test_presets (void)
 
   /* WAE/SARTG are serial contests; CVA's continent/state is TEXT (a PY
    * state like "SP" must never be reinterpreted as a number). */
-  gboolean wae = FALSE, cva = FALSE, sartg = FALSE, yodx = FALSE;
+  gboolean wae = FALSE, waertty = FALSE, cva = FALSE, sartg = FALSE,
+           yodx = FALSE;
   for (guint i = 0; i < n; i++)
     {
       LogflExchFieldType want;
@@ -649,6 +742,13 @@ test_presets (void)
         {
           wae = TRUE;
           g_assert_cmpstr (p[i].adif_id, ==, "DARC-WAEDC-CW");
+          want = LOGFL_EXCH_SERIAL;
+          want_serial = TRUE;
+        }
+      else if (g_strcmp0 (p[i].name, "WAE DX RTTY") == 0)
+        {
+          waertty = TRUE;
+          g_assert_cmpstr (p[i].adif_id, ==, "DARC-WAEDC-RTTY");
           want = LOGFL_EXCH_SERIAL;
           want_serial = TRUE;
         }
@@ -683,7 +783,7 @@ test_presets (void)
       g_assert_cmpint (def->tx_serial, ==, want_serial);
       logfl_exch_def_free (def);
     }
-  g_assert_true (wae && cva && sartg && yodx);
+  g_assert_true (wae && waertty && cva && sartg && yodx);
 
   /* YO DX: everyone works everyone and no QSO scores zero from an OK seat
    * (rules §6.1) — the preset must carry no validity rule at all. */
@@ -1899,6 +1999,60 @@ test_score_wae (void)
   logfl_exch_def_free (def);
 }
 
+/* WAE RTTY (darc.de WAE rules §12): the scoring of the other parts with
+ * the continental limit lifted. From an OK seat a European QSO — an OK one
+ * too — is worth its point and brings its WAE country, next to the
+ * non-European entities and call areas; every band weighs as in §6. */
+static void
+test_score_waertty (void)
+{
+  GError *err = NULL;
+  LogflExchDef *def = logfl_exch_def_parse (
+      preset_named ("WAE DX RTTY")->exch_def, &err);
+  g_assert_no_error (err);
+
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "DL1AB", "80m", "RTTY", "001");  /* EU-EU: DL ×4     */
+  add_sqso (qsos, 2, "OK2ABC", "80m", "RTTY", "002"); /* own country: OK ×4 */
+  add_sqso (qsos, 3, "DK3CD", "80m", "RTTY", "003");  /* DL known         */
+  add_sqso (qsos, 4, "K1AB", "40m", "RTTY", "004");   /* non-EU: K1 ×3    */
+  add_sqso (qsos, 5, "DL1AB", "40m", "RTTY", "005");  /* DL, new band ×3  */
+  add_sqso (qsos, 6, "JR4AAA", "20m", "RTTY", "006"); /* JA4 ×2           */
+  add_sqso (qsos, 7, "UA9ABC", "20m", "RTTY", "007"); /* RA9 ×2           */
+  add_sqso (qsos, 8, "IT9ABC", "15m", "RTTY", "008"); /* WAE list: IT9 ×2 */
+  add_sqso (qsos, 9, "I2ABC", "15m", "RTTY", "009");  /* Italy apart: I ×2 */
+  add_sqso (qsos, 10, "OH1AB", "10m", "RTTY", "010"); /* OH ×2            */
+  LogflContestTotals tot;
+  GHashTable *scores =
+    logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+  g_assert_nonnull (scores);
+  g_assert_cmpint (tot.points, ==, 10);
+  /* 80 m: DL OK = 2×4; 40 m: K1 DL = 2×3; 20 m: JA4 RA9 = 2×2;
+   * 15 m: IT9 I = 2×2; 10 m: OH = 1×2. */
+  g_assert_cmpint (tot.mults, ==, 24);
+  g_assert_cmpint (tot.total, ==, 240);
+  g_assert_cmpint (score_of (scores, 1)->points, ==, 1);
+  g_assert_cmpstr (score_of (scores, 1)->mult, ==, "DL");
+  g_assert_cmpint (score_of (scores, 2)->points, ==, 1);
+  g_assert_cmpstr (score_of (scores, 2)->mult, ==, "OK");
+  g_assert_cmpint (score_of (scores, 3)->points, ==, 1);
+  g_assert_null (score_of (scores, 3)->mult);
+  g_assert_cmpstr (score_of (scores, 4)->mult, ==, "K1");
+  g_assert_cmpstr (score_of (scores, 5)->mult, ==, "DL");
+  g_assert_cmpstr (score_of (scores, 6)->mult, ==, "JA4");
+  g_assert_cmpstr (score_of (scores, 7)->mult, ==, "RA9");
+  g_assert_cmpstr (score_of (scores, 8)->mult, ==, "IT9");
+  g_assert_cmpstr (score_of (scores, 9)->mult, ==, "I");
+  g_assert_cmpstr (score_of (scores, 10)->mult, ==, "OH");
+
+  g_hash_table_unref (scores);
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (def);
+}
+
 static void
 test_score_iaru (void)
 {
@@ -1991,6 +2145,7 @@ test_contest_id_for_mode (void)
     { "SAC", "SSB", "SAC-SSB" },
     { "DARC-WAEDC-CW", "RTTY", "DARC-WAEDC-RTTY" },
     { "DARC-WAEDC-CW", "SSB", "DARC-WAEDC-SSB" },
+    { "DARC-WAEDC-RTTY", "RTTY", "DARC-WAEDC-RTTY" }, /* the RTTY preset */
     { "CVA-DX-CW", "SSB", "CVA-DX-SSB" },
     { "EU-HF", "SSB", "EU-HF" },
     { "SARTG-RTTY", "RTTY", "SARTG-RTTY" },
@@ -2182,6 +2337,7 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/exch-def-errors", test_exch_def_errors);
   g_test_add_func ("/contest/qso-validity", test_qso_validity);
   g_test_add_func ("/contest/backfill-validity", test_backfill_validity);
+  g_test_add_func ("/contest/backfill-waertty", test_backfill_waertty);
   g_test_add_func ("/contest/cab-categories", test_cab_categories);
   g_test_add_func ("/contest/backfill-cab", test_backfill_cab);
   g_test_add_func ("/contest/presets", test_presets);
@@ -2210,6 +2366,7 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/score/wpx", test_score_wpx);
   g_test_add_func ("/contest/score/euhfc", test_score_euhfc);
   g_test_add_func ("/contest/score/wae", test_score_wae);
+  g_test_add_func ("/contest/score/waertty", test_score_waertty);
   g_test_add_func ("/contest/score/sac", test_score_sac);
   g_test_add_func ("/contest/score/iaru", test_score_iaru);
   g_test_add_func ("/contest/score/unavailable", test_score_unavailable);
