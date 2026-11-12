@@ -271,6 +271,20 @@ LogflQsoValidity logfl_contest_qso_validity (const LogflExchDef *def,
                                              const LogflCtyInfo *mine,
                                              const LogflCtyInfo *theirs);
 
+/* Is text — not the number everybody else sends — the answer to expect in
+ * exchange field `field` from a station of their entity? TRUE for a field
+ * that takes both (AUTO) when the multiplier rule counts the received
+ * text from their entity by name (exch-text:LZ, exch:YO) — LZ DX, where an
+ * LZ station sends its district in the place of the ITU zone. The entry
+ * row asks before it offers the zone cty knows for a call: "28" for LZ1ABC
+ * would sit where "SF" is due, and a forgotten overwrite logs a wrong
+ * exchange. FALSE where the text has a field of its own (CQ WW RTTY: the
+ * zone field is a NUMBER, the W/VE QTH sits behind it), where the rule
+ * names no entity (IARU HF: a call does not tell an HQ station), and for
+ * a NULL or unresolved theirs. */
+gboolean logfl_exch_expects_text (const LogflExchDef *def, guint field,
+                                  const LogflCtyInfo *theirs);
+
 /* One-time repair for contests created before validity rules existed: a
  * stored exch_def carrying neither counts nor zero_own_country gets the
  * rule its ADIF id implies (DARC-WAEDC* → eu-dx, save for the RTTY part,

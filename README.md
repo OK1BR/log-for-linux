@@ -55,7 +55,7 @@ entry row always pre-filled with the live VFO — nearly free.
 - **Contests as first-class log sections**: create/switch/delete from the
   header, each contest copies its exchange template at creation. Presets for
   CQ WW, CQ WW RTTY, CQ WPX, IARU HF, OK/OM DX, EUHFC, WAE DX, WAE DX RTTY,
-  CVA DX, SARTG WW RTTY, YO DX and SAC, plus a custom template editor
+  CVA DX, SARTG WW RTTY, YO DX, SAC and LZ DX, plus a custom template editor
   (serial / number / text / auto fields mapped onto ADIF). The main-log view
   stays clean — contest QSOs live in their section, while worked-B4 and
   statistics stay global

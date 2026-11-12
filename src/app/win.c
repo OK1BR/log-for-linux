@@ -953,7 +953,11 @@ zone_field_index (LogflWindow *self, gboolean *cq)
  * operator copies as before. Written under syncing_row like the serial
  * and RST prefills, so it claims nothing: a spot-clicked call keeps its
  * mark and QSY still resets the whole row. theirs_ok FALSE (no cty, no
- * match, call too short) takes an untouched prefill away again. Nothing is
+ * match, call too short) takes an untouched prefill away again — and so
+ * does a call whose station answers with text in this very field (LZ DX:
+ * an LZ station sends its district where the others send the zone;
+ * logfl_exch_expects_text): its zone there would be a wrong exchange
+ * waiting for a forgotten overwrite. Nothing is
  * rewritten when the text already is what it would be — a TCI mode echo
  * runs through here too, and a same-text write would still move the
  * cursor under an operator who tabbed into the field. */
@@ -971,7 +975,8 @@ zone_follow_call (LogflWindow *self, gboolean theirs_ok,
     return;                      /* the operator's — hands off */
 
   char buf[8] = "";
-  if (theirs_ok)
+  if (theirs_ok
+      && !logfl_exch_expects_text (self->exch_def, (guint) idx, theirs))
     {
       int z = cq ? theirs->cq_zone : theirs->itu_zone;
       gboolean known = cq ? theirs->cq_zone_known : theirs->itu_zone_known;
@@ -4355,6 +4360,10 @@ cabrillo_contest_guess (const LogflContest *c, const char *log_mode)
     return g_strdup ("EUHFC");
   if (g_strcmp0 (c->adif_id, "YOHFDX") == 0)
     return g_strdup ("YO-DX-HF");
+  /* The ADIF id has a space, a CONTEST value cannot (A-Z, 0-9, hyphen);
+   * the sponsor names none — see the preset. */
+  if (g_strcmp0 (c->adif_id, "LZ DX") == 0)
+    return g_strdup ("LZ-DX");
   if (c->adif_id && *c->adif_id)
     return logfl_contest_id_for_mode (c->adif_id, log_mode);
   char *up = g_ascii_strup (c->name, -1);

@@ -578,6 +578,27 @@ test_cab_categories (void)
   v = logfl_exch_def_cab_values (d, LOGFL_CAB_STATION, &ok);
   g_assert_true (g_strv_contains (v, "EXPEDITION"));
   logfl_exch_def_free (d);
+  /* LZ DX: all band or one of 80-10 m, a QRP class, MIXED first, one
+   * transmitter and no assisted tag; the rules name no checklog, so the
+   * operator tag has no rule. */
+  d = logfl_exch_def_parse (preset_named ("LZ DX")->exch_def, &err);
+  g_assert_no_error (err);
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_BAND, &ok);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 6);
+  g_assert_cmpstr (v[0], ==, "ALL");
+  g_assert_false (g_strv_contains (v, "160M"));
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_POWER, &ok);
+  g_assert_true (g_strv_contains (v, "QRP"));
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_MODE, &ok);
+  g_assert_cmpstr (v[0], ==, "MIXED");
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_TRANSMITTER, &ok);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 1);
+  g_assert_cmpstr (v[0], ==, "ONE");
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_ASSISTED, &ok);
+  g_assert_nonnull (v);
+  g_assert_null (v[0]);
+  g_assert_null (logfl_exch_def_cab_values (d, LOGFL_CAB_OPERATOR, &ok));
+  logfl_exch_def_free (d);
 
   /* Custom carries no rule at all. */
   d = logfl_exch_def_parse (preset_named ("Custom")->exch_def, &err);
@@ -629,8 +650,13 @@ test_backfill_cab (void)
       "points=default=1;\nmult=exch\n"
       "[cabrillo]\nband=ALL;20M;\n"
       "[field:year]\nlabel=Year\ntype=text\n");
+  /* LZ DX made by hand: the id with the space finds its scoring rule and
+   * its lists like any other. */
+  LogflContest *lzdx = mk_contest (s, "LZ DX by hand", "LZ DX",
+      "[exchange]\ntx_serial=false\nfields=exch;\n"
+      "[field:exch]\nlabel=Zone/District\ntype=auto\nadif_num=ITUZ\n");
 
-  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 3);
+  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 4);
   g_assert_no_error (err);
 
   LogflContest *back = logfl_store_contest_get (s, sac->id, &err);
@@ -676,6 +702,23 @@ test_backfill_cab (void)
   logfl_exch_def_free (def);
   logfl_contest_free (back);
 
+  back = logfl_store_contest_get (s, lzdx->id, &err);
+  def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
+  g_assert_nonnull (def->points);
+  const LogflPtsTerm *lz_pts = &g_array_index (def->points, LogflPtsTerm, 0);
+  g_assert_cmpint (lz_pts->kind, ==, LOGFL_PTS_COUNTRY);
+  g_assert_cmpstr (lz_pts->arg, ==, "LZ");
+  g_assert_cmpint (lz_pts->points, ==, 10);
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_ZONE | LOGFL_MULT_EXCH_TEXT);
+  g_assert_cmpstr (def->mult_exch_text_from[0], ==, "LZ");
+  g_assert_cmpstr (def->cab[LOGFL_CAB_MODE][0], ==, "MIXED");
+  g_assert_false (g_strv_contains (
+      (const char *const *) def->cab[LOGFL_CAB_BAND], "160M"));
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
   g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 0);
   g_assert_no_error (err);
 
@@ -683,6 +726,7 @@ test_backfill_cab (void)
   logfl_contest_free (rtty);
   logfl_contest_free (own);
   logfl_contest_free (edited);
+  logfl_contest_free (lzdx);
   logfl_store_close (s);
 }
 
@@ -733,7 +777,7 @@ test_presets (void)
   /* WAE/SARTG are serial contests; CVA's continent/state is TEXT (a PY
    * state like "SP" must never be reinterpreted as a number). */
   gboolean wae = FALSE, waertty = FALSE, cva = FALSE, sartg = FALSE,
-           yodx = FALSE;
+           yodx = FALSE, lzdx = FALSE;
   for (guint i = 0; i < n; i++)
     {
       LogflExchFieldType want;
@@ -767,6 +811,15 @@ test_presets (void)
           want = LOGFL_EXCH_AUTO;
           want_serial = TRUE;
         }
+      else if (g_strcmp0 (p[i].name, "LZ DX") == 0)
+        {
+          /* Mixed exchange again: an ITU zone is digits, an LZ district
+           * text — and we send our zone, never a serial. */
+          lzdx = TRUE;
+          g_assert_cmpstr (p[i].adif_id, ==, "LZ DX");
+          want = LOGFL_EXCH_AUTO;
+          want_serial = FALSE;
+        }
       else if (g_strcmp0 (p[i].name, "SARTG WW RTTY") == 0)
         {
           sartg = TRUE;
@@ -783,7 +836,7 @@ test_presets (void)
       g_assert_cmpint (def->tx_serial, ==, want_serial);
       logfl_exch_def_free (def);
     }
-  g_assert_true (wae && waertty && cva && sartg && yodx);
+  g_assert_true (wae && waertty && cva && sartg && yodx && lzdx);
 
   /* YO DX: everyone works everyone and no QSO scores zero from an OK seat
    * (rules §6.1) — the preset must carry no validity rule at all. */
@@ -792,6 +845,21 @@ test_presets (void)
   g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
   g_assert_false (def->zero_own_country);
   g_assert_true (((LogflExchField *) def->fields->pdata[0])->required);
+  logfl_exch_def_free (def);
+
+  /* LZ DX: the zone goes to ITUZ like in IARU HF; everyone works everyone
+   * and nothing scores zero (lzdx.bfra.bg rules) — no validity rule; the
+   * district is counted from LZ stations alone. */
+  def = logfl_exch_def_parse (preset_named ("LZ DX")->exch_def, &err);
+  g_assert_no_error (err);
+  f = def->fields->pdata[0];
+  g_assert_cmpstr (f->adif_num, ==, "ITUZ");
+  g_assert_true (f->required);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
+  g_assert_false (def->zero_own_country);
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_ZONE | LOGFL_MULT_EXCH_TEXT);
+  g_assert_cmpuint (g_strv_length (def->mult_exch_text_from), ==, 1);
+  g_assert_cmpstr (def->mult_exch_text_from[0], ==, "LZ");
   logfl_exch_def_free (def);
 
   /* CQ WW RTTY: the zone plus an optional W/VE QTH (TEXT, so "05 MA" and
@@ -2087,6 +2155,127 @@ test_score_iaru (void)
   logfl_exch_def_free (def);
 }
 
+/* LZ DX (lzdx.bfra.bg/rulesen.html, read 2026-11-12), from an OK seat:
+ * 10 points for an LZ station, 3 other continent, 1 same continent with
+ * the own country in it; mults = ITU zones + LZ districts per band,
+ * whatever the mode — while the QSO itself counts once on CW and once on
+ * SSB. */
+static void
+test_score_lzdx (void)
+{
+  GError *err = NULL;
+  LogflExchDef *def = logfl_exch_def_parse (
+      preset_named ("LZ DX")->exch_def, &err);
+  g_assert_no_error (err);
+
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "LZ1ABC", "20m", "CW", "SF");   /* 10, zone 28 + SF    */
+  add_sqso (qsos, 2, "LZ1ABC", "20m", "SSB", "SF");  /* 10 again on SSB —
+                                                        the mults are per
+                                                        band, not mode     */
+  add_sqso (qsos, 3, "DL1AB", "20m", "CW", "28");    /* 1, zone 28 known   */
+  add_sqso (qsos, 4, "OK2XYZ", "20m", "CW", "28");   /* own country: 1     */
+  add_sqso (qsos, 5, "K1AB", "20m", "CW", "8");      /* 3, zone 8          */
+  add_sqso (qsos, 6, "LZ2XY", "20m", "CW", "PD");    /* 10, PD             */
+  add_sqso (qsos, 7, "LZ5ZZ", "20m", "CW", "SF");    /* 10, SF known       */
+  add_sqso (qsos, 8, "LZ1ABC", "40m", "CW", "SF");   /* 10, 28 + SF again —
+                                                        per band           */
+  add_sqso (qsos, 9, "DL1AB", "40m", "CW", "VN");    /* 1; text behind a DL
+                                                        call is no district */
+  add_sqso (qsos, 10, "LZ1ABC", "20m", "CW", "SF");  /* dupe: 0, none      */
+  add_sqso (qsos, 11, "JA1ABC", "15m", "SSB", "45"); /* 3, zone 45         */
+  add_sqso (qsos, 12, "DL1AB", "15m", "CW", "28");   /* 1, zone 28         */
+  LogflContestTotals tot;
+  GHashTable *scores =
+    logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+  g_assert_nonnull (scores);
+  g_assert_true (tot.have_points);
+  g_assert_true (tot.have_mult);
+  g_assert_cmpint (tot.points, ==, 60);
+  /* 20 m: 28 SF 8 PD; 40 m: 28 SF; 15 m: 45 28. */
+  g_assert_cmpint (tot.mults, ==, 8);
+  g_assert_cmpint (tot.total, ==, 480);
+
+  g_assert_cmpint (score_of (scores, 1)->points, ==, 10);
+  g_assert_cmpstr (score_of (scores, 1)->mult, ==, "28 SF");
+  g_assert_cmpint (score_of (scores, 2)->points, ==, 10);
+  g_assert_null (score_of (scores, 2)->mult);
+  g_assert_cmpint (score_of (scores, 3)->points, ==, 1);
+  g_assert_null (score_of (scores, 3)->mult);
+  g_assert_cmpint (score_of (scores, 4)->points, ==, 1);
+  g_assert_null (score_of (scores, 4)->mult);
+  g_assert_cmpint (score_of (scores, 5)->points, ==, 3);
+  g_assert_cmpstr (score_of (scores, 5)->mult, ==, "8");
+  g_assert_cmpstr (score_of (scores, 6)->mult, ==, "PD");
+  g_assert_cmpint (score_of (scores, 7)->points, ==, 10);
+  g_assert_null (score_of (scores, 7)->mult);
+  g_assert_cmpstr (score_of (scores, 8)->mult, ==, "28 SF");
+  g_assert_cmpint (score_of (scores, 9)->points, ==, 1);
+  g_assert_null (score_of (scores, 9)->mult);
+  g_assert_cmpint (score_of (scores, 10)->points, ==, 0);
+  g_assert_null (score_of (scores, 10)->mult);
+  g_assert_cmpint (score_of (scores, 11)->points, ==, 3);
+  g_assert_cmpstr (score_of (scores, 11)->mult, ==, "45");
+  g_assert_cmpstr (score_of (scores, 12)->mult, ==, "28");
+
+  g_hash_table_unref (scores);
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (def);
+}
+
+/* #35: the entry row offers the zone cty knows for a call — but not where
+ * the station answers with text in that very field. In LZ DX "28" behind
+ * LZ1ABC would sit where the district is due. */
+static void
+test_expects_text (void)
+{
+  GError *err = NULL;
+  LogflCtyInfo lz = cty_of ("Bulgaria", "LZ", "EU");
+  LogflCtyInfo dl = cty_of ("Fed. Rep. of Germany", "DL", "EU");
+  LogflCtyInfo k  = cty_of ("United States", "K", "NA");
+  LogflCtyInfo yo = cty_of ("Romania", "YO", "EU");
+  LogflCtyInfo none = { 0 };
+
+  /* LZ DX: one field for the zone or the district — text from LZ. */
+  LogflExchDef *d =
+      logfl_exch_def_parse (preset_named ("LZ DX")->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_true (logfl_exch_expects_text (d, 0, &lz));
+  g_assert_false (logfl_exch_expects_text (d, 0, &dl));
+  g_assert_false (logfl_exch_expects_text (d, 0, &none));
+  g_assert_false (logfl_exch_expects_text (d, 0, NULL));
+  g_assert_false (logfl_exch_expects_text (d, 1, &lz));  /* no such field */
+  logfl_exch_def_free (d);
+  g_assert_false (logfl_exch_expects_text (NULL, 0, &lz));
+
+  /* IARU HF: the same field, but the rule names no entity — a call does
+   * not tell an HQ station, so every call keeps its zone. */
+  d = logfl_exch_def_parse (preset_named ("IARU HF")->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_false (logfl_exch_expects_text (d, 0, &dl));
+  g_assert_false (logfl_exch_expects_text (d, 0, &lz));
+  logfl_exch_def_free (d);
+
+  /* CQ WW RTTY: K and VE are named, yet their text has the field behind
+   * the zone — the zone field, a NUMBER, still gets its zone. */
+  d = logfl_exch_def_parse (preset_named ("CQ WW RTTY")->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_false (logfl_exch_expects_text (d, 0, &k));
+  g_assert_false (logfl_exch_expects_text (d, 1, &k));
+  logfl_exch_def_free (d);
+
+  /* YO DX: exch:YO on a field that takes both — a YO station sends its
+   * county where everybody else sends a serial. */
+  d = logfl_exch_def_parse (preset_named ("YO DX")->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_true (logfl_exch_expects_text (d, 0, &yo));
+  g_assert_false (logfl_exch_expects_text (d, 0, &dl));
+  logfl_exch_def_free (d);
+}
+
 static void
 test_score_unavailable (void)
 {
@@ -2150,6 +2339,7 @@ test_contest_id_for_mode (void)
     { "EU-HF", "SSB", "EU-HF" },
     { "SARTG-RTTY", "RTTY", "SARTG-RTTY" },
     { "YOHFDX", "CW", "YOHFDX" },
+    { "LZ DX", "SSB", "LZ DX" },           /* one id for CW and SSB */
     { "CQ-WWX", "SSB", "CQ-WWX" },         /* a prefix is not the family */
     { "", "SSB", "" },
   };
@@ -2162,13 +2352,14 @@ test_contest_id_for_mode (void)
   g_assert_null (logfl_contest_id_for_mode (NULL, "SSB"));
 
   /* Every preset id goes out as an id ADIF 3.1.7 lists (adif.org
-   * Contest_ID enumeration, read 2026-10-24) — directly, or for a contest
-   * run in parts through each part the resolver hands it. */
+   * Contest_ID enumeration, read 2026-10-24; LZ DX — the one id with a
+   * space — on 2026-11-12) — directly, or for a contest run in parts
+   * through each part the resolver hands it. */
   static const char *const adif_ids[] = {
     "CQ-WW-CW", "CQ-WW-SSB", "CQ-WW-RTTY", "CQ-WPX-CW", "CQ-WPX-SSB",
     "CQ-WPX-RTTY", "SAC-CW", "SAC-SSB", "DARC-WAEDC-CW", "DARC-WAEDC-SSB",
     "DARC-WAEDC-RTTY", "CVA-DX-CW", "CVA-DX-SSB", "EU-HF", "IARU-HF",
-    "OK-OM-DX", "SARTG-RTTY", "YOHFDX", NULL,
+    "OK-OM-DX", "SARTG-RTTY", "YOHFDX", "LZ DX", NULL,
   };
   static const char *const modes[] = { "CW", "SSB", "RTTY" };
   guint n = 0;
@@ -2369,6 +2560,8 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/score/waertty", test_score_waertty);
   g_test_add_func ("/contest/score/sac", test_score_sac);
   g_test_add_func ("/contest/score/iaru", test_score_iaru);
+  g_test_add_func ("/contest/score/lzdx", test_score_lzdx);
+  g_test_add_func ("/contest/expects-text", test_expects_text);
   g_test_add_func ("/contest/score/unavailable", test_score_unavailable);
   return g_test_run ();
 }

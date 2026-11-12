@@ -810,6 +810,25 @@ logfl_contest_qso_validity (const LogflExchDef *def,
   return LOGFL_QSO_VALID;
 }
 
+gboolean
+logfl_exch_expects_text (const LogflExchDef *def, guint field,
+                         const LogflCtyInfo *theirs)
+{
+  if (!def || !theirs || !theirs->prefix || field >= def->fields->len)
+    return FALSE;
+  /* Only a field that takes both: where the text has a field of its own,
+   * the number field still gets its number (CQ WW RTTY, "05 MA"). */
+  const LogflExchField *f = def->fields->pdata[field];
+  if (f->type != LOGFL_EXCH_AUTO)
+    return FALSE;
+  /* The same two questions mult_eval asks before it counts the text. */
+  if ((def->mult & LOGFL_MULT_EXCH_TEXT) && def->mult_exch_text_from
+      && entity_listed (def->mult_exch_text_from, theirs))
+    return TRUE;
+  return (def->mult & LOGFL_MULT_EXCH) && def->mult_exch_from
+         && g_str_equal (theirs->prefix, def->mult_exch_from);
+}
+
 const char *const *
 logfl_exch_def_cab_values (const LogflExchDef *def, LogflCabTag tag,
                            const LogflCtyInfo *mine)
@@ -1476,6 +1495,11 @@ logfl_contest_score (const LogflExchDef *def, LogflCty *cty,
 #define ENT_SAC    "JW,JX,LA,OH,OH0,OJ0,OX,OY,OZ,SM,TF"
 #define PTS_SAC    "default=1;"
 #define MULT_SAC   "call-areas:" ENT_SAC
+/* LZ DX (lzdx.bfra.bg/rulesen.html, read 2026-11-12): the IARU HF shape
+ * with a country term in front — LZ lies in our continent, so its 10 must
+ * be asked first; the district is the received text, from LZ alone. */
+#define PTS_LZDX   "country:LZ=10;same-cont=1;other-cont=3;"
+#define MULT_LZDX  "zone+exch-text:LZ"
 
 /* Entry categories per preset ([cabrillo]) — shared with the backfill like
  * the scoring text above. Read 2026-09-20 from the sponsors' rules and
@@ -1655,6 +1679,21 @@ logfl_contest_score (const LogflExchDef *def, LogflCty *cty,
   "assisted=\n" \
   "overlay=CLASSIC;ROOKIE;TB-WIRES;WIRE-ONLY;\n" \
   "station=FIXED;MOBILE;PORTABLE;EXPEDITION;\n"
+/* lzdx.bfra.bg/rulesen.html "Station Entry Categories" (read 2026-11-12):
+ * SINGLE-OP ALL in MIXED / CW / SSB, each HIGH or LOW; SINGLE-OP ALL MIXED
+ * QRP; single band 80-10 m (MIXED, HIGH only); MULTI-OP SINGLE-TX — no
+ * 160 m, one transmitter throughout, the cluster and skimmers open to
+ * all, so no assisted tag. The sponsor lists no Cabrillo values (the
+ * rules point at wwrof.org/cabrillo), so these are the v3 words for what
+ * the rules allow; they never mention a checklog, hence no operator list.
+ * SWL is not modeled. */
+#define CAB_LZDX \
+  "[cabrillo]\n" \
+  "band=ALL;80M;40M;20M;15M;10M;\n" \
+  "power=HIGH;LOW;QRP;\n" \
+  "mode=MIXED;CW;SSB;\n" \
+  "transmitter=ONE;\n" \
+  "assisted=\n"
 
 guint
 logfl_contest_backfill_validity (LogflStore *s, GError **error)
@@ -1692,6 +1731,7 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
     { "YOHFDX",     NULL,      FALSE, PTS_YODX,  MULT_YODX,  NULL, NULL, NULL },
     { "SAC-", "entities:" ENT_SAC, FALSE, PTS_SAC, MULT_SAC, NULL, NULL,
       "Scandinavian" },
+    { "LZ DX",      NULL,      FALSE, PTS_LZDX,  MULT_LZDX,  NULL, NULL, NULL },
   };
   /* Category lists go by the whole ADIF id, not a prefix: CQ-WW-RTTY is a
    * contest of its own and must not be handed the CW/SSB lists. The bare
@@ -1711,6 +1751,7 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
     { "CVA-DX-CW", CAB_CVA },  { "CVA-DX-SSB", CAB_CVA },
     { "SARTG-RTTY", CAB_SARTG }, { "YOHFDX", CAB_YODX },
     { "SAC-CW", CAB_SAC },     { "SAC-SSB", CAB_SAC },
+    { "LZ DX", CAB_LZDX },
   };
 
   GPtrArray *list = logfl_store_contest_list (s, error);
@@ -2126,6 +2167,42 @@ static const LogflContestPreset presets[] = {
     "[field:qth]\nlabel=State\ntype=text\nadif_text=STATE\nrequired=false\n"
     "cab_placeholder=DX\n",
     "CQ zone (OK = 15)" },
+  /* LZ DX (lzdx.bfra.bg/rulesen.html, read 2026-11-12; the Bulgarian page
+   * says the same): 80-10 m, CW and SSB. We send RS(T) + ITU zone
+   * ("599 28"), LZ stations answer with a two-letter district ("599 SF",
+   * 28 of them) — one AUTO field carries both, the IARU HF shape; the
+   * sponsor itself recommends any logger "in IARU contest mode". "Contact
+   * as many other participants as possible": everyone works everyone, the
+   * own country included, and nothing scores zero — neither counts= nor
+   * zero_own_country. "Once on CW and once on SSB on each band" is the
+   * app's dup rule.
+   * Scoring ("Score calculation"): 10 LZ station / 3 other continent /
+   * 1 same continent "(own country included)". Mults of a non-LZ entrant:
+   * "the sum of worked ITU zones + worked LZ districts on each band,
+   * regardless of the mode"; score = points × mults. The district counts
+   * from LZ calls only — text typed behind anybody else's call is no
+   * district. The rules do not say whether an LZ station brings its ITU
+   * zone next to its district; here it does (cty: 28), the plain reading
+   * of "worked ITU zones" — from a seat in zone 28 that is one multiplier
+   * at most, on a band where no other zone-28 station was worked.
+   * An LZ call gets no zone prefill in the entry row (issue #28 fills the
+   * ITU zone from the call): the field is due a district there, and a
+   * forgotten overwrite would log 28 in its place —
+   * logfl_exch_expects_text.
+   * Not modeled, as they never apply to an OK entry: LZ-LZ = 1 point and
+   * the DXCC multipliers of LZ entrants; SWL scoring.
+   * LZ DX is the ADIF Contest_ID (3.1.8, read 2026-11-12) — with a space,
+   * which a Cabrillo CONTEST value cannot hold (wwrof.org header spec:
+   * A-Z, 0-9 and hyphen). The sponsor names no value; win.c writes LZ-DX,
+   * as another logger does (not1mm's LZ DX plugin) — unconfirmed until
+   * the first upload. */
+  { "LZ DX", "LZ DX",
+    "[exchange]\ntx_serial=false\nfields=exch;\n"
+    "points=" PTS_LZDX "\nmult=" MULT_LZDX "\n"
+    CAB_LZDX
+    "[field:exch]\nlabel=Zone/District\ntype=auto\nadif_num=ITUZ\n"
+    "required=true\n",
+    "ITU zone (OK = 28)" },
   { "Custom", NULL,
     "[exchange]\ntx_serial=false\nfields=exch;\n"
     "[field:exch]\nlabel=Exch\ntype=auto\nrequired=false\n",
