@@ -2052,8 +2052,8 @@ static const LogflContestPreset presets[] = {
    * with 000 give only credit, if a new multi is worked with this QSO": a
    * 000 QSO scores its point either way, as in the CW/SSB preset.
    * Cabrillo CONTEST: DARC names no value; DARC-WAEDC-RTTY, the ADIF id,
-   * is by analogy with the -CW one its robot accepted in August 2026 —
-   * unconfirmed until the first upload. */
+   * is by analogy with the -CW one. Confirmed live: the DARC robot accepted
+   * OK1BR's 2026 log under it. */
   { "WAE DX RTTY", "DARC-WAEDC-RTTY",
     "[exchange]\ntx_serial=true\nfields=nr;\ncounts=all\n"
     "points=" PTS_WAE "\nmult=" MULT_WAE "\nmult_weight=" WEIGHT_WAE "\n"
