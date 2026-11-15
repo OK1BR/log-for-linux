@@ -41,6 +41,7 @@ logfl_exch_def_free (LogflExchDef *def)
   g_free (def->mult_exch_from);
   g_strfreev (def->mult_exch_text_from);
   g_strfreev (def->mult_area_entities);
+  g_strfreev (def->mult_dxcc_except);
   g_clear_pointer (&def->mult_weight, g_hash_table_unref);
   for (int t = 0; t < LOGFL_CAB_N_TAGS; t++)
     {
@@ -174,6 +175,7 @@ pts_parse (LogflExchDef *def, const char *value, GError **error)
     { "other-cont",  LOGFL_PTS_OTHER_CONT,  FALSE },
     { "same-zone",   LOGFL_PTS_SAME_ZONE,   FALSE },
     { "exch-text",   LOGFL_PTS_EXCH_TEXT,   FALSE },
+    { "mode",        LOGFL_PTS_MODE,        TRUE  },
     { "default",     LOGFL_PTS_DEFAULT,     FALSE },
   };
 
@@ -195,7 +197,10 @@ pts_parse (LogflExchDef *def, const char *value, GError **error)
       gsize k = 0;
       while (k < G_N_ELEMENTS (kinds) && !g_str_equal (name, kinds[k].name))
         k++;
-      if (k == G_N_ELEMENTS (kinds) || (arg != NULL) != kinds[k].has_arg)
+      /* An argument that names nothing ("mode:=4") would match no QSO and
+       * score every one of them zero without a word. */
+      if (k == G_N_ELEMENTS (kinds) || (arg != NULL) != kinds[k].has_arg
+          || (arg && !*g_strstrip (arg)))
         goto bad;
 
       LogflPtsTerm term = { .kind = kinds[k].kind,
@@ -219,7 +224,8 @@ pts_parse (LogflExchDef *def, const char *value, GError **error)
 }
 
 /* mult= source list: "country|country-areas|cqzone|zone|exch[:PFX]|
- * exch-text[:LIST]|prefix|call-areas:LIST", joined with '+'. */
+ * exch-text[:LIST]|prefix|call-areas:LIST|dxcc|dxcc-except:LIST", joined
+ * with '+'. */
 static gboolean
 mult_parse (LogflExchDef *def, const char *value, GError **error)
 {
@@ -265,6 +271,16 @@ mult_parse (LogflExchDef *def, const char *value, GError **error)
           if (!def->mult_area_entities)
             goto bad;
           def->mult |= LOGFL_MULT_CALL_AREAS;
+        }
+      else if (g_str_equal (*t, "dxcc"))
+        def->mult |= LOGFL_MULT_DXCC;
+      else if (g_str_has_prefix (*t, "dxcc-except:"))
+        {
+          g_strfreev (def->mult_dxcc_except);
+          def->mult_dxcc_except = entity_list_parse (*t + 12);
+          if (!def->mult_dxcc_except)
+            goto bad;
+          def->mult |= LOGFL_MULT_DXCC;
         }
       else
         {
@@ -397,6 +413,10 @@ logfl_exch_def_parse (const char *text, GError **error)
       g_strstrip (scope);
       if (g_str_equal (scope, "contest"))
         def->mult_per_contest = TRUE;
+      else if (g_str_equal (scope, "band-mode"))
+        def->mult_per_mode = TRUE;
+      else if (g_str_equal (scope, "mode"))
+        def->mult_per_contest = def->mult_per_mode = TRUE;
       else if (!g_str_equal (scope, "band") && *scope)
         {
           g_set_error (error, LOGFL_CONTEST_ERROR, LOGFL_CONTEST_ERROR_PARSE,
@@ -543,7 +563,7 @@ logfl_exch_def_serialize (const LogflExchDef *def)
         [LOGFL_PTS_COUNTRY] = "country", [LOGFL_PTS_OWN_COUNTRY] = "own-country",
         [LOGFL_PTS_SAME_CONT] = "same-cont", [LOGFL_PTS_OTHER_CONT] = "other-cont",
         [LOGFL_PTS_SAME_ZONE] = "same-zone", [LOGFL_PTS_EXCH_TEXT] = "exch-text",
-        [LOGFL_PTS_DEFAULT] = "default",
+        [LOGFL_PTS_MODE] = "mode", [LOGFL_PTS_DEFAULT] = "default",
       };
       GString *s = g_string_new (NULL);
       for (guint i = 0; i < def->points->len; i++)
@@ -570,6 +590,7 @@ logfl_exch_def_serialize (const LogflExchDef *def)
         { LOGFL_MULT_EXCH, "exch" }, { LOGFL_MULT_EXCH_TEXT, "exch-text" },
         { LOGFL_MULT_PREFIX, "prefix" },
         { LOGFL_MULT_CALL_AREAS, "call-areas" },
+        { LOGFL_MULT_DXCC, "dxcc" },
       };
       for (gsize i = 0; i < G_N_ELEMENTS (srcs); i++)
         {
@@ -592,11 +613,20 @@ logfl_exch_def_serialize (const LogflExchDef *def)
               g_string_append_printf (s, ":%s", list);
               g_free (list);
             }
+          if (srcs[i].bit == LOGFL_MULT_DXCC && def->mult_dxcc_except)
+            {
+              char *list = g_strjoinv (",", def->mult_dxcc_except);
+              g_string_append_printf (s, "-except:%s", list);
+              g_free (list);
+            }
         }
       g_key_file_set_value (kf, "exchange", "mult", s->str);
       g_string_free (s, TRUE);
-      if (def->mult_per_contest)
-        g_key_file_set_string (kf, "exchange", "mult_scope", "contest");
+      if (def->mult_per_contest || def->mult_per_mode)
+        g_key_file_set_string (kf, "exchange", "mult_scope",
+                               !def->mult_per_mode      ? "contest"
+                               : def->mult_per_contest  ? "mode"
+                                                        : "band-mode");
       if (def->mult_weight)
         {
           GString *w = g_string_new (NULL);
@@ -751,13 +781,22 @@ logfl_exch_serial_format (guint serial)
 /* The DXCC entity behind a cty answer. cty.dat carries the WAE-only
  * entities ('*') next to the DXCC ones; a contest that lists DXCC entities
  * means Bear Island when it says Svalbard (SAC rules §2: "Svalbard & Bear
- * Island : JW"). Only that fold is here — the other WAE-only entities join
- * when a preset needs them, each with its source. */
+ * Island : JW"), and one that counts them takes Sicily for Italy. Which
+ * entity each lies in is the DXCC Entity Code of its row in the ADIF
+ * Region enumeration (ADIF 3.1.8, read 2026-11-15): 4U1V 206 Austria,
+ * GM/s 279 Scotland, IG9 and IT9 248 Italy, JW/b 259 Svalbard, TA1 390
+ * Turkey — here as the cty primary prefixes of those. */
 static const char *
 dxcc_prefix (const LogflCtyInfo *info)
 {
-  if (info->waedc_only && g_str_equal (info->prefix, "JW/b"))
-    return "JW";
+  static const struct { const char *wae, *dxcc; } folds[] = {
+    { "4U1V", "OE" }, { "GM/s", "GM" }, { "IG9", "I" },
+    { "IT9", "I" },   { "JW/b", "JW" }, { "TA1", "TA" },
+  };
+  if (info->waedc_only)
+    for (gsize i = 0; i < G_N_ELEMENTS (folds); i++)
+      if (g_str_equal (info->prefix, folds[i].wae))
+        return folds[i].dxcc;
   return info->prefix;
 }
 
@@ -1210,6 +1249,24 @@ logfl_exch_remirror (const LogflExchDef *def, LogflQso *qso)
     }
 }
 
+/* The mode a scoring rule means: "once on phone and once on CW" (ARRL
+ * 10 m rules 5.2.1) has SSB, AM and FM for one mode — "PH", the Cabrillo
+ * word — and every other mode stands for itself. NULL for no mode. The
+ * dup rule is not asked here: it stays call + band + the mode as logged,
+ * the same in the entry row and in the score. */
+static const char *
+mode_class (const char *mode)
+{
+  if (!mode || !*mode)
+    return NULL;
+  if (g_ascii_strcasecmp (mode, "SSB") == 0 ||
+      g_ascii_strcasecmp (mode, "AM") == 0 ||
+      g_ascii_strcasecmp (mode, "FM") == 0 ||
+      g_ascii_strcasecmp (mode, "PH") == 0)
+    return "PH";
+  return mode;
+}
+
 static int
 pts_eval (const LogflExchDef *def, const LogflQso *q,
           const LogflCtyInfo *mine, gboolean theirs_ok,
@@ -1246,6 +1303,15 @@ pts_eval (const LogflExchDef *def, const LogflQso *q,
           match = q->srx_string && *q->srx_string
                   && !all_digits (q->srx_string);
           break;
+        case LOGFL_PTS_MODE:
+          {
+            /* Both sides through the same reading, so "mode:SSB" means
+             * phone just as "mode:PH" does. */
+            const char *theirs_m = mode_class (q->mode);
+            match = theirs_m
+                    && g_ascii_strcasecmp (theirs_m, mode_class (t->arg)) == 0;
+          }
+          break;
         case LOGFL_PTS_DEFAULT:
           match = TRUE;
           break;
@@ -1256,19 +1322,29 @@ pts_eval (const LogflExchDef *def, const LogflQso *q,
   return 0;                    /* an unresolved call matches no relation */
 }
 
-/* One multiplier candidate: count it if its (band-scoped) key is new,
- * crediting the band weight and appending the label. tag namespaces the
- * source — a YO county "CT" and Portugal's prefix "CT" are two different
- * multipliers and must never swallow each other. */
+/* One multiplier candidate: count it if its key is new within the def's
+ * scope — the QSO's band, its mode, both or neither — crediting the band
+ * weight and appending the label. tag namespaces the source — a YO county
+ * "CT" and Portugal's prefix "CT" are two different multipliers and must
+ * never swallow each other. */
 static void
-mult_take (const LogflExchDef *def, const char *band, const char *tag,
+mult_take (const LogflExchDef *def, const LogflQso *q, const char *tag,
            const char *key, GHashTable *seen, GString *label,
            gint64 *mults)
 {
-  char *scoped = def->mult_per_contest
-                   ? g_strdup_printf ("%s|%s", tag, key)
-                   : g_strdup_printf ("%s|%s|%s", band ? band : "", tag,
-                                      key);
+  const char *band = q->band;
+  GString *s = g_string_new (NULL);
+  if (!def->mult_per_contest)
+    g_string_append_printf (s, "%s|", band ? band : "");
+  if (def->mult_per_mode)
+    {
+      const char *mode = mode_class (q->mode);
+      char *up = g_ascii_strup (mode ? mode : "", -1);
+      g_string_append_printf (s, "%s|", up);
+      g_free (up);
+    }
+  g_string_append_printf (s, "%s|%s", tag, key);
+  char *scoped = g_string_free (s, FALSE);
   if (g_hash_table_contains (seen, scoped))
     {
       g_free (scoped);
@@ -1294,11 +1370,17 @@ mult_eval (const LogflExchDef *def, const LogflQso *q,
            GHashTable *seen, GString *label, gint64 *mults)
 {
   if ((def->mult & LOGFL_MULT_COUNTRY) && theirs_ok)
-    mult_take (def, q->band, "c", theirs->prefix, seen, label, mults);
+    mult_take (def, q, "c", theirs->prefix, seen, label, mults);
+  /* The DXCC entity — but not of a station the def lists: in the ARRL
+   * 10 m contest a W, VE or XE station is worth its state and nothing on
+   * top (see the preset). */
+  if ((def->mult & LOGFL_MULT_DXCC) && theirs_ok
+      && !entity_listed (def->mult_dxcc_except, theirs))
+    mult_take (def, q, "c", dxcc_prefix (theirs), seen, label, mults);
   if ((def->mult & LOGFL_MULT_COUNTRY_AREAS) && theirs_ok)
     {
       char *key = mult_country_area (theirs, q->call);
-      mult_take (def, q->band, "c", key, seen, label, mults);
+      mult_take (def, q, "c", key, seen, label, mults);
       g_free (key);
     }
   if ((def->mult & LOGFL_MULT_CALL_AREAS) && theirs_ok)
@@ -1314,12 +1396,12 @@ mult_eval (const LogflExchDef *def, const LogflQso *q,
             stem--;
           char *key = g_strdup_printf ("%.*s%c", (int) stem, ent,
                                        prefix_number (q->call));
-          mult_take (def, q->band, tag, key, seen, label, mults);
+          mult_take (def, q, tag, key, seen, label, mults);
           g_free (key);
           g_free (tag);
         }
       else
-        mult_take (def, q->band, "c", ent, seen, label, mults);
+        mult_take (def, q, "c", ent, seen, label, mults);
     }
   if (def->mult & (LOGFL_MULT_CQZONE | LOGFL_MULT_ZONE))
     {
@@ -1328,7 +1410,7 @@ mult_eval (const LogflExchDef *def, const LogflQso *q,
       if (z > 0)
         {
           char *key = g_strdup_printf ("%d", z);
-          mult_take (def, q->band, "z", key, seen, label, mults);
+          mult_take (def, q, "z", key, seen, label, mults);
           g_free (key);
         }
     }
@@ -1340,7 +1422,7 @@ mult_eval (const LogflExchDef *def, const LogflQso *q,
                   && g_str_equal (theirs->prefix, def->mult_exch_from))))
         {
           char *key = g_ascii_strup (q->srx_string, -1);
-          mult_take (def, q->band, "e", g_strstrip (key), seen, label,
+          mult_take (def, q, "e", g_strstrip (key), seen, label,
                      mults);
           g_free (key);
         }
@@ -1360,7 +1442,7 @@ mult_eval (const LogflExchDef *def, const LogflQso *q,
               if (all_digits (*t))
                 continue;
               char *key = g_ascii_strup (*t, -1);
-              mult_take (def, q->band, "e", key, seen, label, mults);
+              mult_take (def, q, "e", key, seen, label, mults);
               g_free (key);
             }
           g_strfreev (tok);
@@ -1371,7 +1453,7 @@ mult_eval (const LogflExchDef *def, const LogflQso *q,
       char *key = logfl_wpx_prefix (q->call);
       if (key)
         {
-          mult_take (def, q->band, "p", key, seen, label, mults);
+          mult_take (def, q, "p", key, seen, label, mults);
           g_free (key);
         }
     }
@@ -1500,6 +1582,14 @@ logfl_contest_score (const LogflExchDef *def, LogflCty *cty,
  * be asked first; the district is the received text, from LZ alone. */
 #define PTS_LZDX   "country:LZ=10;same-cont=1;other-cont=3;"
 #define MULT_LZDX  "zone+exch-text:LZ"
+/* ARRL 10 m (rules v2.0 for 2026, arrl.org/10-meter, read 2026-11-15): the
+ * points go by the QSO's mode; the state or province is the received text
+ * — from the W/VE and Mexican entities and from Alaska and Hawaii, which
+ * "count as US states" (5.2.2.1). The DXCC term leaves out that very
+ * list; why, at the preset. */
+#define ENT_ARRL10  "K,KL,KH6,VE,XE"
+#define PTS_ARRL10  "mode:CW=4;mode:PH=2;"
+#define MULT_ARRL10 "exch-text:" ENT_ARRL10 "+dxcc-except:" ENT_ARRL10
 
 /* Entry categories per preset ([cabrillo]) — shared with the backfill like
  * the scoring text above. Read 2026-09-20 from the sponsors' rules and
@@ -1694,6 +1784,25 @@ logfl_contest_score (const LogflExchDef *def, LogflCty *cty,
   "mode=MIXED;CW;SSB;\n" \
   "transmitter=ONE;\n" \
   "assisted=\n"
+/* ARRL 10 m rules v2.0 (2026), "Entry Categories" v1.6: Single Operator
+ * and Single Operator Unlimited (spotting assistance = ASSISTED) in QRP /
+ * Low / High as Mixed, CW-only or Phone-only; Multioperator Single
+ * Transmitter, Mixed only; Checklog; a Limited Antennas overlay for both
+ * single-op kinds. ARRL lists no values (ELOG.1 points at
+ * wwrof.org/cabrillo), so these are the ones in the 2025 logs ARRL took
+ * and published (contests.arrl.org public logs, read 2026-11-15):
+ * CATEGORY-BAND: 10M, CATEGORY-MODE: SSB for Phone-only, and
+ * CATEGORY-OVERLAY: LIMITED, the same word out of five loggers. The Youth
+ * box of v2.0 sits on the upload form, not in the file. */
+#define CAB_ARRL10 \
+  "[cabrillo]\n" \
+  "operator=SINGLE-OP;MULTI-OP;CHECKLOG;\n" \
+  "band=10M;\n" \
+  "power=HIGH;LOW;QRP;\n" \
+  "mode=MIXED;CW;SSB;\n" \
+  "transmitter=ONE;\n" \
+  "assisted=ASSISTED;NON-ASSISTED;\n" \
+  "overlay=LIMITED;\n"
 
 guint
 logfl_contest_backfill_validity (LogflStore *s, GError **error)
@@ -1732,6 +1841,11 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
     { "SAC-", "entities:" ENT_SAC, FALSE, PTS_SAC, MULT_SAC, NULL, NULL,
       "Scandinavian" },
     { "LZ DX",      NULL,      FALSE, PTS_LZDX,  MULT_LZDX,  NULL, NULL, NULL },
+    /* Prefix match, first row wins: ARRL-10-GHZ, the 10 GHz and Up
+     * contest, shares the prefix and has nothing of the 10 m rule. */
+    { "ARRL-10-GHZ", NULL,     FALSE, NULL,      NULL,       NULL, NULL, NULL },
+    { "ARRL-10",    NULL,      FALSE, PTS_ARRL10, MULT_ARRL10, "mode", NULL,
+      NULL },
   };
   /* Category lists go by the whole ADIF id, not a prefix: CQ-WW-RTTY is a
    * contest of its own and must not be handed the CW/SSB lists. The bare
@@ -1751,7 +1865,7 @@ logfl_contest_backfill_validity (LogflStore *s, GError **error)
     { "CVA-DX-CW", CAB_CVA },  { "CVA-DX-SSB", CAB_CVA },
     { "SARTG-RTTY", CAB_SARTG }, { "YOHFDX", CAB_YODX },
     { "SAC-CW", CAB_SAC },     { "SAC-SSB", CAB_SAC },
-    { "LZ DX", CAB_LZDX },
+    { "LZ DX", CAB_LZDX },     { "ARRL-10", CAB_ARRL10 },
   };
 
   GPtrArray *list = logfl_store_contest_list (s, error);
@@ -2203,6 +2317,39 @@ static const LogflContestPreset presets[] = {
     "[field:exch]\nlabel=Zone/District\ntype=auto\nadif_num=ITUZ\n"
     "required=true\n",
     "ITU zone (OK = 28)" },
+  /* ARRL 10 m (arrl.org/10-meter: rules v2.0 for 2026, the PDF of
+   * 2026-07-24, read 2026-11-15): 28 MHz only, CW and phone. "All stations
+   * may contact any other station on both CW and Phone" — no validity
+   * rule; "contact stations only once per mode" is the app's dup rule on
+   * the one band. We send RS(T) + a serial; W/VE stations — Alaska and
+   * Hawaii with them (4.2) — and Mexican ones send their state or
+   * province, other DX a serial: one AUTO field.
+   * Scoring §5: CW 4 points, phone 2. Multipliers "count once on phone and
+   * once on CW" — mult_scope=mode: states + DC, provinces and territories
+   * and Mexican states (the received text, from the listed entities
+   * alone), and DXCC entities. 5.2.3 says just "DXCC entities"; that a W,
+   * VE or XE station brings no entity on top of its state is how ARRL
+   * scores it — seven of the 2025 logs ARRL publishes that worked such
+   * stations and lost no QSO in checking (OK8URF, OK5ET, KG5UNK with a
+   * KH6, KI5EWG with an XE, …), recounted on 2026-11-15, come out at the
+   * published multiplier count without the entity, none of them with it
+   * (contests.arrl.org public logs and score table). Alaska was in none
+   * of them and goes by 5.2.2.1. DXCC, not the WAE list: Sicily counts as
+   * Italy — dxcc_prefix.
+   * Not modeled: the ITU region of a maritime mobile as a multiplier
+   * (5.2.4); the band — a QSO logged off 10 m scores like any other; CW
+   * below 28.3 MHz (6.2) and the 36 hours of operating. FM and SSB with
+   * one station are two QSOs to the dup rule, yet one mode for the points
+   * and the multipliers.
+   * ARRL-10 is the ADIF Contest_ID (3.1.8) and the Cabrillo CONTEST alike:
+   * the "cabrillo_id" of ARRL's own score table and the header of every
+   * 2025 log it published. */
+  { "ARRL 10 m", "ARRL-10",
+    "[exchange]\ntx_serial=true\nfields=exch;\n"
+    "points=" PTS_ARRL10 "\nmult=" MULT_ARRL10 "\nmult_scope=mode\n"
+    CAB_ARRL10
+    "[field:exch]\nlabel=Nr/State\ntype=auto\nrequired=true\n",
+    NULL },
   { "Custom", NULL,
     "[exchange]\ntx_serial=false\nfields=exch;\n"
     "[field:exch]\nlabel=Exch\ntype=auto\nrequired=false\n",

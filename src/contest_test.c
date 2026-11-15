@@ -599,6 +599,33 @@ test_cab_categories (void)
   g_assert_null (v[0]);
   g_assert_null (logfl_exch_def_cab_values (d, LOGFL_CAB_OPERATOR, &ok));
   logfl_exch_def_free (d);
+  /* ARRL 10 m: the one band, MIXED first, Unlimited as the assisted tag,
+   * the Limited Antennas overlay under the word ARRL's logs carry, a
+   * checklog — and no rule for the station tag. */
+  d = logfl_exch_def_parse (preset_named ("ARRL 10 m")->exch_def, &err);
+  g_assert_no_error (err);
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_BAND, &ok);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 1);
+  g_assert_cmpstr (v[0], ==, "10M");
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_MODE, &ok);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 3);
+  g_assert_cmpstr (v[0], ==, "MIXED");
+  g_assert_true (g_strv_contains (v, "SSB"));
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_POWER, &ok);
+  g_assert_true (g_strv_contains (v, "QRP"));
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_ASSISTED, &ok);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 2);
+  g_assert_cmpstr (v[0], ==, "ASSISTED");
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_TRANSMITTER, &ok);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 1);
+  g_assert_cmpstr (v[0], ==, "ONE");
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_OVERLAY, &ok);
+  g_assert_cmpuint (g_strv_length ((char **) v), ==, 1);
+  g_assert_cmpstr (v[0], ==, "LIMITED");
+  v = logfl_exch_def_cab_values (d, LOGFL_CAB_OPERATOR, &ok);
+  g_assert_true (g_strv_contains (v, "CHECKLOG"));
+  g_assert_null (logfl_exch_def_cab_values (d, LOGFL_CAB_STATION, &ok));
+  logfl_exch_def_free (d);
 
   /* Custom carries no rule at all. */
   d = logfl_exch_def_parse (preset_named ("Custom")->exch_def, &err);
@@ -655,8 +682,15 @@ test_backfill_cab (void)
   LogflContest *lzdx = mk_contest (s, "LZ DX by hand", "LZ DX",
       "[exchange]\ntx_serial=false\nfields=exch;\n"
       "[field:exch]\nlabel=Zone/District\ntype=auto\nadif_num=ITUZ\n");
+  /* ARRL 10 m made by hand gets its rule, the per-mode scope included —
+   * while the 10 GHz and Up contest, whose id merely starts the same,
+   * gets nothing of it. */
+  LogflContest *arrl10 = mk_contest (s, "ARRL 10 m by hand", "ARRL-10",
+      "[exchange]\ntx_serial=true\nfields=exch;\n"
+      "[field:exch]\nlabel=Nr/State\ntype=auto\n");
+  LogflContest *ghz = mk_contest (s, "10 GHz and Up", "ARRL-10-GHZ", OLD_DEF);
 
-  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 4);
+  g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 5);
   g_assert_no_error (err);
 
   LogflContest *back = logfl_store_contest_get (s, sac->id, &err);
@@ -719,9 +753,33 @@ test_backfill_cab (void)
   logfl_exch_def_free (def);
   logfl_contest_free (back);
 
+  back = logfl_store_contest_get (s, arrl10->id, &err);
+  def = logfl_exch_def_parse (back->exch_def, &err);
+  g_assert_no_error (err);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
+  g_assert_nonnull (def->points);
+  const LogflPtsTerm *cw_pts = &g_array_index (def->points, LogflPtsTerm, 0);
+  g_assert_cmpint (cw_pts->kind, ==, LOGFL_PTS_MODE);
+  g_assert_cmpstr (cw_pts->arg, ==, "CW");
+  g_assert_cmpint (cw_pts->points, ==, 4);
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_EXCH_TEXT | LOGFL_MULT_DXCC);
+  g_assert_cmpuint (g_strv_length (def->mult_dxcc_except), ==, 5);
+  g_assert_true (def->mult_per_contest);
+  g_assert_true (def->mult_per_mode);
+  g_assert_cmpstr (def->cab[LOGFL_CAB_BAND][0], ==, "10M");
+  g_assert_cmpstr (def->cab[LOGFL_CAB_OVERLAY][0], ==, "LIMITED");
+  logfl_exch_def_free (def);
+  logfl_contest_free (back);
+
+  back = logfl_store_contest_get (s, ghz->id, &err);
+  g_assert_cmpstr (back->exch_def, ==, OLD_DEF);
+  logfl_contest_free (back);
+
   g_assert_cmpuint (logfl_contest_backfill_validity (s, &err), ==, 0);
   g_assert_no_error (err);
 
+  logfl_contest_free (arrl10);
+  logfl_contest_free (ghz);
   logfl_contest_free (sac);
   logfl_contest_free (rtty);
   logfl_contest_free (own);
@@ -777,7 +835,7 @@ test_presets (void)
   /* WAE/SARTG are serial contests; CVA's continent/state is TEXT (a PY
    * state like "SP" must never be reinterpreted as a number). */
   gboolean wae = FALSE, waertty = FALSE, cva = FALSE, sartg = FALSE,
-           yodx = FALSE, lzdx = FALSE;
+           yodx = FALSE, lzdx = FALSE, arrl10 = FALSE;
   for (guint i = 0; i < n; i++)
     {
       LogflExchFieldType want;
@@ -820,6 +878,15 @@ test_presets (void)
           want = LOGFL_EXCH_AUTO;
           want_serial = FALSE;
         }
+      else if (g_strcmp0 (p[i].name, "ARRL 10 m") == 0)
+        {
+          /* Mixed once more: a state or province from W/VE/XE, a serial
+           * from other DX — and a serial is what we send. */
+          arrl10 = TRUE;
+          g_assert_cmpstr (p[i].adif_id, ==, "ARRL-10");
+          want = LOGFL_EXCH_AUTO;
+          want_serial = TRUE;
+        }
       else if (g_strcmp0 (p[i].name, "SARTG WW RTTY") == 0)
         {
           sartg = TRUE;
@@ -836,7 +903,7 @@ test_presets (void)
       g_assert_cmpint (def->tx_serial, ==, want_serial);
       logfl_exch_def_free (def);
     }
-  g_assert_true (wae && waertty && cva && sartg && yodx && lzdx);
+  g_assert_true (wae && waertty && cva && sartg && yodx && lzdx && arrl10);
 
   /* YO DX: everyone works everyone and no QSO scores zero from an OK seat
    * (rules §6.1) — the preset must carry no validity rule at all. */
@@ -860,6 +927,33 @@ test_presets (void)
   g_assert_cmpuint (def->mult, ==, LOGFL_MULT_ZONE | LOGFL_MULT_EXCH_TEXT);
   g_assert_cmpuint (g_strv_length (def->mult_exch_text_from), ==, 1);
   g_assert_cmpstr (def->mult_exch_text_from[0], ==, "LZ");
+  logfl_exch_def_free (def);
+
+  /* ARRL 10 m: everyone works everyone, nothing scores zero; the points
+   * go by mode, the multipliers count once per mode, and the entities
+   * whose stations send a state — Alaska and Hawaii among them — are the
+   * very ones the DXCC source leaves out. The exchange stays in SRX /
+   * SRX_STRING: a serial or a state, as received. */
+  def = logfl_exch_def_parse (preset_named ("ARRL 10 m")->exch_def, &err);
+  g_assert_no_error (err);
+  f = def->fields->pdata[0];
+  g_assert_cmpstr (f->adif_num, ==, "SRX");
+  g_assert_cmpstr (f->adif_text, ==, "SRX_STRING");
+  g_assert_true (f->required);
+  g_assert_cmpint (def->counts, ==, LOGFL_COUNTS_ALL);
+  g_assert_false (def->zero_own_country);
+  g_assert_cmpuint (def->points->len, ==, 2);
+  g_assert_cmpint (g_array_index (def->points, LogflPtsTerm, 0).kind, ==,
+                   LOGFL_PTS_MODE);
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_EXCH_TEXT | LOGFL_MULT_DXCC);
+  static const char *const arrl_states[] = { "K", "KL", "KH6", "VE", "XE",
+                                             NULL };
+  g_assert_true (g_strv_equal (
+      (const char *const *) def->mult_exch_text_from, arrl_states));
+  g_assert_true (g_strv_equal (
+      (const char *const *) def->mult_dxcc_except, arrl_states));
+  g_assert_true (def->mult_per_contest);
+  g_assert_true (def->mult_per_mode);
   logfl_exch_def_free (def);
 
   /* CQ WW RTTY: the zone plus an optional W/VE QTH (TEXT, so "05 MA" and
@@ -1589,6 +1683,69 @@ test_score_roundtrip (void)
   g_free (text);
   logfl_exch_def_free (back);
   logfl_exch_def_free (def);
+
+  /* Points by mode, the DXCC source with the entities it leaves out, and
+   * the per-mode scope (ARRL 10 m) — a scope lost on the way would hand a
+   * mixed log half its multipliers, a lost exception one more for every W
+   * worked. */
+  def = logfl_exch_def_parse (
+      "[exchange]\ntx_serial=true\nfields=exch;\n"
+      "points=mode: cw =4;mode:ssb=2;\n"
+      "mult=exch-text:K,VE+dxcc-except: k ,ve\nmult_scope=mode\n"
+      "[field:exch]\ntype=auto\n", &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (def->points->len, ==, 2);
+  t = &g_array_index (def->points, LogflPtsTerm, 0);
+  g_assert_cmpint (t->kind, ==, LOGFL_PTS_MODE);
+  g_assert_cmpstr (t->arg, ==, "CW");
+  g_assert_cmpint (t->points, ==, 4);
+  t = &g_array_index (def->points, LogflPtsTerm, 1);
+  g_assert_cmpint (t->kind, ==, LOGFL_PTS_MODE);
+  g_assert_cmpstr (t->arg, ==, "SSB");
+  g_assert_cmpint (t->points, ==, 2);
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_EXCH_TEXT | LOGFL_MULT_DXCC);
+  g_assert_cmpstr (def->mult_dxcc_except[0], ==, "K");
+  g_assert_cmpstr (def->mult_dxcc_except[1], ==, "VE");
+  g_assert_null (def->mult_dxcc_except[2]);
+  g_assert_true (def->mult_per_contest);
+  g_assert_true (def->mult_per_mode);
+  text = logfl_exch_def_serialize (def);
+  back = logfl_exch_def_parse (text, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (back->points->len, ==, 2);
+  t = &g_array_index (back->points, LogflPtsTerm, 1);
+  g_assert_cmpint (t->kind, ==, LOGFL_PTS_MODE);
+  g_assert_cmpstr (t->arg, ==, "SSB");
+  g_assert_cmpuint (back->mult, ==, def->mult);
+  g_assert_cmpuint (g_strv_length (back->mult_dxcc_except), ==, 2);
+  g_assert_cmpstr (back->mult_dxcc_except[1], ==, "VE");
+  g_assert_true (back->mult_per_contest);
+  g_assert_true (back->mult_per_mode);
+  g_free (text);
+  logfl_exch_def_free (back);
+  logfl_exch_def_free (def);
+
+  /* Per band and mode is the fourth scope; a bare dxcc leaves nobody
+   * out. */
+  def = logfl_exch_def_parse (
+      "[exchange]\nfields=nr;\npoints=default=1;\n"
+      "mult=dxcc\nmult_scope=band-mode\n"
+      "[field:nr]\ntype=serial\n", &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (def->mult, ==, LOGFL_MULT_DXCC);
+  g_assert_null (def->mult_dxcc_except);
+  g_assert_false (def->mult_per_contest);
+  g_assert_true (def->mult_per_mode);
+  text = logfl_exch_def_serialize (def);
+  back = logfl_exch_def_parse (text, &err);
+  g_assert_no_error (err);
+  g_assert_cmpuint (back->mult, ==, LOGFL_MULT_DXCC);
+  g_assert_null (back->mult_dxcc_except);
+  g_assert_false (back->mult_per_contest);
+  g_assert_true (back->mult_per_mode);
+  g_free (text);
+  logfl_exch_def_free (back);
+  logfl_exch_def_free (def);
 }
 
 static void
@@ -1609,6 +1766,14 @@ test_score_errors (void)
     "[exchange]\nfields=nr;\nmult=call-areas:\n",
     "[exchange]\nfields=nr;\nmult=exch-text:\n",
     "[exchange]\nfields=nr;\nmult=exch-textual\n",
+    "[exchange]\nfields=nr;\nmult=dxcc-except\n",
+    "[exchange]\nfields=nr;\nmult=dxcc-except:\n",
+    "[exchange]\nfields=nr;\nmult=dxccs\n",
+    "[exchange]\nfields=nr;\nmult=dxcc\nmult_scope=mode-band\n",
+    /* A mode term has to name its mode — and a name, not nothing. */
+    "[exchange]\nfields=nr;\npoints=mode=4;\n",
+    "[exchange]\nfields=nr;\npoints=mode:=4;\n",
+    "[exchange]\nfields=nr;\npoints=mode: =4;\n",
     /* A placeholder lands on a QSO line: one token, nothing else. */
     "[exchange]\nfields=q;\n[field:q]\ntype=text\ncab_placeholder=D X\n",
   };
@@ -2226,6 +2391,143 @@ test_score_lzdx (void)
   logfl_exch_def_free (def);
 }
 
+/* ARRL 10 m (rules v2.0 for 2026, arrl.org/10-meter, read 2026-11-15),
+ * from an OK seat: CW 4 points, phone 2; states, provinces and Mexican
+ * states + DXCC entities, each once on CW and once on phone. A W, VE or
+ * XE station brings its state alone, Alaska and Hawaii are states, and
+ * DXCC means Sicily is Italy. */
+static void
+test_score_arrl10 (void)
+{
+  GError *err = NULL;
+  LogflExchDef *def = logfl_exch_def_parse (
+      preset_named ("ARRL 10 m")->exch_def, &err);
+  g_assert_no_error (err);
+
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "K1ABC", "10m", "CW", "CT");    /* 4, CT               */
+  add_sqso (qsos, 2, "K1ABC", "10m", "SSB", "CT");   /* 2, CT once more: on
+                                                        phone               */
+  add_sqso (qsos, 3, "W3XYZ", "10m", "CW", "CT");    /* 4; CT known on CW,
+                                                        and no entity K     */
+  add_sqso (qsos, 4, "KL7AA", "10m", "CW", "AK");    /* 4, AK — a state, no
+                                                        entity KL           */
+  add_sqso (qsos, 5, "KH6XX", "10m", "SSB", "HI");   /* 2, HI               */
+  add_sqso (qsos, 6, "VE3ABC", "10m", "CW", "ON");   /* 4, ON               */
+  add_sqso (qsos, 7, "XE1AA", "10m", "SSB", "CMX");  /* 2, CMX              */
+  add_sqso (qsos, 8, "DL1AB", "10m", "CW", "123");   /* 4, DL               */
+  add_sqso (qsos, 9, "DL1AB", "10m", "SSB", "45");   /* 2, DL on phone      */
+  add_sqso (qsos, 10, "DL2XY", "10m", "CW", NULL);   /* 4, DL known         */
+  add_sqso (qsos, 11, "I1ABC", "10m", "CW", "12");   /* 4, I                */
+  add_sqso (qsos, 12, "IT9ABC", "10m", "CW", "13");  /* 4; Sicily is Italy  */
+  add_sqso (qsos, 13, "KP4AA", "10m", "CW", "55");   /* 4, KP4: a possession
+                                                        is DX               */
+  add_sqso (qsos, 14, "K1ABC", "10m", "CW", "CT");   /* dupe: 0, none       */
+  add_sqso (qsos, 15, "K5ZZ", "10m", "FM", "TX");    /* 2 — FM is phone; TX */
+  add_sqso (qsos, 16, "W5AB", "10m", "SSB", "TX");   /* 2; TX known on phone */
+  add_sqso (qsos, 17, "OK2XYZ", "10m", "CW", "88");  /* 4, the own country
+                                                        counts: OK          */
+  add_sqso (qsos, 18, "DL3ZZ", "10m", "SSB", "CT");  /* 2; text behind a DL
+                                                        call is no state    */
+  add_sqso (qsos, 19, "OK1XX/MM", "10m", "CW", "1"); /* 4; its ITU region is
+                                                        not modeled         */
+  LogflContestTotals tot;
+  GHashTable *scores =
+    logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+  g_assert_nonnull (scores);
+  g_assert_true (tot.have_points);
+  g_assert_true (tot.have_mult);
+  /* 11 on CW × 4 + 7 on phone × 2. */
+  g_assert_cmpint (tot.points, ==, 58);
+  /* CW: CT AK ON DL I KP4 OK; phone: CT HI CMX DL TX. */
+  g_assert_cmpint (tot.mults, ==, 12);
+  g_assert_cmpint (tot.total, ==, 696);
+
+  g_assert_cmpint (score_of (scores, 1)->points, ==, 4);
+  g_assert_cmpstr (score_of (scores, 1)->mult, ==, "CT");
+  g_assert_cmpint (score_of (scores, 2)->points, ==, 2);
+  g_assert_cmpstr (score_of (scores, 2)->mult, ==, "CT");
+  g_assert_cmpint (score_of (scores, 3)->points, ==, 4);
+  g_assert_null (score_of (scores, 3)->mult);
+  g_assert_cmpstr (score_of (scores, 4)->mult, ==, "AK");
+  g_assert_cmpint (score_of (scores, 5)->points, ==, 2);
+  g_assert_cmpstr (score_of (scores, 5)->mult, ==, "HI");
+  g_assert_cmpstr (score_of (scores, 6)->mult, ==, "ON");
+  g_assert_cmpstr (score_of (scores, 7)->mult, ==, "CMX");
+  g_assert_cmpstr (score_of (scores, 8)->mult, ==, "DL");
+  g_assert_cmpstr (score_of (scores, 9)->mult, ==, "DL");
+  g_assert_cmpint (score_of (scores, 10)->points, ==, 4);
+  g_assert_null (score_of (scores, 10)->mult);
+  g_assert_cmpstr (score_of (scores, 11)->mult, ==, "I");
+  g_assert_cmpint (score_of (scores, 12)->points, ==, 4);
+  g_assert_null (score_of (scores, 12)->mult);
+  g_assert_cmpstr (score_of (scores, 13)->mult, ==, "KP4");
+  g_assert_cmpint (score_of (scores, 14)->points, ==, 0);
+  g_assert_null (score_of (scores, 14)->mult);
+  g_assert_cmpint (score_of (scores, 15)->points, ==, 2);
+  g_assert_cmpstr (score_of (scores, 15)->mult, ==, "TX");
+  g_assert_cmpint (score_of (scores, 16)->points, ==, 2);
+  g_assert_null (score_of (scores, 16)->mult);
+  g_assert_cmpint (score_of (scores, 17)->points, ==, 4);
+  g_assert_cmpstr (score_of (scores, 17)->mult, ==, "OK");
+  g_assert_cmpint (score_of (scores, 18)->points, ==, 2);
+  g_assert_null (score_of (scores, 18)->mult);
+  g_assert_cmpint (score_of (scores, 19)->points, ==, 4);
+  g_assert_null (score_of (scores, 19)->mult);
+
+  g_hash_table_unref (scores);
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+  logfl_exch_def_free (def);
+}
+
+/* The four scopes a multiplier can be new in, over one and the same log:
+ * five German stations on 20 m CW, 20 m SSB, 15 m CW, 20 m CW again and
+ * 20 m FM — phone like SSB. */
+static void
+test_score_mult_scope (void)
+{
+  static const struct { const char *scope; int mults; } cases[] = {
+    { "band", 2 },             /* 20 m, 15 m                    */
+    { "contest", 1 },
+    { "band-mode", 3 },        /* 20 m CW, 20 m phone, 15 m CW  */
+    { "mode", 2 },             /* CW, phone                     */
+  };
+  LogflCty *cty = load_cty ();
+  GPtrArray *qsos = g_ptr_array_new_with_free_func (
+      (GDestroyNotify) logfl_qso_free);
+  add_sqso (qsos, 1, "DL1AB", "20m", "CW", NULL);
+  add_sqso (qsos, 2, "DL2XY", "20m", "SSB", NULL);
+  add_sqso (qsos, 3, "DL3ZZ", "15m", "CW", NULL);
+  add_sqso (qsos, 4, "DL4QQ", "20m", "CW", NULL);
+  add_sqso (qsos, 5, "DL5PP", "20m", "FM", NULL);
+
+  for (gsize i = 0; i < G_N_ELEMENTS (cases); i++)
+    {
+      GError *err = NULL;
+      char *text = g_strdup_printf (
+          "[exchange]\nfields=nr;\npoints=default=1;\n"
+          "mult=dxcc\nmult_scope=%s\n[field:nr]\ntype=serial\n",
+          cases[i].scope);
+      LogflExchDef *def = logfl_exch_def_parse (text, &err);
+      g_assert_no_error (err);
+      LogflContestTotals tot;
+      GHashTable *scores =
+        logfl_contest_score (def, cty, "OK1BR", qsos, &tot);
+      g_assert_nonnull (scores);
+      g_assert_cmpint (tot.points, ==, 5);
+      g_assert_cmpint (tot.mults, ==, cases[i].mults);
+      g_hash_table_unref (scores);
+      logfl_exch_def_free (def);
+      g_free (text);
+    }
+
+  g_ptr_array_unref (qsos);
+  logfl_cty_free (cty);
+}
+
 /* #35: the entry row offers the zone cty knows for a call — but not where
  * the station answers with text in that very field. In LZ DX "28" behind
  * LZ1ABC would sit where the district is due. */
@@ -2340,6 +2642,8 @@ test_contest_id_for_mode (void)
     { "SARTG-RTTY", "RTTY", "SARTG-RTTY" },
     { "YOHFDX", "CW", "YOHFDX" },
     { "LZ DX", "SSB", "LZ DX" },           /* one id for CW and SSB */
+    { "ARRL-10", "CW", "ARRL-10" },        /* one contest in both modes */
+    { "ARRL-10", "SSB", "ARRL-10" },
     { "CQ-WWX", "SSB", "CQ-WWX" },         /* a prefix is not the family */
     { "", "SSB", "" },
   };
@@ -2353,13 +2657,14 @@ test_contest_id_for_mode (void)
 
   /* Every preset id goes out as an id ADIF 3.1.7 lists (adif.org
    * Contest_ID enumeration, read 2026-10-24; LZ DX — the one id with a
-   * space — on 2026-11-12) — directly, or for a contest run in parts
-   * through each part the resolver hands it. */
+   * space — on 2026-11-12; ARRL-10 in ADIF 3.1.8 on 2026-11-15) —
+   * directly, or for a contest run in parts through each part the
+   * resolver hands it. */
   static const char *const adif_ids[] = {
     "CQ-WW-CW", "CQ-WW-SSB", "CQ-WW-RTTY", "CQ-WPX-CW", "CQ-WPX-SSB",
     "CQ-WPX-RTTY", "SAC-CW", "SAC-SSB", "DARC-WAEDC-CW", "DARC-WAEDC-SSB",
     "DARC-WAEDC-RTTY", "CVA-DX-CW", "CVA-DX-SSB", "EU-HF", "IARU-HF",
-    "OK-OM-DX", "SARTG-RTTY", "YOHFDX", "LZ DX", NULL,
+    "OK-OM-DX", "SARTG-RTTY", "YOHFDX", "LZ DX", "ARRL-10", NULL,
   };
   static const char *const modes[] = { "CW", "SSB", "RTTY" };
   guint n = 0;
@@ -2561,6 +2866,8 @@ main (int argc, char **argv)
   g_test_add_func ("/contest/score/sac", test_score_sac);
   g_test_add_func ("/contest/score/iaru", test_score_iaru);
   g_test_add_func ("/contest/score/lzdx", test_score_lzdx);
+  g_test_add_func ("/contest/score/arrl10", test_score_arrl10);
+  g_test_add_func ("/contest/score/mult-scope", test_score_mult_scope);
   g_test_add_func ("/contest/expects-text", test_expects_text);
   g_test_add_func ("/contest/score/unavailable", test_score_unavailable);
   return g_test_run ();

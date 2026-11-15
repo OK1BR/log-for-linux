@@ -86,12 +86,16 @@ typedef enum {
                                   exchange when numeric, cty fallback */
   LOGFL_PTS_EXCH_TEXT,         /* received exchange is text, not a number
                                   (IARU HQ/official stations) */
+  LOGFL_PTS_MODE,              /* the QSO was made in mode arg — phone (SSB,
+                                  AM, FM) is one mode, "PH" (ARRL 10 m: CW
+                                  4, phone 2) */
   LOGFL_PTS_DEFAULT,           /* always matches */
 } LogflPtsKind;
 
 typedef struct {
   LogflPtsKind kind;
-  char *arg;                   /* COUNTRY: the prefix ("YO"); else NULL */
+  char *arg;                   /* COUNTRY: the prefix ("YO"); MODE: the
+                                  mode ("CW", "PH"); else NULL */
   int points;                  /* 20 m and shorter */
   int points_low;              /* 160/80/40 m (== points unless "N/L") */
 } LogflPtsTerm;
@@ -113,6 +117,10 @@ typedef enum {
   LOGFL_MULT_CALL_AREAS    = 1 << 7, /* prefix number 0-9 within each listed
                                         entity, the entity itself elsewhere
                                         (SAC rules §8.2) */
+  LOGFL_MULT_DXCC          = 1 << 8, /* DXCC entity: what COUNTRY counts,
+                                        minus the WAE-only entities of cty —
+                                        Sicily is Italy here (ARRL contests
+                                        count the DXCC list) */
 } LogflMultSource;
 
 /* --- Cabrillo entry categories -------------------------------------------
@@ -153,8 +161,15 @@ typedef struct {
                                   K, VE); NULL = from anyone */
   char **mult_area_entities;   /* CALL_AREAS: the entities split by prefix
                                   number, NULL-terminated */
+  char **mult_dxcc_except;     /* DXCC counts from everyone but these
+                                  entities, NULL-terminated (ARRL 10 m: a
+                                  W/VE/XE station brings its state, not its
+                                  entity); NULL = from everyone */
   gboolean mult_per_contest;   /* mults once per contest (WPX prefixes),
                                   not once per band */
+  gboolean mult_per_mode;      /* … and once per mode on top of either
+                                  (ARRL 10 m: "once on phone and once on
+                                  CW"); phone is one mode */
   GHashTable *mult_weight;     /* band ("80m") → weight int; NULL = ×1
                                   everywhere (WAE band bonus) */
   char **cab[LOGFL_CAB_N_TAGS];        /* allowed header values per tag,
@@ -175,11 +190,14 @@ typedef struct {
  *   zero_own_country=false
  *   points=country:YO=8;own-country=1;same-cont=2;other-cont=4;
  *                          # ordered, first match wins; N/L = low-band
- *                          # (160/80/40) override, e.g. other-cont=3/6
+ *                          # (160/80/40) override, e.g. other-cont=3/6;
+ *                          # mode:CW=4;mode:PH=2; scores by the QSO's mode
+ *                          # (PH = phone: SSB, AM, FM)
  *   mult=exch:YO+country   # country|country-areas|cqzone|zone|exch[:PFX]|
- *                          # exch-text[:K,VE,…]|prefix|call-areas:LA,SM,…,
- *                          # joined with +
- *   mult_scope=contest     # band (default) | contest
+ *                          # exch-text[:K,VE,…]|prefix|call-areas:LA,SM,…|
+ *                          # dxcc|dxcc-except:K,VE,…, joined with +
+ *   mult_scope=contest     # band (default) | contest | band-mode | mode
+ *                          # (once per band and mode | once per mode)
  *   mult_weight=80m:4;40m:3;20m:2;15m:2;10m:2   # WAE band bonus
  *   [cabrillo]             # optional; allowed CATEGORY-* values per tag:
  *   band=ALL;LOW-BAND;     # operator|band|power|mode|transmitter|assisted|

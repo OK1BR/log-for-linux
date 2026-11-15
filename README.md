@@ -55,10 +55,10 @@ entry row always pre-filled with the live VFO — nearly free.
 - **Contests as first-class log sections**: create/switch/delete from the
   header, each contest copies its exchange template at creation. Presets for
   CQ WW, CQ WW RTTY, CQ WPX, IARU HF, OK/OM DX, EUHFC, WAE DX, WAE DX RTTY,
-  CVA DX, SARTG WW RTTY, YO DX, SAC and LZ DX, plus a custom template editor
-  (serial / number / text / auto fields mapped onto ADIF). The main-log view
-  stays clean — contest QSOs live in their section, while worked-B4 and
-  statistics stay global
+  CVA DX, SARTG WW RTTY, YO DX, SAC, LZ DX and ARRL 10 m, plus a custom
+  template editor (serial / number / text / auto fields mapped onto ADIF).
+  The main-log view stays clean — contest QSOs live in their section, while
+  worked-B4 and statistics stay global
 - Per-contest **sent serials**, whole-contest dup rule (call+band+mode),
   received-exchange fields in the entry row — the CQ/ITU zone prefilled from
   the call where cty.dat is certain — exchange column in the table; ADIF
